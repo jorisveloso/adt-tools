@@ -1,0 +1,11 @@
+{
+  "name": "adt-note",
+  "version": "0.0.1",
+  "description": "Ferramenta de aplicação/gerenciamento de notas SAP via adt-client. (esqueleto)",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  }
+}

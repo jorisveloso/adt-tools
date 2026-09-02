@@ -1,0 +1,23 @@
+{
+  "name": "adt-server",
+  "version": "0.0.1",
+  "description": "MCP server que encapsula a execução do ecossistema adt (protótipo local).",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "adt-server": "./src/adt-server.mjs"
+  },
+  "exports": {
+    ".": "./src/adt-server.mjs"
+  },
+  "scripts": {
+    "start": "node src/adt-server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
+  }
+}

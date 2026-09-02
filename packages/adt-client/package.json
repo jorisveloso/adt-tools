@@ -1,0 +1,11 @@
+{
+  "name": "adt-client",
+  "version": "0.0.1",
+  "description": "Motor do ecossistema adt — conjunto de ferramentas para conectar e trabalhar objetos SAP. (esqueleto — o jbv-adt-client migra para cá)",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  }
+}

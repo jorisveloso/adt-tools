@@ -1,0 +1,17 @@
+{
+  "name": "adt-git",
+  "version": "0.0.1",
+  "description": "Metáfora de repositório (git-like) sobre o adt-client — clone, checkout, commit, diff, list, status. (esqueleto — o antigo abapgit migra para cá)",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "bin": {
+    "adt-git": "./bin/adt-git.mjs"
+  },
+  "scripts": {
+    "adt-git": "node bin/adt-git.mjs"
+  }
+}
