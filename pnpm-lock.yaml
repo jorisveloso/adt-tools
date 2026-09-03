@@ -26,7 +26,15 @@ importers:
         specifier: workspace:*
         version: link:../adt-client
 
-  packages/adt-query: {}
+  packages/adt-query:
+    dependencies:
+      adt-client:
+        specifier: workspace:*
+        version: link:../adt-client
+    devDependencies:
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.11(vite@8.2.2)
 
   packages/adt-server:
     dependencies:

@@ -1,11 +1,25 @@
 {
   "name": "adt-query",
-  "version": "0.0.1",
-  "description": "Ferramenta de consultas SAP via adt-client. (esqueleto)",
+  "version": "0.0.2",
+  "description": "Ferramenta de consultas SAP (read-only) via adt-client.",
   "private": true,
   "type": "module",
   "main": "index.mjs",
   "exports": {
     ".": "./index.mjs"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=11"
+  },
+  "packageManager": "pnpm@11.6.0",
+  "dependencies": {
+    "adt-client": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
   }
 }
