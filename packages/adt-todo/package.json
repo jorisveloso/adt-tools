@@ -1,0 +1,22 @@
+{
+  "name": "adt-todo",
+  "version": "0.1.0",
+  "description": "Fila de trabalho local multi-projeto (markdown) — um item por sessão, com ideias e triagem. O /next.",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": "./lib/index.mjs"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "pnpm@11.6.0",
+  "private": true,
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}

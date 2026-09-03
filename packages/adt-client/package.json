@@ -1,11 +1,68 @@
 {
   "name": "adt-client",
-  "version": "0.0.1",
-  "description": "Motor do ecossistema adt — conjunto de ferramentas para conectar e trabalhar objetos SAP. (esqueleto — o jbv-adt-client migra para cá)",
-  "private": true,
+  "version": "1.0.0",
+  "description": "SAP ADT REST client — ABAP object lifecycle management (create, alter, activate, test with coverage)",
   "type": "module",
-  "main": "index.mjs",
+  "main": "adt-client.mjs",
   "exports": {
-    ".": "./index.mjs"
+    ".": "./adt-client.mjs",
+    "./rfc-soap": "./rfc-soap.mjs",
+    "./classrun": "./classrun.mjs",
+    "./cts": "./cts.mjs",
+    "./diff": "./diff.mjs",
+    "./atc": "./atc.mjs",
+    "./dumps": "./dumps.mjs",
+    "./bal": "./bal.mjs",
+    "./cobertura": "./cobertura.mjs",
+    "./ui5": "./ui5.mjs",
+    "./gui": "./gui.mjs",
+    "./probe": "./probe.mjs",
+    "./canais": "./canais.mjs",
+    "./config": "./config.mjs",
+    "./session": "./session.mjs",
+    "./search": "./search.mjs",
+    "./landscape": "./landscape.mjs",
+    "./layout": "./layout.mjs",
+    "./deps": "./deps.mjs",
+    "./log": "./log.mjs",
+    "./tipos": "./tipos/index.mjs",
+    "./sm30": "./sm30.mjs",
+    "./tran": "./tran.mjs",
+    "./forms": "./forms.mjs",
+    "./enho": "./enho.mjs",
+    "./brf": "./brf.mjs",
+    "./nrob": "./nrob.mjs",
+    "./view": "./view.mjs",
+    "./xfa": "./xfa.mjs",
+    "./job": "./job.mjs",
+    "./markdown": "./markdown.mjs"
+  },
+  "files": [
+    "*.mjs",
+    "tipos/",
+    "*.json",
+    "examples/",
+    "docs/"
+  ],
+  "keywords": [
+    "sap",
+    "abap",
+    "adt",
+    "rest",
+    "development"
+  ],
+  "author": "Joris Veloso <jorisveloso@gmail.com>",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "catalogo": "node scripts/catalogo.mjs",
+    "catalogo:check": "node scripts/catalogo.mjs --check"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
   }
 }

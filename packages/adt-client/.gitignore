@@ -1,0 +1,9 @@
+# Estado local do ambiente — host/mandante de cliente e sessão NÃO entram no repositório
+# (é a regra documentada em config.mjs e no README).
+sistemas.json
+destinos.json
+canais.json
+.sessao.json
+.abapgit.log
+
+node_modules/

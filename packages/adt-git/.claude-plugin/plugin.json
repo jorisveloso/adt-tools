@@ -1,0 +1,7 @@
+{
+  "name": "abapgit",
+  "version": "0.1.0",
+  "description": "Traz objetos ABAP de um sistema SAP para o disco via ADT REST. Só leitura: nada é criado, alterado ou apagado no servidor.",
+  "author": { "name": "Joris Veloso" },
+  "commands": ["./commands/connect.md", "./commands/list.md", "./commands/checkout.md"]
+}

@@ -1,0 +1,922 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arsenal jbv-adt-client</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #F3F5F8;
+    --bg-2: #E8ECF2;
+    --surface: #FFFFFF;
+    --ink: #141B26;
+    --ink-2: #4B5563;
+    --ink-3: #7A8697;
+    --line: #D3DAE4;
+    --accent: #0F5FD6;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #E1EBFB;
+    --adt: #0F5FD6;
+    --run: #6D4AD6;
+    --soap: #B8681A;
+    --ui: #0E7C86;
+    --probe: #4B5A6B;
+    --ok: #1E7F4F;
+    --ok-soft: #DCF2E6;
+    --warn: #B8681A;
+    --warn-soft: #FBEBD7;
+    --shadow: 0 1px 2px rgba(20,27,38,.06), 0 8px 24px rgba(20,27,38,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0E131A;
+      --bg-2: #151C26;
+      --surface: #1A222E;
+      --ink: #EEF2F7;
+      --ink-2: #B4BFCC;
+      --ink-3: #7F8B9B;
+      --line: #2B3644;
+      --accent: #5B96F0;
+      --accent-ink: #0E131A;
+      --accent-soft: #1B2E4B;
+      --adt: #5B96F0;
+      --run: #A48CF0;
+      --soap: #E3A05A;
+      --ui: #4FC1CB;
+      --probe: #9AA8B9;
+      --ok: #4CC486;
+      --ok-soft: #14301F;
+      --warn: #E3A05A;
+      --warn-soft: #3A2A14;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0E131A;
+    --bg-2: #151C26;
+    --surface: #1A222E;
+    --ink: #EEF2F7;
+    --ink-2: #B4BFCC;
+    --ink-3: #7F8B9B;
+    --line: #2B3644;
+    --accent: #5B96F0;
+    --accent-ink: #0E131A;
+    --accent-soft: #1B2E4B;
+    --adt: #5B96F0;
+    --run: #A48CF0;
+    --soap: #E3A05A;
+    --ui: #4FC1CB;
+    --probe: #9AA8B9;
+    --ok: #4CC486;
+    --ok-soft: #14301F;
+    --warn: #E3A05A;
+    --warn-soft: #3A2A14;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", "Segoe UI", Roboto, system-ui, sans-serif;
+    font-size: clamp(15px, 1.15vw, 19px);
+    line-height: 1.5;
+    overflow: hidden;
+  }
+  * { box-sizing: border-box; }
+  code, .mono { font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: .92em; }
+  h1, h2, h3 { font-family: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, sans-serif; font-stretch: 85%; margin: 0; text-wrap: balance; }
+  h1 { font-weight: 800; font-size: clamp(2.6rem, 6.5vw, 6.2rem); line-height: .95; letter-spacing: -.02em; }
+  h2 { font-weight: 700; font-size: clamp(2rem, 4vw, 3.6rem); line-height: 1; letter-spacing: -.015em; }
+  h3 { font-weight: 700; font-size: 1.1em; font-stretch: 90%; }
+  p { margin: 0; }
+  a { color: var(--accent); }
+
+  .deck {
+    display: flex;
+    height: 100dvh;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+  }
+  .deck::-webkit-scrollbar { display: none; }
+  @media (prefers-reduced-motion: reduce) { .deck { scroll-behavior: auto; } }
+
+  .slide {
+    flex: 0 0 100%;
+    height: 100dvh;
+    scroll-snap-align: start;
+    padding: clamp(2rem, 5vw, 5rem) clamp(1.5rem, 6vw, 7rem) clamp(4rem, 8vh, 6rem);
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: clamp(1.2rem, 3vh, 2.4rem);
+    overflow-y: auto;
+    position: relative;
+  }
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .78em;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: flex;
+    gap: 1.2em;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .eyebrow b { color: var(--accent); font-weight: 500; }
+  .head { display: grid; gap: .6rem; }
+  .lead { color: var(--ink-2); font-size: 1.15em; max-width: 62ch; text-wrap: pretty; }
+  .body { min-height: 0; }
+
+  /* ---- capa ---- */
+  .cover { grid-template-rows: auto 1fr auto; }
+  .cover .body { display: grid; align-content: center; gap: 1.6rem; }
+  .cover h1 span { color: var(--accent); }
+  .facts { display: flex; flex-wrap: wrap; gap: 0 2.5rem; border-top: 1px solid var(--line); padding-top: 1.2rem; }
+  .fact { display: grid; gap: .1rem; padding: .4rem 0; }
+  .fact .v { font-family: "Archivo", sans-serif; font-stretch: 85%; font-weight: 700; font-size: 1.7em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .fact .k { font-size: .8em; color: var(--ink-3); text-transform: uppercase; letter-spacing: .08em; }
+
+  /* ---- grades ---- */
+  .cols { display: grid; gap: 1.2rem; align-content: start; }
+  .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .9rem; }
+  .split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(1.5rem, 4vw, 4rem); align-items: start; }
+  @media (max-width: 1100px) { .cols-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 860px) {
+    .cols-2, .cols-3, .cols-4, .cols-5, .split { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 1.1rem 1.25rem;
+    display: grid;
+    gap: .55rem;
+    align-content: start;
+    box-shadow: var(--shadow);
+  }
+  .cols-5 .card { padding: .9rem 1rem; }
+  .card h3 { display: flex; align-items: center; gap: .5rem; }
+  .card p { color: var(--ink-2); font-size: .95em; }
+  .card ul { margin: 0; padding-left: 1.1em; color: var(--ink-2); font-size: .95em; display: grid; gap: .25rem; }
+  .card li::marker { color: var(--ink-3); }
+  .tag {
+    display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: .72em; letter-spacing: .06em;
+    text-transform: uppercase; padding: .15em .5em; border: 1px solid currentColor; line-height: 1.4;
+  }
+  .chan { border-top: 4px solid var(--c); }
+  .chan h3, .chan .tag { color: var(--c); }
+  .c-adt { --c: var(--adt); }
+  .c-run { --c: var(--run); }
+  .c-soap { --c: var(--soap); }
+  .c-ui { --c: var(--ui); }
+  .c-probe { --c: var(--probe); }
+
+  .no { display: grid; gap: .3rem; padding: 1rem 0; border-top: 1px solid var(--line); }
+  .no b { font-family: "Archivo", sans-serif; font-stretch: 85%; font-weight: 700; font-size: 1.5em; line-height: 1.05; }
+  .no s { text-decoration-color: var(--accent); text-decoration-thickness: 3px; }
+  .no span { color: var(--ink-2); font-size: .95em; }
+
+  pre {
+    margin: 0;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    padding: 1rem 1.2rem;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .82em;
+    line-height: 1.55;
+    overflow-x: auto;
+    color: var(--ink);
+    tab-size: 2;
+  }
+  pre .k { color: var(--accent); }
+  pre .s { color: var(--ok); }
+  pre .c { color: var(--ink-3); }
+  pre .w { color: var(--warn); }
+
+  .types { display: grid; gap: 1rem; }
+  .tgroup { display: grid; grid-template-columns: 9rem 1fr; gap: 1rem; align-items: baseline; padding: .7rem 0; border-top: 1px solid var(--line); }
+  .tgroup h3 { color: var(--ink-3); font-size: .95em; }
+  .chips { display: flex; flex-wrap: wrap; gap: .45rem; }
+  .chip { font-family: "IBM Plex Mono", monospace; font-size: .82em; background: var(--surface); border: 1px solid var(--line); padding: .2em .6em; }
+  .chip.new { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  @media (max-width: 860px) { .tgroup { grid-template-columns: 1fr; gap: .3rem; } }
+
+  .pill { display: inline-flex; align-items: center; gap: .35em; font-size: .78em; font-weight: 600; padding: .15em .6em; border-radius: 999px; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill::before { content: ""; width: .5em; height: .5em; border-radius: 50%; background: currentColor; }
+
+  .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: .6rem; align-items: stretch; }
+  .flow .arrow { align-self: center; color: var(--ink-3); font-size: 1.6em; }
+  .flow .step { border-top: 4px solid var(--c); }
+  .flow .step small { color: var(--ink-3); font-family: "IBM Plex Mono", monospace; font-size: .75em; }
+  @media (max-width: 860px) { .flow { grid-template-columns: 1fr; } .flow .arrow { transform: rotate(90deg); justify-self: center; } }
+
+  .callout { border-left: 4px solid var(--warn); background: var(--warn-soft); padding: .9rem 1.1rem; color: var(--ink); display: grid; gap: .3rem; }
+  .callout b { color: var(--warn); }
+  .callout.good { border-color: var(--ok); background: var(--ok-soft); }
+  .callout.good b { color: var(--ok); }
+
+  .guards { display: grid; gap: 0; }
+  .guard { display: grid; grid-template-columns: 14rem 1fr; gap: 1.5rem; padding: .9rem 0; border-top: 1px solid var(--line); align-items: baseline; }
+  .guard code { color: var(--accent); font-weight: 500; }
+  .guard span { color: var(--ink-2); }
+  @media (max-width: 860px) { .guard { grid-template-columns: 1fr; gap: .2rem; } }
+
+  .queue { display: grid; gap: 0; }
+  .qi { display: grid; grid-template-columns: 1.6rem 1fr auto; gap: 1rem; padding: .75rem 0; border-top: 1px solid var(--line); align-items: baseline; }
+  .qi .box { width: 1.1em; height: 1.1em; border: 2px solid var(--ink-3); display: inline-block; position: relative; top: .15em; }
+  .qi .box.done { border-color: var(--ok); background: var(--ok); }
+  .qi .box.done::after { content: ""; position: absolute; left: .28em; top: .05em; width: .3em; height: .6em; border: solid var(--accent-ink); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  .qi .why { color: var(--ink-3); font-size: .85em; font-family: "IBM Plex Mono", monospace; }
+
+  .layers { display: grid; gap: 0; counter-reset: camada; }
+  .layer { display: grid; grid-template-columns: 2.2rem 1fr; gap: 1rem; padding: .7rem 0; border-top: 1px solid var(--line); align-items: baseline; }
+  .layer::before { counter-increment: camada; content: counter(camada); font-family: "Archivo", sans-serif; font-stretch: 85%; font-weight: 800; font-size: 1.4em; color: var(--warn); line-height: 1; }
+  .layer b { display: block; }
+  .layer span { color: var(--ink-2); font-size: .95em; }
+
+  .systems { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; }
+  .sys { display: grid; gap: .6rem; }
+  .sys .name { font-family: "Archivo", sans-serif; font-stretch: 85%; font-weight: 800; font-size: 2.6em; line-height: 1; }
+  .sys .name small { font-size: .42em; font-weight: 600; color: var(--ink-3); margin-left: .4em; letter-spacing: .04em; }
+  .sys ul { margin: 0; padding-left: 1.1em; color: var(--ink-2); display: grid; gap: .25rem; }
+  @media (max-width: 860px) { .systems { grid-template-columns: 1fr; } }
+
+  /* ---- histórico / novidades (renderizados a partir de HISTORICO) ---- */
+  .timeline { display: grid; gap: 0; }
+  .tl { display: grid; grid-template-columns: 7.5rem 5.5rem 1fr; gap: 1rem; padding: .55rem 0; border-top: 1px solid var(--line); align-items: baseline; font-size: .95em; }
+  .tl .d { font-family: "IBM Plex Mono", monospace; color: var(--ink-3); font-size: .85em; font-variant-numeric: tabular-nums; }
+  .tl .h { font-family: "IBM Plex Mono", monospace; color: var(--accent); font-size: .85em; }
+  .tl .t b { display: block; }
+  .tl .t span { color: var(--ink-2); font-size: .92em; }
+  .tl.novo .t b::after { content: "novo"; font-family: "IBM Plex Mono", monospace; font-size: .65em; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--accent); padding: .05em .4em; margin-left: .6em; vertical-align: middle; }
+  .tl.marco .h { color: var(--ink-3); }
+  .tl.marco .t b::after { content: "apresentado"; font-family: "IBM Plex Mono", monospace; font-size: .65em; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); border: 1px solid var(--line); padding: .05em .4em; margin-left: .6em; vertical-align: middle; }
+  .novidades { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; }
+  .novidades .card .d { font-family: "IBM Plex Mono", monospace; font-size: .75em; color: var(--ink-3); }
+  .novidades .card .d b { color: var(--accent); font-weight: 500; margin-right: .6em; }
+  @media (max-width: 860px) { .novidades { grid-template-columns: 1fr; } .tl { grid-template-columns: 1fr; gap: .1rem; } }
+
+  /* ---- ideias (renderizado a partir de IDEIAS) ---- */
+  .ideias { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.2rem; align-content: start; }
+  .igroup { display: grid; gap: 0; align-content: start; }
+  .igroup h3 { color: var(--ink-3); font-size: .85em; letter-spacing: .1em; text-transform: uppercase; font-stretch: 100%; padding-bottom: .5rem; }
+  .idea { display: grid; grid-template-columns: 2.4rem 1fr; gap: .6rem; padding: .55rem 0; border-top: 1px solid var(--line); align-items: baseline; }
+  .idea .n { font-family: "IBM Plex Mono", monospace; font-size: .8em; color: var(--ink-3); }
+  .idea b { display: block; font-weight: 600; }
+  .idea span { color: var(--ink-2); font-size: .9em; }
+  @media (max-width: 1100px) { .ideias { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 860px) { .ideias { grid-template-columns: 1fr; } }
+
+  /* ---- chrome ---- */
+  .hud {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .7rem clamp(1.5rem, 6vw, 7rem);
+    font-family: "IBM Plex Mono", monospace; font-size: .78em; color: var(--ink-3);
+    pointer-events: none;
+  }
+  .hud .nav { display: flex; gap: .4rem; pointer-events: auto; }
+  .hud button {
+    font: inherit; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line);
+    padding: .3em .8em; cursor: pointer;
+  }
+  .hud button:hover { border-color: var(--accent); color: var(--accent); }
+  .hud button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .progress { position: fixed; top: 0; left: 0; height: 3px; background: var(--accent); width: 0; transition: width .25s ease; }
+  @media (prefers-reduced-motion: reduce) { .progress { transition: none; } }
+  .counter { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<main class="deck" id="deck" tabindex="0" aria-label="Slides">
+
+  <!-- capa -->
+  <section class="slide cover">
+    <div class="eyebrow"><b>jbv-adt-client</b><span>versão <span data-versao></span></span><span data-data></span></div>
+    <div class="body">
+      <h1>Um cliente SAP que roda <span>na máquina do dev.</span></h1>
+      <p class="lead">Node puro, HTTP nativo, usuário SAP do próprio desenvolvedor. Cria, ativa, testa, executa e dirige a tela — sem instalar nada no servidor.</p>
+    </div>
+    <div class="facts">
+      <div class="fact"><span class="v">0</span><span class="k">dependências de runtime</span></div>
+      <div class="fact"><span class="v">5</span><span class="k">canais de acesso</span></div>
+      <div class="fact"><span class="v">24</span><span class="k">tipos por ADT REST</span></div>
+      <div class="fact"><span class="v">+10</span><span class="k">por driver classrun e por efeito</span></div>
+      <div class="fact"><span class="v">2</span><span class="k">sistemas validados · 758 e 816</span></div>
+      <div class="fact"><span class="v">MIT</span><span class="k">licença</span></div>
+    </div>
+  </section>
+
+  <!-- princípio -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>princípio</b></div>
+      <h2>Nada é instalado no servidor.</h2>
+      <p class="lead">Só <code>node:*</code> e o <code>fetch</code> nativo. O SAP é tratado como um serviço HTTP que já está lá.</p>
+    </div>
+    <div class="body cols cols-4">
+      <div class="no"><b><s>Transporte</s></b><span>Nenhum objeto de suporte precisa subir antes de começar a trabalhar.</span></div>
+      <div class="no"><b><s>Basis</s></b><span>Nenhum chamado para habilitar coisa nova — usa o que já responde na SICF.</span></div>
+      <div class="no"><b><s>Eclipse</s></b><span>Os mesmos endpoints que o ADT usa, chamados direto. Até o preview Fiori.</span></div>
+      <div class="no"><b><s>RFC SDK</s></b><span>FM remote-enabled por SOAP puro, sem biblioteca nativa.</span></div>
+    </div>
+  </section>
+
+  <!-- canais -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>arquitetura</b></div>
+      <h2>Cinco canais, escolhidos por sistema.</h2>
+      <p class="lead">Cada canal cobre uma faixa de versão. A seleção não é fixa: pergunta-se ao sistema-alvo o que ele oferece.</p>
+    </div>
+    <div class="body cols cols-5">
+      <div class="card chan c-adt">
+        <span class="tag">ADT REST</span>
+        <h3>Ciclo de vida de objeto</h3>
+        <p class="mono">/sap/bc/adt/*</p>
+        <ul><li>Basis com ADT ativo</li><li>Criar, alterar, ativar, testar</li><li>ABAP Unit + cobertura</li></ul>
+      </div>
+      <div class="card chan c-run">
+        <span class="tag">classrun</span>
+        <h3>Executar código e ler a saída</h3>
+        <p class="mono">POST …/oo/classrun/{classe}</p>
+        <ul><li>ABAP ≥ 7.52</li><li>O F9 do Eclipse, por HTTP</li><li>Base dos drivers de POC</li></ul>
+      </div>
+      <div class="card chan c-soap">
+        <span class="tag">SOAP RFC</span>
+        <h3>FM remote-enabled por HTTP</h3>
+        <p class="mono">POST /sap/bc/soap/rfc</p>
+        <ul><li>Até Web AS ~6.20</li><li>Só exige o nó SICF ativo</li><li>Sem SDK, sem biblioteca</li></ul>
+      </div>
+      <div class="card chan c-ui">
+        <span class="tag">wdi5</span>
+        <h3>Dirigir a tela Fiori</h3>
+        <p class="mono">preview feap + Chrome headless</p>
+        <ul><li>S/4 com RAP OData V4</li><li>Acha controles UI5, aperta o Go</li><li>Screenshot como assert visual</li></ul>
+      </div>
+      <div class="card chan c-probe">
+        <span class="tag">probe</span>
+        <h3>Mapa do que o sistema oferece</h3>
+        <p class="mono">discovery + STFC_CONNECTION</p>
+        <ul><li>Qualquer sistema</li><li>Sonda independente por canal</li><li>Falha macia, com motivo</li></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- probe -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>probe</b><span>probe.mjs</span></div>
+      <h2>A primeira pergunta antes de qualquer teste.</h2>
+    </div>
+    <div class="body split">
+      <div class="cols">
+        <p class="lead">Dois GETs que não alteram nada — o discovery do ADT e um eco por SOAP — e o consumidor recebe o mapa pronto, sem decorar a matriz de versões.</p>
+        <ul class="card" style="list-style:none;padding-left:1.25rem">
+          <li><b>ADT</b> — 200 no discovery = utilizável; 401/403/404 explicam o porquê</li>
+          <li><b>SOAP RFC</b> — o eco traz release, SID, mandante e usuário</li>
+          <li><b>classrun</b> — inferido: ADT ok + SOAP ok + release ≥ 7.52</li>
+        </ul>
+      </div>
+      <pre><span class="k">const</span> p = <span class="k">await</span> probe(cfg);
+
+<span class="c">// S4H · mandante 250 · medido 2026-08-26</span>
+{
+  adt:      { ok: <span class="s">true</span> },
+  soapRfc:  { ok: <span class="s">true</span> },
+  classrun: { ok: <span class="s">true</span> },
+  release:  <span class="s">"758"</span>,
+  sysid:    <span class="s">"S4H"</span>,
+  mandante: <span class="s">"250"</span>,
+  usuario:  <span class="s">"…"</span>
+}
+
+<span class="c">// sistema sem classrun:</span>
+classrun: { ok: <span class="w">false</span>, motivo: <span class="w">"release 740 &lt; 7.52"</span> }</pre>
+    </div>
+  </section>
+
+  <!-- tipos -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>ADT REST</b><span>adt-client.mjs · tipos/&lt;libKey&gt;.mjs — um módulo por tipo</span></div>
+      <h2>24 tipos de objeto, todos validados por spike.</h2>
+      <p class="lead">Regra spike-first: um tipo só entra no registro depois de criado, ativado e lido num sistema real.</p>
+    </div>
+    <div class="body types">
+      <div class="tgroup"><h3>DDIC</h3><div class="chips"><span class="chip">domain</span><span class="chip">dataElement</span><span class="chip">table</span><span class="chip">structure</span><span class="chip new">tableType</span><span class="chip new">lockObject</span></div></div>
+      <div class="tgroup"><h3>CDS / RAP</h3><div class="chips"><span class="chip">cds</span><span class="chip">metadataExtension</span><span class="chip new">accessControl</span><span class="chip">behaviorDefinition</span><span class="chip">serviceDefinition</span><span class="chip">serviceBinding</span><span class="chip">publish V4</span><span class="chip new">publish V2 · gera a família SEGW</span></div></div>
+      <div class="tgroup"><h3>Código</h3><div class="chips"><span class="chip">class · includes · testes</span><span class="chip">interface</span><span class="chip">prog</span><span class="chip">include</span><span class="chip">msag</span><span class="chip new">transformation · XSLT/ST</span></div></div>
+      <div class="tgroup"><h3>Funções</h3><div class="chips"><span class="chip">functionGroup</span><span class="chip new">functionGroupInclude</span><span class="chip">functionModule · RFC</span></div></div>
+      <div class="tgroup"><h3>Autorização</h3><div class="chips"><span class="chip new">authorizationField</span><span class="chip new">authorizationObject</span><span class="chip new">package</span></div></div>
+      <div class="tgroup"><h3>Operações</h3><div class="chips"><span class="chip">getObject</span><span class="chip">getSource</span><span class="chip">createShell</span><span class="chip">setSource</span><span class="chip">lock / unlock</span><span class="chip">activate / activateMany</span><span class="chip">deploy*</span><span class="chip">deployMany</span><span class="chip">deleteObject</span></div></div>
+    </div>
+  </section>
+
+  <!-- sem coleção ADT: driver classrun -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>driver classrun</b><span>sm30.mjs · tran.mjs · enho.mjs · brf.mjs · forms.mjs</span></div>
+      <h2>Sem coleção ADT? A API oficial, por driver.</h2>
+      <p class="lead">Para o que só existia na GUI, a lib gera o fonte ABAP, cria a classe no <code>$TMP</code>, executa em sessão nova stateless e apaga o driver no fim — o mesmo padrão, cinco vezes.</p>
+    </div>
+    <div class="body cols cols-3">
+      <div class="card chan c-run"><span class="tag">FDT0</span><h3>BRF+ · decision table</h3><p><code>deployDecisionTable</code> cria app local + elementos + tabela + função pela <code>cl_fdt_factory</code> e testa dentro do driver; <code>executarFuncao</code> acha por nome e processa; <code>deleteAplicacao</code>. Assinatura tirada dos demos <code>FDT_DEMO_%</code> do próprio sistema.</p><p><span class="pill ok">medido 2026-08-30 · E2E 6/6</span></p></div>
+      <div class="card chan c-run"><span class="tag">ENHO</span><h3>BAdI implementation</h3><p><code>cl_enh_factory</code> + <code>cl_enh_tool_badi_impl</code> — a via do abapGit. O POST do ADT não cria no 758 (e deixa órfã na TADIR, que a lib também remove).</p></div>
+      <div class="card chan c-run"><span class="tag">TRAN</span><h3>Transação · SE93</h3><p><code>RPY_TRANSACTION_INSERT</code>: report, dialog, parâmetro (SM30) e variante; prova por <code>readTable</code> TSTC/TSTCP.</p></div>
+      <div class="card chan c-run"><span class="tag">TOBJ</span><h3>Diálogo SM30</h3><p><code>OBJ_GENERATE</code> + gerador da SE54 — a manutenção de tabela nasce sem GUI; prova por TVDIR.</p></div>
+      <div class="card chan c-run"><span class="tag">SSFO · SFPF</span><h3>Forms · render como assert</h3><p>Smart Form vira PDF/ASCII por <code>CONVERT_OTF</code> sem ADS; Adobe Form lê a interface e roda <code>FP_JOB_*</code>. Criar form segue sendo GUI.</p></div>
+      <div class="card"><h3>Por efeito colateral</h3><p>O publish do <code>serviceBinding</code> <b>V2</b> gera a família Gateway inteira — IWMO, IWSV, IWVB, IWSG, IWOM (16% do custom medido). Com isso a cobertura da TADIR custom chega a <b>~90%</b>.</p></div>
+    </div>
+  </section>
+
+  <!-- CTS: anatomia e diff -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>CTS</b><span>cts.mjs · receita-change-request.md · receita-brfplus.md</span></div>
+      <h2>A change request como raio-X — e o diff contra o sistema.</h2>
+      <p class="lead">Duas vias que não veem a mesma coisa: o ADT consolida e enriquece; as tabelas E070/E071/E071K são as únicas com as entradas de CHAVE. <code>anatomia</code> cruza as duas.</p>
+    </div>
+    <div class="body cols cols-3">
+      <div class="card chan c-soap"><h3>TABKEY fatiado</h3><p><code>{ fatiar: true }</code> corta a chave concatenada pelo layout do dicionário (<code>DDIF_FIELDINFO_GET</code>): <code>300D1411Z0</code> vira <code>{ MANDT, SPRAS, WERKS, SOBSL }</code> — e <code>lerLinhaDaChave</code> relê a linha para provar o corte.</p></div>
+      <div class="card chan c-soap"><h3><code>diff</code> TR × sistema</h3><p>Por entrada: TADIR (existe), VRSD (versão numerada posterior = <b>alterado</b>), E071 da família (<b>em edição</b> agora), <code>changedAt</code> convertido pelo fuso da TTZCU. Vereditos: igual · alterado-depois · em-edicao · noutra-tr-depois · inexistente · por-chave.</p></div>
+      <div class="card chan c-soap"><h3>Anatomia de BRF+</h3><p>Tipo sem coleção ADT se revela pela TR: catálogo <code>FDT_ADMN_0000</code> (app real: 76 objetos), duas vias de transporte, e o custom que <b>não passa pela TADIR</b>.</p></div>
+      <div class="callout" style="grid-column: 1 / -1"><b>Medido no s4h 758.</b><span>Versão numerada só nasce quando o conteúdo muda — transporte de cópias re-carimba o ponteiro sem provar alteração; a leitura do CTS é stateless (sessão órfã derruba o ADT stateful).</span></div>
+    </div>
+  </section>
+
+  <!-- teste -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>ADT REST</b><span>qualidade</span></div>
+      <h2>Testar e ler dados sem sair do fluxo.</h2>
+    </div>
+    <div class="body cols cols-3">
+      <div class="card">
+        <h3><code>runUnitTests</code></h3>
+        <p>Dispara o ABAP Unit de uma classe e devolve o resultado parseado — alarmes por método, não um XML cru.</p>
+      </div>
+      <div class="card">
+        <h3><code>runUnitTestsWithCoverage</code></h3>
+        <p>Mesmo ciclo, com cobertura de linhas. Falha se ficar abaixo do <code>threshold</code> — padrão <b>90%</b>.</p>
+      </div>
+      <div class="card">
+        <h3><code>dataPreview</code></h3>
+        <p>SQL contra o sistema, <b>somente leitura</b>: aceita <code>SELECT</code>/<code>WITH</code> e recusa qualquer verbo de escrita ou DDL antes de sair da máquina.</p>
+      </div>
+      <div class="card" style="grid-column: 1 / -1">
+        <h3><code>deployClassWithTests</code></h3>
+        <p>Classe principal + includes + classe de teste local num único deploy, com lock/unlock e ativação em sessão nova. É o caminho de entrega: código e teste sobem juntos.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- SOAP -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>SOAP RFC</b><span>rfc-soap.mjs</span></div>
+      <h2>FM remote-enabled por HTTP puro.</h2>
+      <p class="lead">O elemento do Body é o nome do FM; parâmetros viram elementos filhos. Alcança sistemas antigos desde que o nó esteja ativo na SICF.</p>
+    </div>
+    <div class="body split">
+      <div class="cols">
+        <div class="card chan c-soap"><h3><code>callFunction</code></h3><p>Qualquer FM remote-enabled, params e tabelas de entrada.</p></div>
+        <div class="card chan c-soap"><h3><code>ping</code></h3><p><code>STFC_CONNECTION</code> — traz release, SID, mandante e usuário no <code>RESPTEXT</code>.</p></div>
+        <div class="card chan c-soap"><h3><code>readTable</code></h3><p><code>RFC_READ_TABLE</code> com campos, <code>where</code>, limite e parse das linhas.</p></div>
+        <div class="card chan c-soap"><h3><code>callBapi</code></h3><p>Parse estruturado do <code>RETURN</code>: TYPE, CODE, MESSAGE, V1..V4.</p></div>
+      </div>
+      <pre><span class="c">POST {base}/sap/bc/soap/rfc?sap-client=250</span>
+<span class="c">Content-Type: text/xml; charset=utf-8</span>
+
+&lt;SOAP-ENV:Envelope&gt;
+  &lt;SOAP-ENV:Body&gt;
+    &lt;<span class="k">urn:STFC_CONNECTION</span>&gt;
+      &lt;REQUTEXT&gt;<span class="s">ping jbv-adt-client</span>&lt;/REQUTEXT&gt;
+    &lt;/urn:STFC_CONNECTION&gt;
+  &lt;/SOAP-ENV:Body&gt;
+&lt;/SOAP-ENV:Envelope&gt;
+
+<span class="c">→ 200 · ~350 ms · S4H 758 · 2026-08-26</span>
+<span class="s">SAP R/3 Rel. 758 Sysid: S4H … Logon_Data: 250/USER/E</span></pre>
+    </div>
+  </section>
+
+  <!-- classrun -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>classrun</b><span>classrun.mjs</span></div>
+      <h2>O agente executa ABAP e lê o console.</h2>
+      <p class="lead">Uma classe que implementa <code>if_oo_adt_classrun</code>; o body da resposta é a saída de <code>out-&gt;write</code>. ~80 ms no S4H.</p>
+    </div>
+    <div class="body split">
+      <div class="cols">
+        <div class="card chan c-run"><h3><code>runClass</code></h3><p>Executa uma classe já ativa. Com <code>novaSessao: true</code> abre sessão limpa antes de rodar.</p></div>
+        <div class="card chan c-run"><h3><code>deployAndRun</code></h3><p>Cria, ativa e executa em sessão nova, numa chamada. É o driver de POC: monta BDCDATA, chama a transação, devolve a <code>BDCMSGCOLL</code> como JSON.</p></div>
+      </div>
+      <div class="cols">
+        <div class="callout"><b>HTTP 200 não é sucesso.</b><span>Erro de execução vem com status 200 e a mensagem no body. A lib interpreta o body, não o status.</span></div>
+        <div class="callout"><b>O load antigo fica preso à sessão que fez o deploy.</b><span>Causa-raiz medida: a mesma sessão stateful devolve a classe velha indefinidamente; uma sessão nova executa a versão nova de primeira. <code>deployAndRun</code> já faz isso sozinho.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- wdi5 -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>wdi5</b><span>receita-wdi5-fiori.md · examples/wdi5</span></div>
+      <h2>Dirigir o app Fiori sem Eclipse, sem BAS, sem deploy.</h2>
+      <p class="lead">O próprio ADT serve o preview Fiori Elements de um service binding OData V4 (<code>…/odatav4/feap</code>). O wdi5 abre esse preview em Chrome headless, acha os controles UI5 e opera a tela.</p>
+    </div>
+    <div class="body split">
+      <div class="cols">
+        <div class="card chan c-ui"><h3>Superfície RAP por ADT REST</h3><p>CDS + SRVD + SRVB categoria 0 publicado — criados pela própria lib. O app-alvo nasce do mesmo cliente que o testa.</p></div>
+        <div class="card chan c-ui"><h3>Harness pronto em <code>examples/wdi5</code></h3><p><code>wdio.conf.js</code> + <code>preview.test.js</code> parametrizados por env: copiar e rodar. FilterBar → Go → linhas do OData V4 → <code>app.png</code>.</p></div>
+        <p><span class="pill ok">validado · S4H 758 · wdio 9 + wdi5 3.0.11 · 3/3 verdes</span></p>
+      </div>
+      <div class="cols">
+        <div class="callout"><b>Auth do browser é por injeção de cookie.</b><span>Basic no browser pendura o XHR no headless e mata o CSRF do <code>$batch</code>; o mesmo acontece com humano no Edge. O harness loga por HTTP e injeta o cookie — o browser nunca manda <code>Authorization</code>.</span></div>
+        <div class="callout good"><b>Screenshot como assert visual.</b><span><code>saveScreenshot</code> depois do poll de linhas: o agente lê o PNG e vê o app renderizado, sem login manual.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ciclo -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>receita</b><span>receita-ciclo-escrita-verificacao.md</span></div>
+      <h2>Arrange → act → assert, cruzando canais.</h2>
+      <p class="lead">Cada fase usa o canal que lhe convém, e o assert acontece numa LUW diferente da escrita — é isso que prova que persistiu.</p>
+    </div>
+    <div class="body cols">
+      <div class="flow">
+        <div class="card step c-adt"><small>ADT REST</small><h3>Arrange</h3><p>Cria e ativa a classe driver no <code>$TMP</code>.</p></div>
+        <div class="arrow">→</div>
+        <div class="card step c-run"><small>classrun</small><h3>Act</h3><p>BAPI + <code>BAPI_TRANSACTION_COMMIT</code> na <b>mesma</b> LUW.</p></div>
+        <div class="arrow">→</div>
+        <div class="card step c-soap"><small>SOAP RFC</small><h3>Assert</h3><p><code>readTable</code> em outra LUW confirma a gravação.</p></div>
+      </div>
+      <div class="callout"><b>Armadilha silenciosa, medida no S4H.</b><span>BAPI de escrita numa chamada SOAP e o COMMIT em outra: cada POST é uma LUW própria. O commit responde "ok" e <b>nada é gravado</b>. Escrita via BAPI exige BAPI + COMMIT no mesmo driver.</span></div>
+    </div>
+  </section>
+
+  <!-- BDC -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>receita</b><span>BDC sem GUI</span></div>
+      <h2>Dirigir uma transação sem SAP GUI, em qualquer release.</h2>
+    </div>
+    <div class="body cols cols-2">
+      <div class="card chan c-run">
+        <span class="tag">ABAP ≥ 7.52</span>
+        <h3>BDC via driver classrun</h3>
+        <p>A classe driver monta a <code>BDCDATA</code>, faz <code>CALL TRANSACTION</code> e escreve a <code>BDCMSGCOLL</code> estruturada no console. O loop se autocorrige: a mensagem de tela errada volta como dado, não como screenshot.</p>
+        <p><span class="pill ok">validado · VA03 · S4H 758 e SXD 816</span></p>
+      </div>
+      <div class="card chan c-soap">
+        <span class="tag">basis &lt; 7.52</span>
+        <h3>Wrapper FM RFC via SOAP</h3>
+        <p><code>deployFunctionModule</code> + <code>buildBdcWrapperSource</code> criam por ADT REST um FM remote-enabled que faz o BDC; a chamada vai por SOAP RFC. Mesmo resultado, por HTTP puro.</p>
+        <p><span class="pill ok">validado · EV_SUBRC 1001 · msg E V1 302</span></p>
+      </div>
+      <div class="callout" style="grid-column: 1 / -1"><b>Gotcha do FM RFC, também silencioso.</b><span>O <code>processingType="rfc"</code> do create é descartado — o FM nasce "normal". Só um PUT do metadata com lock persiste o modo RFC. A lib já faz os dois passos.</span></div>
+    </div>
+  </section>
+
+  <!-- E2E entregue -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>receita</b><span>receita-e2e-classe-entregue.md</span></div>
+      <h2>E2E do código entregue: o teste não controla o ambiente, ele o revela.</h2>
+      <p class="lead">Driver classrun descartável chamando a classe real do cliente, com o caminho inteiro — integração + posting FI com COMMIT — e assert em outra LUW. Validado no SXD (KART) 816.</p>
+    </div>
+    <div class="body split">
+      <div class="cols">
+        <p class="lead" style="font-size:1em">O código estava "pronto" havia semanas: unit tests verdes, simulação ok. O primeiro posting real revelou, em camadas, o que nem ABAP Unit com seams dublados nem <code>i_simulation</code> alcançam:</p>
+        <p><span class="pill warn">4 achados que só o E2E dirigido expõe</span></p>
+      </div>
+      <div class="layers">
+        <div class="layer"><div><b>Mestre ausente</b><span>Os BPs da config só existiam no mandante de desenvolvimento.</span></div></div>
+        <div class="layer"><div><b>Recon alternativa</b><span>Conta de reconciliação da config ≠ AKONT do fornecedor exige configuração extra.</span></div></div>
+        <div class="layer"><div><b>Período herdado</b><span>O posting herdava a data do documento original — período fechado. Virou questão funcional.</span></div></div>
+        <div class="layer"><div><b>Bug de regra de negócio</b><span>Divergência comparava a soma dos impostos em vez do valor por imposto — caía sempre em divergência.</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- dois sistemas -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>validação</b><span>laboratório → cliente</span></div>
+      <h2>Receita prova mecanismo, não versão.</h2>
+      <p class="lead">Tudo o que foi medido no laboratório foi re-medido num sistema de cliente. Zero divergência.</p>
+    </div>
+    <div class="body cols">
+      <div class="systems">
+        <div class="sys">
+          <div class="name">S4H<small>release 758 · mandante 250 · laboratório</small></div>
+          <ul>
+            <li>Canais: ADT, classrun, SOAP RFC, wdi5, probe</li>
+            <li>Ciclo escrita-verificação, BDC classrun, wrapper FM RFC</li>
+            <li>Preview Fiori Elements dirigido por wdi5</li>
+            <li>Superfície <code>YJBV_POC_*</code> mantida como app-alvo</li>
+          </ul>
+        </div>
+        <div class="sys">
+          <div class="name">SXD<small>release 816 · mandante 100/200 · KART</small></div>
+          <ul>
+            <li>Probe, <code>readTable</code>, <code>callBapi</code> — 91 empresas</li>
+            <li>Ciclo arrange → act → assert completo</li>
+            <li>Wrapper FM RFC com FMODE='R', BDC VA03</li>
+            <li>E2E da classe entregue com posting FI real</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout good"><b>11/11 PASS no SXD, objetos $TMP apagados.</b><span>E as receitas viraram procedimento ativo: a skill <code>sap-testes</code> encadeia probe → matriz de canais → ciclo → decisão classrun vs wrapper → asserts → regras de laboratório.</span></div>
+    </div>
+  </section>
+
+  <!-- guard-rails -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>segurança</b></div>
+      <h2>Guard-rails no código, não em documento.</h2>
+      <p class="lead">Regras inegociáveis que a lib aplica antes de a requisição sair da máquina.</p>
+    </div>
+    <div class="body guards">
+      <div class="guard"><code>assertZY</code><span>Só objetos Z/Y são criados, alterados ou apagados. Qualquer outro nome é recusado.</span></div>
+      <div class="guard"><code>assertReadOnly</code><span><code>dataPreview</code> aceita só SELECT/WITH e recusa INSERT, UPDATE, DELETE, MODIFY, DROP, CALL…</span></div>
+      <div class="guard"><code>deleteObject</code><span>Exige objeto Z/Y <b>e</b> <code>confirm: true</code> — irreversível, sem atalho.</span></div>
+      <div class="guard"><code>unlock</code><span>Sempre em <code>try/finally</code>. Nenhum objeto fica travado por erro no meio do caminho.</span></div>
+      <div class="guard"><code>activate</code><span>Sempre em sessão nova — evita o load antigo preso à sessão stateful.</span></div>
+      <div class="guard"><code>senha</code><span>Perguntada na hora, vive só em memória, <b>nunca toca o disco</b>. O cache guarda apenas cookie + token CSRF, com TTL de 30 min.</span></div>
+    </div>
+  </section>
+
+  <!-- infra -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>infraestrutura</b></div>
+      <h2>O resto que faz a lib funcionar no dia a dia.</h2>
+    </div>
+    <div class="body cols cols-3">
+      <div class="card"><h3>Sistemas vêm do SAP GUI</h3><p><code>landscape.mjs</code> lê o <code>SAPUILandscape.xml</code>. <code>sistemas.json</code> só complementa URL do ICM e cliente. Conexão por alias SID de 3 letras.</p></div>
+      <div class="card"><h3>Busca de objetos</h3><p><code>search.mjs</code> usa o Repository Information System — o mesmo serviço por trás do Ctrl+Shift+A do Eclipse.</p></div>
+      <div class="card"><h3>Grafo de dependências</h3><p><code>deps.mjs</code> extrai objetos Z/Y referenciados no fonte, ignorando comentários e declarações locais, com travas por prefixo e profundidade.</p></div>
+      <div class="card"><h3>Layout em disco</h3><p><code>layout.mjs</code> grava por sistema / mandante / pacote, com metadados de origem. <code>tipos/</code> (um módulo por tipo de objeto) resolve o tipo por sinônimo em PT e EN.</p></div>
+      <div class="card"><h3>Log HTTP</h3><p><code>--debug</code> ou <code>-v</code> mostram método, URL, status, tempo e bytes de cada chamada.</p></div>
+      <div class="card"><h3>Testes offline</h3><p>Vitest sobre fixtures capturadas nos spikes: parsers, canais, dependências e transporte rodam sem SAP.</p></div>
+    </div>
+  </section>
+
+  <!-- fila -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>fila</b><span>docs/fila.md</span></div>
+      <h2>O que já fechou e o que ainda falta.</h2>
+      <p class="lead">Um item por sessão; o estado em voo mora na própria fila. <b>23 fechados · 14 abertos.</b></p>
+    </div>
+    <div class="body queue">
+      <div class="qi"><span class="box done"></span><span>TABKEY fatiado pelo layout — chave de transporte vira registro legível</span><span class="why">medido 2026-08-30</span></div>
+      <div class="qi"><span class="box done"></span><span>Diff "TR × sistema" — <code>cts.diff</code> com vereditos por entrada e por chave</span><span class="why">medido 2026-08-30</span></div>
+      <div class="qi"><span class="box done"></span><span>BRF+ — anatomia pela TR e <b>decision table criada e executada pela lib</b></span><span class="why">E2E 6/6 · 2026-08-30</span></div>
+      <div class="qi"><span class="box done"></span><span>SM30, SE93, BAdI, XSLT, forms, Gateway V2 — o "só na GUI" caiu em série</span><span class="why">itens 16–20 · 08-29/30</span></div>
+      <div class="qi"><span class="box"></span><span>Transport request por ADT — criar TR/tarefa (a leitura já existe)</span><span class="why">próximo · item 24</span></div>
+      <div class="qi"><span class="box"></span><span>ATC, assert ST22, application log, trace de runtime — qualidade e diagnóstico</span><span class="why">itens 27–30</span></div>
+      <div class="qi"><span class="box"></span><span>node-rfc — canal de compatibilidade para ECC antigo (até 4.6C)</span><span class="why">bloqueado: aguarda sistema sem SOAP RFC</span></div>
+    </div>
+  </section>
+
+  <!-- ideias (gerado) -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>ideias</b><span>docs/ideias.md · <span data-total-ideias></span> abertas · nada aqui foi medido</span></div>
+      <h2>O que ainda é hipótese.</h2>
+      <p class="lead">Brainstorm revisável — o estágio antes da fila. Uma ideia só vira trabalho quando promovida, e só vira recurso quando medida.</p>
+    </div>
+    <div class="body ideias" id="ideias"></div>
+  </section>
+
+  <!-- novidades (gerado) -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>o que há de novo</b><span>desde <span data-marco></span></span></div>
+      <h2>O que mudou desde a última vez que isto foi apresentado.</h2>
+      <p class="lead" data-novidades-lead></p>
+    </div>
+    <div class="body novidades" id="novidades"></div>
+  </section>
+
+  <!-- histórico (gerado) -->
+  <section class="slide">
+    <div class="head">
+      <div class="eyebrow"><b>histórico</b><span>git log · <span data-total-commits></span> entradas</span></div>
+      <h2>Como a lib chegou até aqui.</h2>
+    </div>
+    <div class="body timeline" id="historico"></div>
+  </section>
+
+  <!-- fechamento -->
+  <section class="slide cover">
+    <div class="eyebrow"><b>resumo</b></div>
+    <div class="body">
+      <h1>Escolhe o canal pelo sistema. <span>Prova por medição.</span></h1>
+      <p class="lead">Do S/4HANA ao ECC antigo, o mesmo cliente: ADT REST para o ciclo de vida, classrun para executar, SOAP RFC para alcançar, wdi5 para a tela, probe para decidir. Cada receita vale porque foi medida — no laboratório e no cliente.</p>
+    </div>
+    <div class="facts">
+      <div class="fact"><span class="v mono" style="font-size:1.1em">github.com/jorisveloso/jbv-adt-client</span><span class="k">repositório</span></div>
+    </div>
+  </section>
+
+</main>
+
+<div class="hud">
+  <span class="counter"><span id="cur">1</span> / <span id="total">–</span></span>
+  <span>← → para navegar</span>
+  <div class="nav">
+    <button type="button" id="prev" aria-label="Slide anterior">←</button>
+    <button type="button" id="next" aria-label="Próximo slide">→</button>
+  </div>
+</div>
+
+<script>
+  // ============================================================================
+  // DADOS DA APRESENTAÇÃO — é aqui que ela evolui. Ver apresentacao/README.md.
+  //
+  // VERSAO: o commit da lib que este deck descreve. Atualize junto com os slides.
+  // MARCO:  o commit em que o deck foi apresentado pela última vez. Tudo em HISTORICO
+  //         depois dele aparece no slide "O que há de novo". Ao apresentar de novo,
+  //         mova o MARCO para a VERSAO atual.
+  // HISTORICO: uma entrada por commit que mudou recurso (ordem cronológica, mais antigo
+  //         primeiro). Commits de manutenção pura não precisam entrar.
+  // ============================================================================
+  var VERSAO = { hash: 'e48e97c', data: '2026-08-30' };
+  var MARCO  = { hash: '677d5eb', data: '2026-08-26' };
+  var HISTORICO = [
+    { data: '2026-08-21', hash: '5c7aa7e', titulo: 'Commit inicial',
+      detalhe: 'Cliente ADT REST: transporte, sessão, registro de tipos, lock/activate, ABAP Unit com cobertura, deploy de objetos.' },
+    { data: '2026-08-21', hash: '5febdcf', titulo: 'Exemplos e documentação',
+      detalhe: 'examples/ com conexão, listagem e criação; setup-guide para o primeiro sistema.' },
+    { data: '2026-08-26', hash: 'a7f2ce4', titulo: 'Canais SOAP RFC e classrun',
+      detalhe: 'rfc-soap.mjs (callFunction, ping, readTable, callBapi) e classrun.mjs (runClass, deployAndRun). Testes SAP dirigidos por agente.' },
+    { data: '2026-08-26', hash: '6381f84', titulo: 'probe() e ciclo escrita-verificação',
+      detalhe: 'Mapa de canais por sistema; arrange → act → assert cruzando LUW. Causa-raiz do load antigo do classrun: sessão stateful.' },
+    { data: '2026-08-26', hash: '0c0d70b', titulo: 'Medição da LUW',
+      detalhe: 'BAPI + COMMIT em chamadas SOAP separadas não persiste; no mesmo driver classrun, persiste.' },
+    { data: '2026-08-26', hash: 'e9e68d8', titulo: 'Fila do arsenal',
+      detalhe: 'docs/fila.md — um item por sessão, estado em voo na própria fila.' },
+    { data: '2026-08-26', hash: '677d5eb', titulo: 'FUGR/FF por ADT REST',
+      detalhe: 'deployFunctionGroup, deployFunctionModule (RFC) e buildBdcWrapperSource — escrita por BDC em sistemas sem classrun.' },
+    { data: '2026-08-26', hash: '5942b6c', titulo: 'Skill sap-testes',
+      detalhe: 'As receitas viram procedimento ativo: probe → matriz de canais → ciclo → decisão de escrita → asserts.' },
+    { data: '2026-08-26', hash: 'e6b6eb9', titulo: 'Canal wdi5',
+      detalhe: 'Preview Fiori Elements servido pelo ADT (feap) dirigido em Chrome headless; auth por injeção de cookie.' },
+    { data: '2026-08-26', hash: '5dad351', titulo: 'Harness wdi5 executável',
+      detalhe: 'examples/wdi5 parametrizado por env; screenshot como assert visual.' },
+    { data: '2026-08-26', hash: 'c5c2bcf', titulo: 'Re-validação no SXD (KART) 816',
+      detalhe: '11/11 PASS num sistema de cliente, zero divergência vs laboratório.' },
+    { data: '2026-08-26', hash: 'a6d04c3', titulo: 'Receita E2E de código entregue',
+      detalhe: 'Driver classrun chamando a classe real do cliente com posting FI; 4 achados que unit test e simulação não pegam.' },
+    { data: '2026-08-28', hash: 'd503329', titulo: 'Um módulo por tipo de objeto',
+      detalhe: 'tipos/<libKey>.mjs descoberto por pasta: adicionar um tipo = adicionar um arquivo. Catálogo gerado e testado.' },
+    { data: '2026-08-29', hash: '3232841', titulo: '8 tipos novos por ADT',
+      detalhe: 'tableType, accessControl, package, functionGroupInclude, authorizationField/Object, lockObject (prefixo E medido), transformation depois.' },
+    { data: '2026-08-29', hash: 'ef8c73b', titulo: 'Change request como raio-X',
+      detalhe: 'cts.mjs: as DUAS vias (ADT consolida; E070/E071/E071K têm as chaves), tarefas antes da liberação, LIMU posicional.' },
+    { data: '2026-08-29', hash: 'c1d1e0b', titulo: 'Cobertura medida pela TADIR',
+      detalhe: '85.304 objetos custom no s4h; o catálogo cobria 76% — o plano de tipos passou a ser guiado por número, não palpite.' },
+    { data: '2026-08-29', hash: '1289570', titulo: 'Service binding OData V2',
+      detalhe: 'O publish V2 gera a família Gateway/SEGW inteira por efeito (IWMO, IWSV, IWVB, IWSG, IWOM) — 16% do custom coberto de uma vez.' },
+    { data: '2026-08-29', hash: 'b4368b7', titulo: 'SM30 sem GUI',
+      detalhe: 'sm30.mjs: OBJ_GENERATE + gerador da SE54 por driver classrun; TOBJ é só leitura no ADT do 758.' },
+    { data: '2026-08-29', hash: '0d100f0', titulo: 'Transação (SE93) sem GUI',
+      detalhe: 'tran.mjs: RPY_TRANSACTION_INSERT — report, dialog, parâmetro sobre SM30 e variante; prova por readTable.' },
+    { data: '2026-08-30', hash: '9a7c288', titulo: 'Smart Forms e Adobe Forms como assert',
+      detalhe: 'forms.mjs: render por CONVERT_OTF (PDF/ASCII, sem ADS) e interface FPINTERFACE + FP_JOB_* — o form entregue prova que renderiza.' },
+    { data: '2026-08-30', hash: '021c707', titulo: 'XSLT pelo ADT e BAdI pela API',
+      detalhe: 'transformation.mjs (XSLT/ST) e enho.mjs (cl_enh_factory em driver — o POST do ADT não cria ENHO no 758 e deixa órfã, que a lib remove).' },
+    { data: '2026-08-30', hash: 'c014ff6', titulo: 'TABKEY fatiado pelo layout',
+      detalhe: 'A chave concatenada da E071K vira registro nomeado (DDIF_FIELDINFO_GET, corte por LENG em caracteres, curinga *); a releitura prova o corte.' },
+    { data: '2026-08-30', hash: '5038c2f', titulo: 'Diff "TR × sistema"',
+      detalhe: 'cts.diff: TADIR + VRSD (versão numerada posterior = alterado) + E071 da família + changedAt pelo fuso da TTZCU; leitura do CTS stateless.' },
+    { data: '2026-08-30', hash: 'd9de4af', titulo: 'Anatomia de BRF+ pela TR',
+      detalhe: 'Catálogo FDT_ADMN_0000, duas vias de transporte, o custom fora da TADIR — tipo sem coleção ADT lido de ponta a ponta.' },
+    { data: '2026-08-30', hash: 'e48e97c', titulo: 'BRF+ criado pela lib — decision table',
+      detalhe: 'brf.mjs: app local + elementos + decision table + função pela cl_fdt_factory, executada e apagada; assinatura tirada dos demos FDT_DEMO_% do próprio sistema. E2E 6/6.' }
+  ];
+
+  // IDEIAS: espelho de docs/ideias.md — só as ABERTAS, uma linha por ideia, agrupadas como lá.
+  //         Promoveu ou descartou no ideias.md? Tire daqui. Fonte canônica é o .md, não isto.
+  var IDEIAS = [
+    { grupo: 'Ergonomia da lib', itens: [
+      { n: 'I30', titulo: 'executarDriver genérico', hip: 'tran/sm30/forms/enho/brf repetem o trio deploy+parse+delete; extrair quando a fricção doer de novo (gatilho já atingido).' },
+      { n: 'I31', titulo: 'Verificação pós-escrita no deploy', hip: '{ verificar: true } faz o GET/prova ao final — "criou" passa a significar "está lá".' },
+      { n: 'I32', titulo: 'Higiene de drivers órfãos', hip: 'Varredura do $TMP por Y_TRAN%/Y_SM30%… com deleteObject — resíduo de execução é erro, não estado.' }
+    ]}
+  ];
+
+  (function render() {
+    function el(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+    function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+    var totalIdeias = IDEIAS.reduce(function (a, g) { return a + g.itens.length; }, 0);
+    Array.prototype.forEach.call(document.querySelectorAll('[data-total-ideias]'), function (n) { n.textContent = totalIdeias; });
+    var ig = document.getElementById('ideias');
+    IDEIAS.forEach(function (g) {
+      var box = el('div', 'igroup');
+      box.appendChild(el('h3', null, esc(g.grupo)));
+      g.itens.forEach(function (i) {
+        var r = el('div', 'idea');
+        r.appendChild(el('span', 'n', esc(i.n)));
+        r.appendChild(el('div', null, '<b>' + esc(i.titulo) + '</b><span>' + esc(i.hip) + '</span>'));
+        box.appendChild(r);
+      });
+      ig.appendChild(box);
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-versao]'), function (n) { n.textContent = VERSAO.hash; });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-data]'), function (n) { n.textContent = VERSAO.data; });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-marco]'), function (n) { n.textContent = MARCO.hash + ' · ' + MARCO.data; });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-total-commits]'), function (n) { n.textContent = HISTORICO.length; });
+
+    var iMarco = -1;
+    HISTORICO.forEach(function (h, i) { if (h.hash === MARCO.hash) iMarco = i; });
+    var novos = HISTORICO.slice(iMarco + 1);
+
+    var lead = document.querySelector('[data-novidades-lead]');
+    lead.textContent = novos.length
+      ? novos.length + (novos.length === 1 ? ' entrada nova' : ' entradas novas') + ' até ' + VERSAO.hash + '.'
+      : 'Nada mudou desde ' + MARCO.hash + ' — este deck já foi apresentado nesta versão.';
+
+    var nv = document.getElementById('novidades');
+    novos.slice().reverse().forEach(function (h) {
+      var c = el('div', 'card');
+      c.appendChild(el('div', 'd', '<b>' + esc(h.hash) + '</b>' + esc(h.data)));
+      c.appendChild(el('h3', null, esc(h.titulo)));
+      c.appendChild(el('p', null, esc(h.detalhe)));
+      nv.appendChild(c);
+    });
+
+    var tl = document.getElementById('historico');
+    HISTORICO.forEach(function (h, i) {
+      var cls = 'tl' + (i > iMarco ? ' novo' : '') + (h.hash === MARCO.hash ? ' marco' : '');
+      var r = el('div', cls);
+      r.appendChild(el('span', 'd', esc(h.data)));
+      r.appendChild(el('span', 'h', esc(h.hash)));
+      r.appendChild(el('div', 't', '<b>' + esc(h.titulo) + '</b><span>' + esc(h.detalhe) + '</span>'));
+      tl.appendChild(r);
+    });
+  })();
+
+  (function nav() {
+    var deck = document.getElementById('deck');
+    var slides = Array.prototype.slice.call(deck.querySelectorAll('.slide'));
+    var cur = document.getElementById('cur');
+    var total = document.getElementById('total');
+    var bar = document.getElementById('progress');
+    total.textContent = slides.length;
+
+    function index() { return Math.round(deck.scrollLeft / deck.clientWidth); }
+    function go(i) {
+      i = Math.max(0, Math.min(slides.length - 1, i));
+      deck.scrollTo({ left: i * deck.clientWidth });
+      try { localStorage.setItem('arsenal-slide', String(i)); } catch (e) {}
+    }
+    function update() {
+      var i = index();
+      cur.textContent = i + 1;
+      bar.style.width = ((i + 1) / slides.length * 100) + '%';
+    }
+    deck.addEventListener('scroll', function () { window.requestAnimationFrame(update); });
+    window.addEventListener('resize', function () { go(index()); });
+    document.getElementById('prev').addEventListener('click', function () { go(index() - 1); });
+    document.getElementById('next').addEventListener('click', function () { go(index() + 1); });
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(index() + 1); }
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(index() - 1); }
+      else if (e.key === 'Home') { go(0); }
+      else if (e.key === 'End') { go(slides.length - 1); }
+    });
+
+    var start = 0;
+    try { start = parseInt(localStorage.getItem('arsenal-slide') || '0', 10) || 0; } catch (e) {}
+    if (start > 0) { deck.scrollLeft = start * deck.clientWidth; }
+    update();
+  })();
+</script>
+</body>
+</html>

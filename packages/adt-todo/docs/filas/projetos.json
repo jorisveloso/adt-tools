@@ -1,0 +1,11 @@
+{
+  "_comentario": "Catálogo opcional das filas do adt-todo. Cada projeto: { origem: onde o trabalho vive de verdade (ex.: fila local, azure devops), quandoIntegrado: como/onde a skill sincroniza }. Chaves com _ no início são só comentário. Arquivo versionado; senha/config sensível NUNCA aqui.",
+  "jbv-adt-client": {
+    "origem": "fila local docs/fila.md do repo jbv-adt-client",
+    "quandoIntegrado": "skill /next lê o arquivo externo e trata nesta fila de espelho"
+  },
+  "matt-pocock": {
+    "origem": "Azure DevOps (org ACC-SAP-Accelerate, projeto SAP Accelerate)",
+    "quandoIntegrado": "skill /next sincroniza tickets via tools/devops.mjs"
+  }
+}

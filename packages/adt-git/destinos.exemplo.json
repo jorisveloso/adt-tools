@@ -1,0 +1,12 @@
+{
+  "_leia": [
+    "Copie este arquivo para destinos.json (que é gitignored) e ajuste os caminhos.",
+    "Uma entrada por cliente — o nome da chave é o mesmo `cliente` que aparece em sistemas.json.",
+    "raiz = pasta onde os objetos daquele cliente são gravados. DEVE ficar FORA deste repositório:",
+    "código de cliente não pode entrar num repo pessoal, nem por acidente.",
+    "prefixos e profundidadeMaxima são as travas do `clone` — ainda não implementado."
+  ],
+
+  "acme":   { "raiz": "C:\\repositorio\\clientes\\acme\\abap",   "prefixos": ["ZACME", "Z"], "profundidadeMaxima": 1 },
+  "globex": { "raiz": "C:\\repositorio\\clientes\\globex\\abap", "prefixos": ["Z"],          "profundidadeMaxima": 1 }
+}

@@ -1,0 +1,24 @@
+# Sessão ADT: cookie + token CSRF. Não tem senha, mas dá acesso ao SAP enquanto não expira.
+.sessao.json
+
+# Caminhos locais de cada cliente.
+destinos.json
+
+# Host, mandante e cliente de cada sistema — infraestrutura de cliente não versiona.
+sistemas.json
+
+# Rastro do `--debug`. Tem URL, usuário e nome de objeto de cliente — não versiona.
+.abapgit.log
+
+# Permissões aprovadas nesta máquina. Acumula nome de objeto de cliente nos comandos aprovados
+# (`checkout <OBJETO>`), e caminho local. Já é coberto pelo gitignore global, mas a proteção não
+# pode morar só fora do repositório.
+.claude/settings.local.json
+
+# Rede de segurança: nenhum objeto de cliente deve estar dentro deste repositório. Se algum aparecer,
+# é sinal de que o destino foi configurado errado — corrija o destinos.json, não este arquivo.
+/clones/
+*.abap
+*.meta.json
+
+node_modules/

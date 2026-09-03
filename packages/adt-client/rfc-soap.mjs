@@ -1,0 +1,171 @@
+// rfc-soap.mjs — canal SOAP RFC: chamar FM remote-enabled por HTTP puro (/sap/bc/soap/rfc).
+//
+// POR QUE ESTE CANAL EXISTE: node-rfc/PyRFC foram arquivados pela SAP (05/2026) e dependem do
+// NW RFC SDK, de download restrito por S-user. O ICF expõe o mesmo poder por HTTP: qualquer FM
+// remote-enabled vira um POST com envelope SOAP e Basic Auth — o MESMO `cfg` do resto da lib
+// ({ base, user, pass, client }). Sem SDK, sem sessão ADT, sem CSRF. Alcança sistemas antigos
+// (ICF existe desde Web AS ~6.20), desde que o nó esteja ativo na SICF.
+//
+// Validado por spike no S4H rel. 758 em 2026-08-26 — ver docs/canal-soap-rfc.md. A gramática:
+//   • o elemento do Body é o NOME DO FM; import viram elementos filhos;
+//   • tabela vira <NOME><item>…</item></NOME>; estrutura vira elemento com filhos;
+//   • a resposta vem em <urn:NOME.Response>; erro vem como SOAP Fault (HTTP 500).
+// Restrições: tRFC/qRFC não passam por aqui; o usuário precisa de S_RFC no function group.
+//
+// ⚠️ A senha viaja em Basic a cada chamada (não há cookie). Nunca logar o header — só o nome.
+
+import { passo, detalhe, http as logHttp } from './log.mjs';
+
+const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Um parâmetro do FM → XML. A forma segue o TIPO do valor:
+// escalar → <NOME>v</NOME> · array (tabela) → <NOME><item>…</item></NOME> · objeto (estrutura) → filhos.
+function paramXml(nome, valor) {
+  const N = nome.toUpperCase();
+  if (valor === null || valor === undefined) return `<${N}></${N}>`;
+  if (Array.isArray(valor)) return `<${N}>${valor.map((i) => `<item>${filhos(i)}</item>`).join('')}</${N}>`;
+  if (typeof valor === 'object') return `<${N}>${filhos(valor)}</${N}>`;
+  return `<${N}>${esc(valor)}</${N}>`;
+}
+const filhos = (v) => (typeof v === 'object' && v !== null)
+  ? Object.entries(v).map(([k, x]) => `<${k.toUpperCase()}>${esc(x ?? '')}</${k.toUpperCase()}>`).join('')
+  : esc(v);
+
+export function buildEnvelope(fm, params = {}) {
+  const corpo = Object.entries(params).map(([k, v]) => paramXml(k, v)).join('\n      ');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+  <SOAP-ENV:Body>
+    <urn:${fm.toUpperCase()} xmlns:urn="urn:sap-com:document:sap:rfc:functions">
+      ${corpo}
+    </urn:${fm.toUpperCase()}>
+  </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>`;
+}
+
+// ---------- parse da resposta ----------
+// De propósito por regex, como os demais parsers da lib: o XML do ICF é raso e previsível,
+// e um parser DOM inteiro não paga o próprio peso aqui.
+
+// O ICF escapa os valores como entidade XML — '&' num campo da E07T chega como `&#38;` (medido
+// 2026-09-02, item 71: a MESMA descrição via ADT vinha 'SOAP & RFC' e via SOAP 'SOAP &#38; RFC').
+// Todo parser daqui desfaz o escape: o valor devolvido é o que está no banco, não o do fio.
+const desescapar = (s) => (s.includes('&') ? s
+  .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+  .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+  .replace(/&amp;/g, '&') : s);
+
+/** Valor do primeiro elemento <TAG>…</TAG>. */
+export const xmlField = (xml, tag) => {
+  const v = xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1];
+  return v == null ? null : desescapar(v);
+};
+
+/** Os <item> de uma tabela <NOME>…</NOME>, cada um como objeto {CAMPO: valor}. */
+export function xmlItems(xml, tabela) {
+  const secao = xml.match(new RegExp(`<${tabela}>([\\s\\S]*?)</${tabela}>`))?.[1] ?? '';
+  return [...secao.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(([, item]) =>
+    Object.fromEntries([...item.matchAll(/<([A-Z0-9_]+)>([^<]*)<\/\1>/g)].map(([, k, v]) => [k, desescapar(v)])));
+}
+
+/** Uma ESTRUTURA exportada <NOME><CAMPO>…</CAMPO>…</NOME>, como objeto {CAMPO: valor}. */
+export function xmlStruct(xml, tag) {
+  const secao = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1] ?? '';
+  return Object.fromEntries([...secao.matchAll(/<([A-Z0-9_]+)>([^<]*)<\/\1>/g)].map(([, k, v]) => [k, desescapar(v)]));
+}
+
+// ---------- a chamada ----------
+export async function callFunction(cfg, fm, params = {}) {
+  const FM = String(fm).toUpperCase();
+  passo(`soap-rfc: ${FM}`);
+  const url = `${cfg.base}/sap/bc/soap/rfc${cfg.client ? `?sap-client=${cfg.client}` : ''}`;
+  const headers = {
+    'Content-Type': 'text/xml; charset=utf-8',
+    SOAPAction: '',
+    Authorization: 'Basic ' + Buffer.from(`${cfg.user}:${cfg.pass}`).toString('base64'),
+  };
+  const t = Date.now();
+  const res = await fetch(url, { method: 'POST', headers, body: buildEnvelope(FM, params) });
+  const xml = await res.text();
+  logHttp('POST', url, res.status, Date.now() - t, xml.length);
+  // Fault chega como HTTP 500 com <faultstring> — é o "exceção do FM" deste canal.
+  const fault = xml.match(/<faultstring[^>]*>([^<]*)<\/faultstring>/)?.[1];
+  if (fault) throw new Error(`RFC ${FM} falhou (SOAP Fault): ${fault}`);
+  if (res.status >= 400) throw new Error(`RFC ${FM} falhou (HTTP ${res.status}): ${xml.slice(0, 200)}`);
+  return { status: res.status, xml };
+}
+
+// ---------- operações ----------
+
+/** Eco + identidade do sistema. O RESPTEXT do STFC_CONNECTION traz release/SID/logon de brinde. */
+export async function ping(cfg, { texto = 'ping adt-client' } = {}) {
+  const { xml } = await callFunction(cfg, 'STFC_CONNECTION', { REQUTEXT: texto });
+  const resptext = xmlField(xml, 'RESPTEXT') ?? '';
+  const m = resptext.match(/Rel\.\s+(\S+)\s+Sysid:\s+(\S+)\s+Date:\s+(\S+)\s+Time:\s+(\S+)\s+Logon_Data:\s+(\S+)/);
+  const [mandante, usuario, idioma] = (m?.[5] ?? '').split('/');
+  return {
+    ok: xmlField(xml, 'ECHOTEXT') === texto,
+    release: m?.[1] ?? null, sysid: m?.[2] ?? null, data: m?.[3] ?? null, hora: m?.[4] ?? null,
+    mandante: mandante || null, usuario: usuario || null, idioma: idioma || null,
+    resptext,
+  };
+}
+
+/**
+ * A exceção do RFC_READ_TABLE não aponta a causa quando o erro é de CAMPO: pedir um campo que a
+ * tabela não tem faz o FM levantar `TABLE_WITHOUT_DATA` — que se lê como "a tabela não tem dados"
+ * e manda procurar no lugar errado. Medido 2026-08-29 no S4H 758: `E071` com o campo `GENFLAG`
+ * (o nome certo é `GENNUM`) e com um campo inventado levantam a MESMA exceção; com `GENNUM`, lê.
+ * Quando não se sabe o nome exato, o jeito seguro é chamar SEM `campos` — os nomes vêm na resposta.
+ */
+export function dicaDeLeitura(erro, tabela, campos) {
+  if (!/TABLE_WITHOUT_DATA/.test(erro.message) || !campos.length) return erro;
+  erro.message += `\n  dica: TABLE_WITHOUT_DATA também é o que o FM levanta quando um dos campos`
+    + ` pedidos NÃO EXISTE em ${String(tabela).toUpperCase()} (${campos.join(', ')}).`
+    + ` Confira os nomes, ou chame sem \`campos\` — a resposta traz a lista.`;
+  return erro;
+}
+
+/**
+ * Leitura de tabela via RFC_READ_TABLE — a verificação universal de estado.
+ * `where` é uma lista de linhas de WHERE (máx. 72 chars cada, regra do próprio FM).
+ * Limites conhecidos do FM: linha de resultado ≤ 512 chars, sem campos float/string longos.
+ */
+export async function readTable(cfg, tabela, { campos = [], where = [], linhas = 100, delimitador = '|' } = {}) {
+  const { xml } = await callFunction(cfg, 'RFC_READ_TABLE', {
+    QUERY_TABLE: String(tabela).toUpperCase(),
+    DELIMITER: delimitador,
+    ROWCOUNT: linhas,
+    FIELDS: campos.map((c) => ({ FIELDNAME: String(c).toUpperCase() })),
+    OPTIONS: where.map((w) => ({ TEXT: w })),
+    DATA: [],
+  }).catch((e) => { throw dicaDeLeitura(e, tabela, campos); });
+  // A ordem/nomes dos campos vêm da PRÓPRIA resposta (tabela FIELDS) — vale também sem `campos`.
+  const nomes = xmlItems(xml, 'FIELDS').map((f) => f.FIELDNAME);
+  const linhasWa = xmlItems(xml, 'DATA').map((d) => d.WA ?? '');
+  detalhe(`${tabela}: ${linhasWa.length} linha(s), campos ${nomes.join(',')}`);
+  return linhasWa.map((wa) => {
+    const partes = wa.split(delimitador);
+    return Object.fromEntries(nomes.map((n, i) => [n, (partes[i] ?? '').trim()]));
+  });
+}
+
+/**
+ * Chama uma BAPI e NORMALIZA o RETURN (estrutura OU tabela BAPIRET2 → sempre array).
+ * `ok` = nenhuma mensagem E/A. Para BAPI de escrita, encadear BAPI_TRANSACTION_COMMIT — este
+ * helper NÃO comita sozinho, de propósito: commit é decisão de quem orquestra.
+ */
+export async function callBapi(cfg, bapi, params = {}) {
+  const { xml } = await callFunction(cfg, bapi, params);
+  const secao = xml.match(/<RETURN>[\s\S]*?<\/RETURN>/)?.[0] ?? '';
+  const mensagens = secao.includes('<item>')
+    ? xmlItems(xml, 'RETURN')
+    : (xmlField(secao, 'TYPE') !== null ? [xmlStruct(secao, 'RETURN')] : []);
+  const relevantes = mensagens.filter((m) => m.TYPE); // TYPE vazio = RETURN "em branco" = sucesso
+  return {
+    ok: !relevantes.some((m) => m.TYPE === 'E' || m.TYPE === 'A'),
+    mensagens: relevantes,
+    xml,
+  };
+}

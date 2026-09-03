@@ -1,11 +1,22 @@
 {
   "name": "adt-note",
   "version": "0.0.1",
-  "description": "Ferramenta de aplicação/gerenciamento de notas SAP via adt-client. (esqueleto)",
   "private": true,
+  "description": "Leitor e verificador de notas SAP aplicadas — lê a nota (PDF/estrutura), consulta a capacidade da lib adt-client e valida por medição se a nota já foi aplicada no sistema-alvo. (migrado de sap-note)",
   "type": "module",
   "main": "index.mjs",
   "exports": {
     ".": "./index.mjs"
+  },
+  "scripts": {
+    "notas": "node tools/notas.mjs"
+  },
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=11"
+  },
+  "packageManager": "pnpm@11.6.0",
+  "dependencies": {
+    "adt-client": "workspace:*"
   }
 }

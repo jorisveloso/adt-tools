@@ -1,0 +1,20 @@
+{
+  "_leia": [
+    "Copie este arquivo para sistemas.json (que é gitignored) e ajuste os sistemas.",
+    "A LISTA de sistemas vem do SAPUILandscape.xml do seu SAP GUI — não repita host aqui.",
+    "sistemas.json guarda SÓ o que o landscape não sabe:",
+    "  url     — endereço do ADT (ICM). O landscape só tem o dispatcher do SAP GUI, e o host pode diferir.",
+    "  cliente — em qual pasta de destinos.json os objetos caem.",
+    "  mandante / idioma — defaults, se você não quiser digitar no connect.",
+    "Alias que não existe no SAP GUI também pode ser cadastrado aqui, com todos os campos.",
+    "É gitignored porque host e mandante de cliente não entram num repositório.",
+    "Rode `node abapgit.mjs sistemas` para ver o que já está resolvido e o que falta."
+  ],
+
+  "d01": {
+    "cliente": "acme",
+    "url": "http://sapdev01.exemplo.local:8000",
+    "mandante": "100",
+    "idioma": "PT"
+  }
+}
