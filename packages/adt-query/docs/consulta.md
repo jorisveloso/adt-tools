@@ -49,5 +49,31 @@ Todas as consultas seguem o mesmo contrato — retorno **normalizado** e constan
 
 ## Estado
 
-Esqueleto → **fundação criada (item 1)**. A próxima entrega é o **spike (item 2)**: primeira
-consulta real no s4h (moovi) via `readTable` do `adt-client`.
+## Spike medido (item 2, 2026-09-03, s4h 758 / moovi, mandante 250)
+
+Primeira consulta real via `readTable` do `adt-client` **funcionou**. Medição (probe: adt ok,
+soapRfc ok, classrun ok, release 758):
+
+| Caso | ms | Resultado |
+|---|---|---|
+| `readTable(T000, { campos, linhas:5 })` | 455 | 5 mandantes, campos nomeados |
+| `readTable(T000, { where: ["MANDT='300'] })` | 293 | 1 linha filtrada |
+| `readTable(T000, { campos+where })` | 167 | colunas pedidas apenas |
+| `readTable(T000, { linhas:2 })` | 197 | respeita o limite |
+| `readTable(TSTC, { campos:['TCODE'], linhas:10 })` | 213 | transações |
+| campo **inexistente** | — | `TABLE_WITHOUT_DATA` + **dica** nomeando o campo (`CAMPO_DOIDO` não existe em T000) |
+| tabela inexistente (`ZPAKDOC`) | 177 | `TABLE_NOT_AVAILABLE` |
+
+**O que quebrou:** nada. O canal leu, filtrou, limitou e deu erro legível — a dica de leitura do
+motor (campo inexistente) veio clara, chamando para conferir os nomes ou chamar sem `campos`
+(que traz a lista completa). Tabela inexistente deu `TABLE_NOT_AVAILABLE` sem dica.
+
+**Limitadores confirmados ao vivo (documentação do motor):** linha ≤512 chars, WHERE linha ≤72
+chars, sem campos longos/float — o `readTable` não agrega (não faz `COUNT`/`GROUP BY`); para
+agregar é `dataPreview` (canal SQL). Foi exatamente o que o item 3 vem empacotar.
+
+## Estado
+
+Esqueleto → **fundação criada (item 1)** → **spike medido no s4h (item 2)**. Próxima entrega:
+**item 3** — empacotar a primeira consulta no adt-query (wrap em readTable + exemplos práticos);
+o que a medição quebrar vira item na fila adt-client.
