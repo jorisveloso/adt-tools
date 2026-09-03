@@ -6,4 +6,7 @@
 - [x] 2. Spike: primeira consulta no s4h (moovi) via readTable do adt-client — medir o que funciona e o que quebra
 > Spike medido no s4h 758/moovi (mandante 250): readTable funciona — T000/TSTC lidas, WHERE e limite respeitados, erro de campo inexistente vem com dica (TABLE_WITHOUT_DATA + nome do campo), tabela inexistente TABLE_NOT_AVAILABLE. Nada quebrou; limitadores confirmados (linha<=512, WHERE<=72 chars, sem agregacao). Medicao em packages/adt-query/docs/consulta.md. Proximo: item 3 (empacotar wrap).
 
-- [ ] 3. Empacotar a primeira consulta no adt-query: wrap em readTable/exemplos práticos — corrigir no adt-client o que a medição quebrar (itens de motor vão na fila adt-client)
+- [x] 3. Empacotar a primeira consulta no adt-query: wrap em readTable/exemplos práticos — corrigir no adt-client o que a medição quebrar (itens de motor vão na fila adt-client)
+> Consultar() transparente implementado: informa nome (tabela OU CDS view) + campos/where/linhas; tipo descoberto na DD02L+TADIR (decidirTipo puro) e canal escolhido (readTable p/ tabela, dataPreview p/ view). Medido no s4h: T000->tabela/readTable, I_CUSTOMER->view/analitica (DD02L vazio, DDLS na TADIR)/SELECT*, IEBILLINGCLASS view classica. 12 testes vitest. Docs consulta.md + README. Exemplos praticos ficam no proximo item.
+
+- [ ] 4. Colecao de exemplos praticos do consultar() (tabela, view analitica, view classica, where/limite) + receita de uso

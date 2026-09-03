@@ -72,8 +72,32 @@ motor (campo inexistente) veio clara, chamando para conferir os nomes ou chamar 
 chars, sem campos longos/float — o `readTable` não agrega (não faz `COUNT`/`GROUP BY`); para
 agregar é `dataPreview` (canal SQL). Foi exatamente o que o item 3 vem empacotar.
 
+## Transparência de canal (item 3, 2026-09-03) — quem consulta informa só o NOME
+
+A primeira entrega do item 3 mediu o que faltava: **CDS view se consulta por `dataPreview` (SQL),
+não por `readTable`** — `readTable` numa CDS view analítica devolve `Internal Server Error`, e a
+view `I_CUSTOMER` responde por `SELECT * FROM I_CUSTOMER` (116 colunas, incluindo os `ZZ1_*` da
+extensão do cliente moovi). Daí a decisão de **tipo**: o nome decide o canal, transparente como
+uma SE16N (informou o nome + parâmetros, o adt-query escolhe).
+
+**Como o tipo é descoberto (medido):**
+
+| Fonte | Valor | Significado |
+|---|---|---|
+| DD02L `tabclass` | `TRANSP`/`APPLn`/`SLASH`/`POOL`/`CLUSTER` | **tabela** → `readTable` |
+| DD02L `tabclass` | `VIEW` | **view** clássica → `dataPreview` |
+| DD02L vazio **e** TADIR object `DDLS` | — | **CDS view analítica** (ex.: `I_CUSTOMER` — não tem entrada na DD02L) → `dataPreview` |
+| DD02L vazio **e** TADIR sem `DDLS` | — | `naoExiste` |
+| DD02L `INTTAB` | — | estrutura interna, `naoQueryable` |
+
+Ponto único de entrada: **`consultar(conexao, nome, { campos, where, linhas })`** — mesmo contrato
+para tabela ou view, retorna `{ ok, dados, tipo }`. Para view, `campos` vazio = `*` (todas as
+colunas), `where` vazio = sem filtro, `linhas` limita. Os dois probes (DD02L + TADIR) rodam por
+`dataPreview`, custam ~150 ms e são o custo da transparência.
+
 ## Estado
 
-Esqueleto → **fundação criada (item 1)** → **spike medido no s4h (item 2)**. Próxima entrega:
-**item 3** — empacotar a primeira consulta no adt-query (wrap em readTable + exemplos práticos);
-o que a medição quebrar vira item na fila adt-client.
+Esqueleto → **fundação criada (item 1)** → **spike medido no s4h (item 2)** → **transparência de
+canal implementada (item 3, primeiro passo)**. `consultar` decide o canal pelo tipo; `decidirTipo`
+é puro e testado (12 testes). O que ainda falta no item 3: exemplos práticos e a correção no
+adt-client do que a medição quebrar — até aqui nada quebrou.
