@@ -7,5 +7,9 @@
   "matt-pocock": {
     "origem": "Azure DevOps (org ACC-SAP-Accelerate, projeto SAP Accelerate)",
     "quandoIntegrado": "skill /next sincroniza tickets via tools/devops.mjs"
+  },
+  "sap-accelerate": {
+    "origem": "trabalho sem work item no Azure DevOps (POC/spike em $TMP) do cliente SAP Accelerate — ADR-0002 do repo sap-accelerate; specs em sap-accelerate/work/<POC>/",
+    "quandoIntegrado": "quando a POC vira entrega, entra no DevOps pelo fluxo do ADR-0001; a fila encerra com um item apontando o work item"
   }
 }
