@@ -664,6 +664,35 @@ Os `<SID>` são os **mesmos do GUI Scripting** (`wnd[0]/usr/txtMAX_SEL`, `wnd[0]
 endereço estável, não id volátil de DOM. A tela os entrega: cada `<input>` traz
 `lsdata='{…"21":{"SID":"wnd[0]/usr/…"}}'` (é a mesma peça do item 18).
 
+### De onde sai o COMANDO: o `lsevents` da própria tela (item 24)
+
+O `<SID>` diz **onde**; o `lsevents` do mesmo elemento diz **o quê**. Cada controle publica, evento a
+evento, o comando do protocolo que o aciona — e o índice `1` do segundo elemento é esse comando:
+
+```
+<input ct="CBS" lsevents='{"Enter":[{},{"1":"vkey/0/ses[0]","2":true}],
+                           "Change":[{},{"1":"okcode/ses[0]"}],
+                           "FieldHelpPress":[{},{"1":"vkey/4","2":true,"5":true}]}'>
+<div ct="B" lsevents='{"Press":[{},{"1":"action/3","2":true,"3":true}]}'>
+```
+
+Mapa completo — 38 eventos, 19 comandos, por `ct`, agregado de 1049 controles de 7 telas do s4h
+758/250 (04/09/2026): `sap-accelerate/work/POC_webgui_lsdata/medicoes/vocabulario-lsevents.md`;
+a leitura, em `medicoes/item24-lsevents.md`.
+
+⚠ **O comando não vira POST por concatenação única — a composição é por FAMÍLIA.** `action/<n>` e
+`value` levam o SID (`action/3/<SID>`, `value/<SID>` + `content`); `okcode/ses[0]` e
+`vkey/<n>/ses[0]` já vêm auto-endereçados. E **o `vkey/<n>` que o `lsevents` publica sem sufixo NÃO
+se posta com o SID do campo**: o alvo do teclado é a sessão (`vkey/4/ses[0]`), e o campo entra pelo
+`focus` anterior no mesmo batch (§ O teclado). Quem concatenar SID em tudo acerta `action/*` e
+`value` e falha calado no teclado.
+
+*Ponto aberto:* só `action/3` foi medido nessa família. `action/1`, `4`, `7`, `8`, `9`, `25`, `62`,
+`74`, `309`, `810` e `901` aparecem no mapa mas **não** foram postados — a contra-prova está em
+`POC_webgui_lsdata/scripts/derivar.mjs`, à espera de uma janela com o s4h no ar (fila 43). E o
+`controlesDoHtml` desta lib ainda não extrai `lsevents`: por esta via a tela não entrega o mapa
+(fila 44).
+
 ### A caixa de comando (OK-code) — a navegação genérica do canal
 
 **Medido no s4h 758/250 em 2026-09-04** (item 8). Dois comandos levam a sessão a **qualquer**
