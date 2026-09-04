@@ -367,82 +367,196 @@ ENDCLASS.`;
   };
 }
 
-/** PURO: a saída CSV do `tasklist /V` vira `[{ pid, titulo }]` — o sensor barato de "o GUI subiu?". */
+/** Os dois processos do SAP GUI que importam: o lançador do atalho e o pad, que HOSPEDA a sessão. */
+const IMAGENS_SAPGUI = ['SAPgui.exe', 'saplogon.exe'];
+
+/**
+ * PURO: a saída CSV do `tasklist /V` vira `[{ pid, imagem, titulo }]` — o sensor barato de
+ * "há processo?". Aceita SAPgui.exe E saplogon.exe: no GUI 8.00 a sessão vive no saplogon.exe
+ * (medido 04/09/2026, ver § "A sessão vive no saplogon.exe" da receita).
+ *
+ * ⚠ O `titulo` do tasklist só presta para o SAPgui.exe. Para o saplogon.exe ele vem `N/A` MESMO com
+ * sessão logada de pé (medido 04/09/2026: `"saplogon.exe","37016",...,"N/A"` com 'SAP Easy Access'
+ * aberta). Janela do pad se enxerga com `janelasSapGui()`, não aqui.
+ */
 export function interpretarTasklist(csv) {
   const procs = [];
   for (const linha of String(csv).split(/\r?\n/)) {
     if (!linha.trim()) continue;
     const campos = [...linha.matchAll(/"((?:[^"]|"")*)"/g)].map((m) => m[1]);
-    if (campos.length < 2 || !/^SAPgui\.exe$/i.test(campos[0])) continue;
+    if (campos.length < 2) continue;
+    const imagem = IMAGENS_SAPGUI.find((i) => i.toLowerCase() === campos[0].toLowerCase());
+    if (!imagem) continue;
     const bruto = campos.at(-1) ?? '';
     // ⚠ "GDI+ Window (sapgui.exe)" é janela de INFRAESTRUTURA — o processo a cria antes (e sem)
     // qualquer tela de usuário. Tomá-la por janela real manda consultar o ROT à toa (medido).
-    const titulo = /^N\/A$/i.test(bruto) || /^GDI\+ Window/i.test(bruto) ? '' : bruto;
-    procs.push({ pid: Number(campos[1]), titulo });
+    // ⚠ Para o saplogon.exe o título do tasklist não diz nada: 'N/A' COM sessão logada, 'SAP Logon'
+    // SEM sessão (medido 04/09/2026) — tomá-lo por janela de usuário virava 'logon-pendente' falso.
+    const titulo = /^N\/A$/i.test(bruto) || /^GDI\+ Window/i.test(bruto) || /^saplogon\.exe$/i.test(imagem) ? '' : bruto;
+    procs.push({ pid: Number(campos[1]), imagem, titulo });
   }
   return procs;
 }
 
-/** Os processos SAPgui.exe vivos agora. Barato — ao contrário do ROT, que custa 120 s sem sessão. */
+/** Os SAPgui.exe e saplogon.exe vivos agora. Barato — ao contrário do ROT, que custa 15 s sem sessão. */
 export async function processosSapGui() {
   const tasklist = `${process.env.WINDIR || 'C:\\Windows'}\\System32\\tasklist.exe`;
-  const r = await exec(tasklist, ['/FI', 'IMAGENAME eq SAPgui.exe', '/FO', 'CSV', '/NH', '/V'],
-    { windowsHide: true, timeout: 10000 }).catch((e) => ({ stdout: e.stdout || '' }));
-  return interpretarTasklist(r.stdout);
+  // dois filtros /FI no mesmo tasklist são E, não OU — daí uma chamada por imagem
+  const saidas = await Promise.all(IMAGENS_SAPGUI.map((imagem) =>
+    exec(tasklist, ['/FI', `IMAGENAME eq ${imagem}`, '/FO', 'CSV', '/NH', '/V'], { windowsHide: true, timeout: 10000 })
+      .then((r) => r.stdout, (e) => e.stdout || '')));
+  return interpretarTasklist(saidas.join('\n'));
+}
+
+/** Classe Win32 da janela de sessão do SAP GUI — tela de logon do servidor OU sessão logada (medido 04/09/2026). */
+export const CLASSE_SESSAO = 'SAP_FRONTEND_SESSION';
+
+/**
+ * PURO: a saída do PowerShell de `janelasSapGui` (uma janela por linha, campos separados por TAB:
+ * imagem, pid, classe, título, textos dos Static de um diálogo) vira `[{ imagem, pid, classe, titulo, textos }]`.
+ */
+export function interpretarJanelas(texto) {
+  const janelas = [];
+  for (const linha of String(texto).split(/\r?\n/)) {
+    if (!linha.trim()) continue;
+    const [imagem, pid, classe, titulo, textos = ''] = linha.split('\t');
+    if (!imagem || !pid || !classe) continue;
+    janelas.push({ imagem, pid: Number(pid), classe, titulo: titulo ?? '', textos: textos ? textos.split(' | ') : [] });
+  }
+  return janelas;
 }
 
 /**
- * PURO: por que o ROT veio VAZIO. O ROT sozinho não distingue "GUI fechado" de "GUI aberto na tela
- * de logon" — nos dois casos não há sessão —, e o segundo manda a investigação para RZ11/registro
- * à toa. Quem separa é o `tasklist`: há processo? esse processo tem janela de usuário?
+ * PURO: o que as janelas visíveis do SAP GUI dizem — o sensor que o tasklist NÃO tem para o pad.
+ * Estados (todos medidos em 04/09/2026, SAP GUI 8.00 PT, S4H 758/250):
+ *   `sessao`      — há janela `SAP_FRONTEND_SESSION` (título 'SAP Easy Access' logado; 'SAP' na tela
+ *                   de logon do servidor, com credencial rejeitada). Quem separa os dois é o ROT.
+ *   `pede-senha`  — diálogo `#32770` 'Ligação SAP GUI - logon (S4H, 250, PT, )': o pad quer a senha
+ *                   (aconteceu SEM -pw; com -pw o logon passou direto).
+ *   `mensagem`    — caixa `#32770` 'SAP GUI' com texto (ex.: 'ID sistema desconhecido', que é o
+ *                   `-conn=/H/…` sem `-sysname=`). `textos` traz o conteúdo.
+ *   `so-pad`      — só a janela do pad ('SAP Logon 800').
+ *   `nenhuma`     — nada visível.
+ */
+export function lerJanelas(janelas = []) {
+  const sessao = janelas.filter((j) => j.classe === CLASSE_SESSAO);
+  if (sessao.length) return { estado: 'sessao', janelas: sessao };
+  const dialogos = janelas.filter((j) => j.classe === '#32770');
+  const pedeSenha = dialogos.filter((j) => /logon/i.test(j.titulo) && !/^SAP Logon \d+$/i.test(j.titulo));
+  if (pedeSenha.length) return { estado: 'pede-senha', janelas: pedeSenha };
+  const mensagem = dialogos.filter((j) => /^SAP GUI$/i.test(j.titulo) || j.textos.length && !/^SAP Logon \d+$/i.test(j.titulo));
+  if (mensagem.length) return { estado: 'mensagem', janelas: mensagem };
+  if (dialogos.some((j) => /^SAP Logon \d+$/i.test(j.titulo))) return { estado: 'so-pad', janelas: [] };
+  return { estado: 'nenhuma', janelas: [] };
+}
+
+const PS_JANELAS = `
+Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Runtime.InteropServices; using System.Collections.Generic;
+public class JSap { public delegate bool EnumProc(IntPtr h, IntPtr l);
+ [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc p, IntPtr l);
+ [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, EnumProc p, IntPtr l);
+ [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+ [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+ [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+ static string Txt(IntPtr h){ var t=new StringBuilder(512); GetWindowText(h,t,512); return t.ToString(); }
+ static string Cls(IntPtr h){ var c=new StringBuilder(256); GetClassName(h,c,256); return c.ToString(); }
+ public static List<string> List(Dictionary<uint,string> pids){ var r=new List<string>(); EnumWindows((h,l)=>{ uint pid; GetWindowThreadProcessId(h,out pid);
+   if(pids.ContainsKey(pid) && IsWindowVisible(h)){ string t=Txt(h); if(t.Length==0) return true; string c=Cls(h); var st=new List<string>();
+     if(c=="#32770"){ EnumChildWindows(h,(ch,l2)=>{ if(Cls(ch)=="Static"){ string s=Txt(ch); if(s.Length>0) st.Add(s);} return true; }, IntPtr.Zero); }
+     r.Add(pids[pid]+"\\t"+pid+"\\t"+c+"\\t"+t+"\\t"+string.Join(" | ",st)); } return true; }, IntPtr.Zero); return r; } }
+'@
+$pids = New-Object 'System.Collections.Generic.Dictionary[uint32,string]'
+Get-Process -Name SAPgui,saplogon -ErrorAction SilentlyContinue | % { $pids[[uint32]$_.Id] = "$($_.ProcessName).exe" }
+[JSap]::List($pids)`;
+
+/**
+ * As janelas VISÍVEIS com título dos processos SAPgui.exe/saplogon.exe: `{ imagem, pid, classe, titulo, textos }`.
+ * É o sensor certo para o pad — o tasklist devolve `N/A` para ele mesmo com sessão logada de pé.
+ * Custa ~0,8 s (PowerShell + Add-Type; medido 04/09/2026: 753 ms).
+ */
+export async function janelasSapGui() {
+  const r = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', PS_JANELAS],
+    { windowsHide: true, timeout: 20000 }).catch((e) => ({ stdout: e.stdout || '' }));
+  return interpretarJanelas(r.stdout);
+}
+
+/** PURO: a sessão do ROT tem alguém logado? A tela de logon do servidor TAMBÉM entra no ROT — com
+ * usuário vazio, mandante 000 e tcode S000 (medido 04/09/2026, hospedada no saplogon.exe). */
+export const sessaoLogada = (s) => Boolean(s?.usuario);
+
+/**
+ * PURO: por que o ROT veio VAZIO (ou só com tela de logon). O ROT sozinho não distingue "GUI fechado"
+ * de "GUI aberto na tela de logon", e o segundo manda a investigação para RZ11/registro à toa. Quem
+ * separa é o par tasklist (há processo?) + janelas (`lerJanelas`: que janela é?).
  *
  * ⚠ O `expirou` NÃO distingue nada — medido 04/09/2026 (SAP GUI 8.00, máquina do Joris, alvo S4H):
- *   • GUI fechado, `sessoesAbertas()`: `expirou`, **15669 ms**, nenhum SAPgui.exe.
- *   • Janela ABERTA na TELA DE LOGON (`Entrada do nome do usuário`, pid vivo): `expirou` também,
- *     **15663 ms**. O `GetObject("SAPGUI")` não volta enquanto ninguém estiver logado.
- *   Isto DESMENTE a leitura de 03/09 ("o GetObject funciona, o ROT só não tem a sessão"): aquele
- *   `{ sessoes: [], erro: null }` era o timeout ENGOLIDO, antes de o `rodarVbs` sinalizar `expirou`.
- *   O ROT só existe depois do logon — é a sessão que se registra nele, não a janela.
+ *   GUI fechado, `sessoesAbertas()`: `expirou`, 15669 ms; janela parada no logon: `expirou`, 15663 ms.
  *
- * Por isso o sensor é o `tasklist`, não o prazo. Estados: `com-sessao` · `logon-pendente` (janela de
- * usuário de pé e ninguém logado) · `sem-janela` (processo de pé sem janela — subindo, ou o quadro
- * do § "Quando o sapshcut não abre sessão") · `gui-fechado` (nenhum SAPgui.exe) · `erro-scripting`
- * (o `GetObject` levantou Err — o ÚNICO caso que aponta para cliente/servidor).
+ * Estados: `com-sessao` · `logon-pendente` (tela de logon de pé — no ROT com usuário vazio, ou janela
+ * `SAP_FRONTEND_SESSION`/título de logon sem sessão) · `pede-senha` (o pad abriu o diálogo de senha)
+ * · `mensagem` (caixa de mensagem do GUI, com o texto) · `sem-janela` (processo de pé, nenhuma janela
+ * de sessão — pad aberto sem sessão, ou GUI subindo) · `gui-fechado` (nenhum SAPgui.exe nem
+ * saplogon.exe) · `erro-scripting` (o `GetObject` levantou Err — o ÚNICO que aponta para cliente/servidor).
  */
-export function diagnosticarRot({ sessoes = [], expirou = false, processos = [], erroVbs = null } = {}) {
-  if (sessoes.length) return { estado: 'com-sessao', explicacao: null };
+export function diagnosticarRot({ sessoes = [], expirou = false, processos = [], erroVbs = null, janelas = [] } = {}) {
+  if (sessoes.some(sessaoLogada)) return { estado: 'com-sessao', explicacao: null };
   if (erroVbs) return { estado: 'erro-scripting', explicacao: `o GetObject("SAPGUI") falhou — ${erroVbs}` };
-  const mudo = expirou ? 'o GetObject("SAPGUI") não respondeu no prazo, e ' : 'o ROT respondeu vazio, e ';
-  const comJanela = processos.filter((p) => p.titulo);
-  if (!processos.length) {
-    return { estado: 'gui-fechado', explicacao: `${mudo}nenhum SAPgui.exe está rodando — o SAP GUI está fechado` };
+  const naoMexer = 'Não é scripting desligado; não mexa em RZ11 nem no registro.';
+  if (sessoes.length) {
+    return {
+      estado: 'logon-pendente',
+      explicacao: `o ROT tem ${sessoes.length} conexão(ões) sem ninguém logado ` +
+        `(${sessoes.map((s) => `${s.id} ${s.sistema}/${s.mandante} ${s.tcode}`).join(', ')}) — é a TELA DE LOGON do ` +
+        `servidor: a credencial não passou. ${naoMexer}`,
+    };
   }
+  const mudo = expirou ? 'o GetObject("SAPGUI") não respondeu no prazo, e ' : 'o ROT respondeu vazio, e ';
+  if (!processos.length) {
+    return { estado: 'gui-fechado', explicacao: `${mudo}nenhum SAPgui.exe nem saplogon.exe está rodando — o SAP GUI está fechado` };
+  }
+  const lidas = lerJanelas(janelas);
+  const lista = (js) => js.map((j) => `${j.imagem}:${j.pid} '${j.titulo}'${j.textos?.length ? ` [${j.textos.join(' | ')}]` : ''}`).join(', ');
+  if (lidas.estado === 'sessao') {
+    return { estado: 'logon-pendente', explicacao: `${mudo}há janela de sessão de pé (${lista(lidas.janelas)}) sem sessão logada — é a TELA DE LOGON. ${naoMexer}` };
+  }
+  if (lidas.estado === 'pede-senha') {
+    return { estado: 'pede-senha', explicacao: `${mudo}o SAP Logon abriu o diálogo de senha (${lista(lidas.janelas)}) — o atalho chegou sem senha aceita` };
+  }
+  if (lidas.estado === 'mensagem') {
+    return { estado: 'mensagem', explicacao: `${mudo}o SAP GUI está parado numa mensagem: ${lista(lidas.janelas)}` };
+  }
+  const comJanela = processos.filter((p) => p.titulo);
   if (comJanela.length) {
     return {
       estado: 'logon-pendente',
-      explicacao: `${mudo}há janela de usuário de pé ` +
-        `(${comJanela.map((p) => `${p.pid}:${p.titulo}`).join(', ')}) — ninguém logado, é a TELA DE ` +
-        'LOGON: o ROT só existe depois do logon. Não é scripting desligado; não mexa em RZ11 nem no registro.',
+      explicacao: `${mudo}há janela de usuário de pé (${comJanela.map((p) => `${p.pid}:${p.titulo}`).join(', ')}) — ninguém logado, é a TELA DE LOGON. ${naoMexer}`,
     };
   }
   return {
     estado: 'sem-janela',
-    explicacao: `${mudo}há ${processos.length} SAPgui.exe de pé, nenhum com janela de usuário — o GUI ` +
-      'está subindo, ou encerrou o logon sem abrir tela (§ Quando o sapshcut não abre sessão)',
+    explicacao: `${mudo}há ${processos.length} processo(s) de pé (${processos.map((p) => `${p.imagem || 'SAPgui.exe'}:${p.pid}`).join(', ')}), ` +
+      'nenhuma janela de sessão — o SAP Logon está aberto sem sessão, ou o GUI está subindo. A sessão vive no saplogon.exe (§ A sessão vive no saplogon.exe)',
   };
 }
 
 /**
- * Abre uma sessão de diálogo no SAP GUI pelo `sapshcut` e espera ela aparecer no ROT.
+ * Abre uma sessão de diálogo no SAP GUI pelo `sapshcut` e espera ela aparecer no ROT, LOGADA.
  *
  * ⚠ A senha vai na LINHA DE COMANDO do sapshcut — visível na lista de processos enquanto ele sobe.
  * Aceitável em laboratório com credencial de POC; não use com credencial de produção.
  * `sistema` é o systemid do SAPUILandscape.xml (o SID de 3 letras que o SAP GUI mostra).
  *
- * ⚠ O ROT NÃO serve para pilotar a espera: sem sessão, `sessoesAbertas()` custa 120 s (medido
- * 04/09/2026 — três chamadas seguidas: 120157/120186/120142 ms; é o `cscript` batendo no próprio
- * timeout, e o erro era engolido). Quem amostra é o `tasklist`; o ROT só é consultado quando já
- * existe um SAPgui.exe COM janela. Ver docs/receita-gui-scripting.md § Quando não abre sessão.
+ * Como o GUI 8.00 abre um atalho (medido 04/09/2026, sapshcut 8000.1.4.10, S4H 758/250):
+ *   1. o sapshcut sai com 0 em ~0,3 s e lança um `SAPgui.exe /SHORTCUT="…"`;
+ *   2. esse SAPgui.exe é só LANÇADOR: entrega o atalho ao `saplogon.exe` (o pad — se não houver,
+ *      ele mesmo inicia um) e SAI com exit 0 em 0,6–1,8 s, sem janela e sem tocar a rede;
+ *   3. a sessão nasce DENTRO do saplogon.exe, ~2–6 s depois — janela `SAP_FRONTEND_SESSION`
+ *      ('SAP Easy Access' logado, 'SAP' se a credencial foi rejeitada) — e entra no ROT.
+ * A versão anterior desta função tomava o passo 2 por "o GUI encerrou sem sessão" e desistia em ~2 s.
+ * O sensor certo para o pad é `janelasSapGui()` (o tasklist devolve `N/A` para ele); o ROT só é
+ * pago depois que uma janela de sessão existe, porque sem sessão o GetObject consome o prazo inteiro.
  */
 export async function abrirSapGui({ sistema, cliente, usuario, senha, idioma = 'PT', transacao, dir = SAPGUI_DIR, esperaMs = 30000 } = {}) {
   if (!sistema) throw new Error('abrirSapGui: informe { sistema } (o systemid do SAPUILandscape.xml)');
@@ -459,62 +573,77 @@ export async function abrirSapGui({ sistema, cliente, usuario, senha, idioma = '
   const filho = spawn(sapshcut, args, { detached: true, stdio: 'ignore', windowsHide: false });
   filho.unref();
 
-  const trilha = [];    // o que o tasklist mostrou, sem repetir estado igual
-  let nasceu = false;   // um SAPgui.exe NOVO chegou a existir
+  const trilha = [];        // o que os sensores mostraram, sem repetir estado igual
+  const anotar = (estado) => { if (!trilha.at(-1)?.endsWith(estado)) trilha.push(`+${((Date.now() - inicio) / 1000).toFixed(1)}s ${estado}`); };
+  let lancadorNasceu = false;
   let ultimoRot = null;
+  let ultimasJanelas = [];
+  const usuarioAlvo = String(usuario).toUpperCase();
   while (Date.now() < inicio + esperaMs) {
-    const novos = (await processosSapGui()).filter((p) => !antes.has(p.pid));
-    const estado = novos.length
-      ? novos.map((p) => `${p.pid}:${p.titulo || '(ainda sem janela)'}`).join(', ')
-      : '(nenhum SAPgui.exe novo)';
-    if (!trilha.at(-1)?.endsWith(estado)) trilha.push(`+${((Date.now() - inicio) / 1000).toFixed(1)}s ${estado}`);
-    if (novos.length) {
-      nasceu = true;
-      // Só agora vale pagar o ROT: sem processo com janela, a consulta seria espera cega de 120 s.
-      if (novos.some((p) => p.titulo)) {
+    const procs = await processosSapGui();
+    const novos = procs.filter((p) => !antes.has(p.pid));
+    const lancador = novos.filter((p) => /^SAPgui\.exe$/i.test(p.imagem));
+    const pad = procs.filter((p) => /^saplogon\.exe$/i.test(p.imagem));
+    if (lancador.length) lancadorNasceu = true;
+    anotar(`lançador ${lancador.length ? lancador.map((p) => p.pid).join(',') : lancadorNasceu ? 'saiu' : '(ainda não)'} · pad ${pad.length ? pad.map((p) => p.pid).join(',') : '(nenhum)'}`);
+
+    // A sessão vive no pad: assim que o lançador saiu (ou 1,5 s depois de nascer) vale olhar as janelas.
+    const horaDeOlhar = pad.length && (lancadorNasceu && !lancador.length || Date.now() - inicio > 1500);
+    if (horaDeOlhar) {
+      ultimasJanelas = await janelasSapGui();
+      const lidas = lerJanelas(ultimasJanelas);
+      anotar(`janelas: ${lidas.estado}${lidas.janelas.length ? ` (${lidas.janelas.map((j) => `'${j.titulo}'`).join(', ')})` : ''}`);
+      if (lidas.estado === 'sessao') {
         ultimoRot = await sessoesAbertas().catch((e) => ({ erro: e.message, sessoes: [] }));
-        if (ultimoRot.sessoes?.length) return ultimoRot;
+        const minha = ultimoRot.sessoes?.find((s) => sessaoLogada(s) && s.usuario.toUpperCase() === usuarioAlvo)
+          ?? ultimoRot.sessoes?.find(sessaoLogada);
+        if (minha) return { ...ultimoRot, conexaoGui: minha.conexao, sessaoGui: minha.sessao, sessao: minha };
+        if (ultimoRot.sessoes?.length && ultimoRot.sessoes.every((s) => !sessaoLogada(s))) {
+          throw new Error(
+            'abrirSapGui: o SAP GUI abriu a TELA DE LOGON do servidor — a credencial não passou ' +
+            `(ROT: ${ultimoRot.sessoes.map((s) => `${s.id} ${s.sistema}/${s.mandante} ${s.tcode}`).join(', ')}). ` +
+            `Confira -client/-user/-pw. Trilha: ${trilha.join(' | ')}`,
+          );
+        }
+      } else if (lidas.estado === 'pede-senha') {
+        throw new Error(
+          `abrirSapGui: o SAP Logon abriu o diálogo de senha (${lidas.janelas.map((j) => `'${j.titulo}'`).join(', ')}) — ` +
+          `o atalho chegou sem senha aceita. Trilha: ${trilha.join(' | ')}`,
+        );
+      } else if (lidas.estado === 'mensagem') {
+        throw new Error(
+          `abrirSapGui: o SAP GUI parou numa mensagem: ${lidas.janelas.map((j) => `'${j.titulo}' [${j.textos.join(' | ')}]`).join(', ')}. ` +
+          `Trilha: ${trilha.join(' | ')}`,
+        );
       }
-    } else if (nasceu) {
-      throw new Error(
-        'abrirSapGui: o SAP GUI subiu e ENCERROU sem abrir sessão — o logon automático não completou.\n' +
-        `Trilha: ${trilha.join(' | ')}\n` +
-        'Medido em 04/09/2026 (SAP GUI 8.00, sapshcut 8000.1.4.10, S4H 758): isto acontece com ' +
-        'usuário que EXISTE no sistema, com ou sem -pw e com senha certa ou errada — o -pw não é ' +
-        'a causa. Ver docs/receita-gui-scripting.md § Quando o sapshcut não abre sessão.',
-      );
     }
     await new Promise((ok) => setTimeout(ok, 500));
   }
   throw new Error(
-    `abrirSapGui: nenhuma sessão no ROT em ${esperaMs} ms.\n` +
-    `Trilha do SAPgui.exe: ${trilha.join(' | ')}\n` +
-    (!nasceu
-      ? 'Nenhum SAPgui.exe chegou a nascer — confira o -system contra o systemid do ' +
-        'SAPUILandscape.xml e se o dispatcher responde.'
-      : trilha.some((t) => !/ainda sem janela|nenhum SAPgui/.test(t))
-        ? 'O processo está de pé COM janela mas não expõe sessão — se a janela é a tela de logon, ' +
-          'o logon automático não passou (confira -system/-client/-user).'
-        : 'O processo está de pé mas NUNCA abriu janela de usuário — é o quadro medido em ' +
-          '04/09/2026 com usuário que existe no sistema, e o -pw não é a causa (medido: sem -pw ' +
-          'dá o mesmo). Ver docs/receita-gui-scripting.md § Quando o sapshcut não abre sessão.') +
-    (ultimoRot ? `\nÚltimo ROT: ${JSON.stringify(ultimoRot)}` : ''),
+    `abrirSapGui: nenhuma sessão logada no ROT em ${esperaMs} ms.\n` +
+    `Trilha: ${trilha.join(' | ')}\n` +
+    (!lancadorNasceu
+      ? 'Nenhum SAPgui.exe chegou a nascer — confira o -system contra o systemid do SAPUILandscape.xml.'
+      : 'O lançador saiu e o pad não abriu sessão no prazo — ver docs/receita-gui-scripting.md § A sessão vive no saplogon.exe.') +
+    (ultimoRot ? `\nÚltimo ROT: ${JSON.stringify(ultimoRot)}` : '') +
+    (ultimasJanelas.length ? `\nÚltimas janelas: ${JSON.stringify(ultimasJanelas)}` : ''),
   );
 }
 
 /**
  * As conexões/sessões que o SAP GUI local expõe agora — com o motivo, quando vier vazio.
  *
- * Devolve `{ sessoes, estado, erro, processos }`. Sem sessão, `estado` diz QUAL vazio é
- * (`gui-fechado` · `logon-pendente` · `sem-janela` · `sem-resposta`, ver `diagnosticarRot`) e `erro`
- * carrega a explicação: nunca mais `{ sessoes: [], erro: null }` mudo.
+ * Devolve `{ sessoes, estado, erro, processos }`. Sem sessão LOGADA, `estado` diz QUAL vazio é
+ * (`gui-fechado` · `logon-pendente` · `pede-senha` · `mensagem` · `sem-janela`, ver `diagnosticarRot`)
+ * e `erro` carrega a explicação: nunca mais `{ sessoes: [], erro: null }` mudo.
  *
  * ⚠ SEM sessão de diálogo aberta, o `GetObject("SAPGUI")` do VBS NÃO volta: a chamada consome o
  * timeout inteiro (medido 04/09/2026: 120157/120186/120142 ms em três chamadas seguidas). Por isso
  * o prazo padrão aqui é curto e o estouro vira `erro` — não `{ sessoes: [] }`, que mentia.
  *
- * ⚠ Com a janela ABERTA na tela de logon é o contrário: o GetObject responde na hora e o engine
- * está vazio (medido 03/09/2026). O ROT só enxerga sessão JÁ LOGADA — daí o `logon-pendente`.
+ * ⚠ A TELA DE LOGON do servidor também entra no ROT quando o pad a hospeda — como conexão com
+ * usuário VAZIO, mandante 000 e tcode S000 (medido 04/09/2026: `/app/con[1]/ses[0] S4H/000 '' S000`).
+ * `sessoes` a lista, mas `estado` só é `com-sessao` com alguém logado (`sessaoLogada`).
  */
 export async function sessoesAbertas({ timeout = 15000 } = {}) {
   const vbs = `Option Explicit
@@ -550,10 +679,11 @@ saida.Close`;
       sessoes.push({ conexao: Number(c[0]), sessao: Number(c[1]), id: c[2], sistema: c[3], mandante: c[4], usuario: c[5], tcode: c[6] });
     }
   }
-  if (sessoes.length) return { sessoes, estado: 'com-sessao', erro: erroVbs, processos: null };
-  // Vazio nunca sai mudo: o `tasklist` (barato) diz QUAL vazio é este.
+  if (sessoes.some(sessaoLogada)) return { sessoes, estado: 'com-sessao', erro: erroVbs, processos: null };
+  // Vazio (ou só tela de logon) nunca sai mudo: tasklist (há processo?) + janelas (que janela é?).
   const processos = await processosSapGui();
-  const { estado, explicacao } = diagnosticarRot({ sessoes, expirou, processos, erroVbs });
+  const janelas = processos.length && !sessoes.length ? await janelasSapGui() : [];
+  const { estado, explicacao } = diagnosticarRot({ sessoes, expirou, processos, erroVbs, janelas });
   const prazo = expirou ? ` — prazo de ${timeout} ms` : '';
   return { sessoes, estado, processos, erro: `sem sessão no ROT: ${explicacao}${prazo}` };
 }

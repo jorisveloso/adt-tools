@@ -89,17 +89,23 @@ volta**: consome o timeout inteiro do `cscript`. Medido em 04/09/2026, três cha
 `{ sessoes: [], erro: null }`, porque o `execFile` mata o `cscript`, o arquivo de saída fica vazio e
 isso é indistinguível de "rodou e não achou". Era essa a origem do `nenhuma sessão no ROT em
 30000 ms`: o laço de 500 ms fazia **uma** amostra, voltava 120 s depois e reportava o prazo errado.
-Hoje quem amostra é o `tasklist` (`processosSapGui()`), o ROT só é consultado quando já existe um
-`SAPgui.exe` **com janela de usuário**, e `sessoesAbertas({ timeout })` devolve `erro` ao estourar.
+Hoje quem amostra é o `tasklist` (`processosSapGui()`: há lançador? há pad?) mais `janelasSapGui()`
+(há janela `SAP_FRONTEND_SESSION` no pad?); o ROT só é consultado depois que essa janela existe, e
+`sessoesAbertas({ timeout })` devolve `erro` ao estourar. **A sessão vive no `saplogon.exe`**, não no
+`SAPgui.exe` — ver o § com esse nome. Medido 04/09/2026: `abrirSapGui` devolve a sessão logada
+(`{ conexaoGui, sessaoGui, sessao }`) em **10,6 s**; `fecharSapGui` a fecha em 1,5 s.
 
 ⚠ A senha vai na **linha de comando** do sapshcut — visível na lista de processos enquanto ele sobe.
 Laboratório, sim; credencial de produção, não.
 
-## O ROT só existe depois do LOGON — e por que o vazio precisa de motivo
+## O ROT e os seus vazios — por que o vazio precisa de motivo
 
-**O ROT não enxerga janela; enxerga sessão logada.** Com o SAP GUI **aberto na tela de logon**, não
-há nada no ROT — o mesmo nada de quando o GUI está fechado. E o vazio mudo (`{ sessoes: [], erro:
-null }`) manda a investigação para o lugar errado: RZ11, registro, "scripting desligado".
+**O ROT só é útil com sessão LOGADA.** Com o GUI fechado não há nada nele; e a tela de logon do
+servidor, quando o pad a hospeda, **entra no ROT como conexão sem ninguém** — medido 04/09/2026,
+credencial rejeitada: `/app/con[1]/ses[0]` com `sistema S4H`, `mandante 000`, `usuario ''`,
+`tcode S000`. Por isso `sessaoLogada(s)` (usuário preenchido) é o que separa, e `estado` só vem
+`com-sessao` com alguém logado. O vazio mudo (`{ sessoes: [], erro: null }`) manda a investigação
+para o lugar errado: RZ11, registro, "scripting desligado".
 
 Medido em 04/09/2026 (SAP GUI 8.00, máquina do Joris, alvo S4H 758/250), `sessoesAbertas()` com o
 prazo padrão de 15 s:
@@ -117,61 +123,86 @@ sessão"). Ele não funciona: pendura igual. Aquele `erro: null` era o **timeout
 de o `rodarVbs` sinalizar `expirou` — não prova de um engine que respondeu.
 
 Por isso `sessoesAbertas()` devolve **`{ sessoes, estado, erro, processos }`**, e o vazio nunca sai
-mudo — `diagnosticarRot` (puro, testado) classifica:
+mudo — `diagnosticarRot` (puro, testado) classifica pelo trio ROT + `tasklist` + janelas
+(`lerJanelas`, ver o § seguinte):
 
 | `estado` | o que é | o que fazer |
 |---|---|---|
-| `com-sessao` | há sessão no ROT | seguir |
-| `logon-pendente` | `SAPgui.exe` **com janela**, ninguém logado | **logar** (ou `abrirSapGui`) — não é scripting desligado |
-| `sem-janela` | processo de pé, nenhuma janela | esperar, ou § *Quando o sapshcut não abre sessão* |
-| `gui-fechado` | nenhum `SAPgui.exe` | abrir o GUI |
+| `com-sessao` | há sessão **logada** no ROT (`sessaoLogada`) | seguir |
+| `logon-pendente` | tela de logon do servidor: conexão no ROT com usuário vazio, ou janela `SAP_FRONTEND_SESSION` sem sessão logada | a credencial não passou — conferir mandante/usuário/senha; não é scripting desligado |
+| `pede-senha` | o pad abriu `Ligação SAP GUI - logon (…)` | o atalho chegou sem senha aceita (aconteceu sem `-pw`) |
+| `mensagem` | caixa `SAP GUI` com texto (ex.: `ID sistema desconhecido`) | ler o texto — está em `erro` |
+| `sem-janela` | processo de pé, nenhuma janela de sessão (pad aberto sem sessão, ou GUI subindo) | esperar, ou `abrirSapGui` |
+| `gui-fechado` | nenhum `SAPgui.exe` nem `saplogon.exe` | abrir o GUI |
 | `erro-scripting` | o `GetObject` levantou `Err` | **o único** que aponta para cliente/servidor (RZ11, registro) |
 
 ```js
 const r = await sessoesAbertas();
-// { sessoes: [], estado: 'logon-pendente', processos: [{ pid: 2428, titulo: 'Entrada do nome do usuário' }],
-//   erro: 'sem sessão no ROT: o GetObject("SAPGUI") não respondeu no prazo, e há janela de usuário
-//          de pé (2428:…) — ninguém logado, é a TELA DE LOGON: o ROT só existe depois do logon.
-//          Não é scripting desligado; não mexa em RZ11 nem no registro. — prazo de 15000 ms'
+// credencial rejeitada, medido 04/09/2026 — a tela de logon está no ROT, sem ninguém:
+// { sessoes: [{ id: '/app/con[1]/ses[0]', sistema: 'S4H', mandante: '000', usuario: '', tcode: 'S000' }],
+//   estado: 'logon-pendente',
+//   erro: 'sem sessão no ROT: o ROT tem 1 conexão(ões) sem ninguém logado (/app/con[1]/ses[0] S4H/000 S000)
+//          — é a TELA DE LOGON do servidor: a credencial não passou. Não é scripting desligado; …' }
 ```
 
-O `logon-pendente` acima é **medido**, não construído: reproduzido com `sapshcut -user=<inexistente>`,
-que deixa a janela parada no logon (ver a tabela do § seguinte).
+O `logon-pendente` acima é **medido**, não construído: `sapshcut -user=NAOEXISTE -pw=…` deixa no pad
+uma janela `SAP_FRONTEND_SESSION` de título `SAP` (a tela de logon do servidor) e essa conexão no ROT.
 
 `fecharSapGui()` fecha a conexão no fim (`CloseSession` + `CloseConnection`); o SAP Logon pad
 continua aberto. Vale a mesma regra das sessões ADT: **sessão que o script abre, o script fecha.**
 
-## Quando o sapshcut não abre sessão
+## A sessão vive no saplogon.exe — o SAPgui.exe do atalho é só lançador
 
 Medido em 04/09/2026 na máquina do Joris — SAP GUI 8.00, `sapshcut.exe` 8000.1.4.10, alvo **S4H 758
-mandante 250** (pela internet, sem VPN). O sintoma tinha sido relatado no SXD; **reproduz igual no
-S4H**, logo a causa é **local**, não do SXD.
+mandante 250** (pela internet, sem VPN). Instrumentos: `SAPgui.exe /SHORTCUT="…"` lançado como
+**filho** do Node (exit code e instante da morte exatos), proxy TCP local em `127.0.0.1:3200`
+(conta conexões ao dispatcher) e `EnumWindows` a cada 100 ms sobre `SAPgui.exe` **e** `saplogon.exe`.
 
-| `-user` | `-pw` | o que acontece |
-|---|---|---|
-| existe no sistema | senha certa | `SAPgui.exe` nasce e **morre em ~0,5 s**, sem janela de usuário |
-| existe no sistema | senha errada | idem — morre igual |
-| existe no sistema | **sem `-pw`** | idem — morre igual |
-| não existe | com ou sem `-pw` | janela **fica de pé** na tela de logon (`Entrada do nome do usuário`) |
-| omitido | sem `-pw` | nenhuma janela |
+Como o GUI 8.00 abre um atalho:
 
-**O `-pw` não é a causa** — era essa a hipótese de partida e ela está desmentida: sem `-pw` nenhum,
-com usuário real, dá exatamente o mesmo. O `sapshcut` sempre sai com **exit 0 em ~240 ms** (ele
-delega ao `SAPgui.exe` e sai; o exit 0 não diz nada sobre o logon).
+1. o `sapshcut` sai com **exit 0 em ~0,3 s** e lança `SAPgui.exe /SHORTCUT=" -system=S4H -client=250 -user=… -pw=… -language=PT "`;
+2. esse `SAPgui.exe` **não abre sessão**: entrega o atalho ao `saplogon.exe` (o pad) e **sai com
+   exit 0** em 0,6–1,8 s, sem janela e com **zero conexões** ao dispatcher. Se não há pad, **ele
+   mesmo inicia um** (medido: pad 42432 nasceu 1 s depois do lançador, que então saiu);
+3. a sessão nasce **dentro do `saplogon.exe`**, 2–6 s depois: janela de classe
+   `SAP_FRONTEND_SESSION` — título `SAP Easy Access` logada, `SAP` se a credencial foi rejeitada
+   — e entra no ROT.
 
-Também **medidos e descartados** como causa: a ordem dos argumentos (`-pw` antes ou depois de
-`-language`: idêntico), `-maxgui`, `-command=SESSION_MANAGER`, `-type=Transaction -command=SU3`.
-E do lado do servidor está tudo em ordem — credencial válida (`/sap/bc/adt/discovery` responde
-**200**), `USR02-USTYP = A` (diálogo), `UFLAG = 0` (sem bloqueio), `GLTGB = 99991231`.
-Sem chave `SAPShortcut\Security` no registro; `UserScripting = 1`; sessão de desktop **ativa**
-(`qwinsta`: console/1/Ativo); nenhum evento de crash no log de aplicação; o trace do SAP GUI
-(`Trace\Enable = 1`) **não gera arquivo**.
+| experimento | `-user` | `-pw` | pad antes | lançador | pad depois | ROT |
+|---|---|---|---|---|---|---|
+| A' | existe | não | sim | exit 0, 591 ms | diálogo `Ligação SAP GUI - logon (S4H, 250, PT, )` pedindo a senha | — |
+| D | existe | sim | sim | exit 0, 642 ms | `SAP Easy Access` em +3,2 s | `con[0]` S4H/250 MVJVELOSO SESSION_MANAGER |
+| E | existe | sim | **não** | exit 0, 1776 ms — **iniciou o pad** | `SAP Easy Access` em +6,5 s | idem |
+| F | não existe | sim | sim | exit 0, 755 ms | janela `SAP` (tela de logon do servidor) em +3,4 s | `con[1]` S4H/000 `''` S000 |
+| E2E | existe | sim | sim | `abrirSapGui` corrigido | — | sessão logada em **10,6 s** |
 
-**Aberto:** por que o `SAPgui.exe` encerra logo após um logon que o servidor aceitaria. Enquanto
-isso, `abrirSapGui` **diagnostica em vez de mentir** — em ~2 s levanta `o SAP GUI subiu e ENCERROU
-sem abrir sessão`, com a trilha do processo (`+0,6s 44840:(ainda sem janela) | +1,7s (nenhum
-SAPgui.exe novo)`). Para dirigir dynpro sem sessão de GUI, o caminho é o **WebGUI**
-([receita-webgui.md](receita-webgui.md)), que não depende disto.
+O que a versão anterior desta receita chamava de "o `SAPgui.exe` morre em ~0,5 s sem abrir sessão"
+era o **passo 2** — e o `abrirSapGui` antigo, que só vigiava `SAPgui.exe`, tomava essa saída por
+falha e desistia em ~2 s, antes de a sessão nascer no pad. O "divisor" usuário-existe × não-existe
+também era artefato: com `-pw`, o usuário inexistente abre a **tela de logon** no pad (F), o
+existente abre a **sessão** (D) — os dois no `saplogon.exe`, invisíveis a um vigia de `SAPgui.exe`.
+Continua verdade que **o `-pw` não é a causa**: com `-pw` o logon passa; sem `-pw` o pad pede a
+senha num diálogo (A'). E passa **sem** chave `SAPShortcut\Security` no registro (ausente em HKCU e
+HKLM).
+
+Gotchas medidos no caminho:
+
+- **`-conn=/H/host/S/porta` sem `-sysname=`** → caixa `SAP GUI`: *Nem todos os dados estão
+  disponíveis p/ligação a SAP GUI: ID sistema desconhecido. Entrar os dados em falta* — e, atrás
+  dela, o diálogo `Características do atalho SAP`. Não é logon falhando; é atalho incompleto.
+- **Com `-sysname=` que bate numa entrada do landscape, o pad ignora o `-conn`** e conecta pela
+  entrada (zero bytes no proxy em D/E). Para capturar o DIAG por proxy é preciso uma entrada do
+  landscape apontando ao proxy, não o `-conn`.
+- **O `tasklist /V` é cego para o pad**: título `N/A` com `SAP Easy Access` de pé, `SAP Logon` sem
+  sessão. Quem enxerga é `janelasSapGui()` (`EnumWindows`; 753 ms), e a janela de sessão se
+  reconhece pela **classe** `SAP_FRONTEND_SESSION`, não pelo título (que muda com idioma e
+  transação).
+- **Aberto (anomalia anotada):** ~40 s depois de o lançador ter iniciado o pad (E), um
+  `GetObject("SAPGUI")` devolveu engine **sem filhos** com a sessão `SAP Easy Access` visível; ~1 min
+  depois o ROT listava a sessão normalmente. Não reproduzido de propósito; está na fila.
+
+Para dirigir dynpro sem sessão de GUI, o caminho continua sendo o **WebGUI**
+([receita-webgui.md](receita-webgui.md)), que não depende de nada disto.
 
 ## Dirigir a tela: passos declarativos
 

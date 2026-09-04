@@ -4,6 +4,7 @@ import { test, expect } from 'vitest';
 import {
   ACOES, PARAMETROS_SCRIPTING, escVbs, validarPasso, vbsDoPasso, montarVbs,
   interpretarSaidaGui, resultadoDoPasso, interpretarTasklist, diagnosticarRot,
+  interpretarJanelas, lerJanelas, sessaoLogada, CLASSE_SESSAO,
 } from './gui.mjs';
 
 const SEP = '\u0001';
@@ -142,52 +143,127 @@ test('gui: catálogo de ações e de parâmetros de perfil — o que o item 34 m
   expect(PARAMETROS_SCRIPTING).toHaveLength(5);
 });
 
-test('gui: interpretarTasklist lê o SAPgui.exe e descarta a janela de infraestrutura', () => {
+test('gui: interpretarTasklist lê SAPgui.exe E saplogon.exe e descarta a janela de infraestrutura', () => {
   const csv = [
     '"SAPgui.exe","44840","Console","1","72.140 K","Running","DOM\joris","0:00:01","GDI+ Window (sapgui.exe)"',
     '"SAPgui.exe","3364","Console","1","91.208 K","Running","DOM\joris","0:00:02","Entrada do nome do usuário"',
     '"SAPgui.exe","7556","Console","1","64.000 K","Running","DOM\joris","0:00:00","N/A"',
     'INFO: No tasks are running which match the specified criteria.',
+    // medido 04/09/2026: o pad com 'SAP Easy Access' logada ABERTA — e o tasklist diz N/A
+    '"saplogon.exe","37016","Console","1","94.756 K","Running","DIR\joris","0:02:30","N/A"',
+    '"cscript.exe","100","Console","1","1 K","Running","DIR\joris","0:00:00","N/A"',
   ].join('\r\n');
   const p = interpretarTasklist(csv);
-  expect(p).toHaveLength(3);
+  expect(p).toHaveLength(4);
   // o processo nasceu, mas "GDI+ Window" e "N/A" NÃO são janela de usuário — senão o ROT
-  // (120 s sem sessão) seria consultado à toa
-  expect(p[0]).toEqual({ pid: 44840, titulo: '' });
-  expect(p[1]).toEqual({ pid: 3364, titulo: 'Entrada do nome do usuário' });
+  // (15 s sem sessão) seria consultado à toa
+  expect(p[0]).toEqual({ pid: 44840, imagem: 'SAPgui.exe', titulo: '' });
+  expect(p[1]).toEqual({ pid: 3364, imagem: 'SAPgui.exe', titulo: 'Entrada do nome do usuário' });
   expect(p[2].titulo).toBe('');
+  expect(p[3]).toEqual({ pid: 37016, imagem: 'saplogon.exe', titulo: '' });
   expect(interpretarTasklist('')).toEqual([]);
+});
+
+// Janelas medidas em 04/09/2026 (SAP GUI 8.00 PT, S4H 758/250), no formato que o PowerShell emite.
+const J = {
+  pad: 'saplogon.exe\t42432\t#32770\tSAP Logon 800\tConnections | Footer',
+  logada: 'saplogon.exe\t42432\tSAP_FRONTEND_SESSION\tSAP Easy Access\t',
+  telaLogon: 'saplogon.exe\t42432\tSAP_FRONTEND_SESSION\tSAP\t',
+  pedeSenha: 'saplogon.exe\t37016\t#32770\tLigação SAP GUI - logon (S4H, 250, PT, )\tEntrar o nome do usuário e a senha | Nome do usuário: | Senha:',
+  mensagem: 'SAPgui.exe\t48000\t#32770\tSAP GUI\tNem todos os dados estão disponíveis p/ligação a SAP GUI: | ID sistema desconhecido | Entrar os dados em falta',
+};
+
+test('gui: interpretarJanelas lê a saída TAB do PowerShell, com os textos do diálogo', () => {
+  const js = interpretarJanelas([J.pad, J.mensagem, ''].join('\r\n'));
+  expect(js).toHaveLength(2);
+  expect(js[0]).toEqual({ imagem: 'saplogon.exe', pid: 42432, classe: '#32770', titulo: 'SAP Logon 800', textos: ['Connections', 'Footer'] });
+  expect(js[1].imagem).toBe('SAPgui.exe');
+  expect(js[1].textos).toEqual(['Nem todos os dados estão disponíveis p/ligação a SAP GUI:', 'ID sistema desconhecido', 'Entrar os dados em falta']);
+  expect(interpretarJanelas('')).toEqual([]);
+});
+
+test('gui: lerJanelas — a sessão vive no saplogon.exe e se reconhece pela CLASSE, não pelo título', () => {
+  expect(CLASSE_SESSAO).toBe('SAP_FRONTEND_SESSION');
+  const de = (...linhas) => lerJanelas(interpretarJanelas(linhas.join('\n')));
+  // logada e tela de logon do servidor têm a MESMA classe — quem separa é o ROT
+  expect(de(J.pad, J.logada).estado).toBe('sessao');
+  expect(de(J.pad, J.telaLogon).estado).toBe('sessao');
+  expect(de(J.pad, J.logada).janelas.map((j) => j.titulo)).toEqual(['SAP Easy Access']);
+  // sem -pw: o pad pede a senha (diálogo, não sessão)
+  expect(de(J.pad, J.pedeSenha).estado).toBe('pede-senha');
+  // -conn=/H/… sem -sysname=: caixa de mensagem com o texto
+  const m = de(J.mensagem);
+  expect(m.estado).toBe('mensagem');
+  expect(m.janelas[0].textos).toContain('ID sistema desconhecido');
+  // só o pad de pé: não é sessão, não é erro
+  expect(de(J.pad).estado).toBe('so-pad');
+  expect(de().estado).toBe('nenhuma');
+});
+
+test('gui: sessaoLogada — a tela de logon entra no ROT com usuário vazio (medido 04/09/2026)', () => {
+  expect(sessaoLogada({ id: '/app/con[0]/ses[0]', sistema: 'S4H', mandante: '250', usuario: 'MVJVELOSO', tcode: 'SESSION_MANAGER' })).toBe(true);
+  expect(sessaoLogada({ id: '/app/con[1]/ses[0]', sistema: 'S4H', mandante: '000', usuario: '', tcode: 'S000' })).toBe(false);
+  expect(sessaoLogada(undefined)).toBe(false);
 });
 
 test('gui: diagnosticarRot separa os vazios do ROT pelo tasklist, não pelo prazo (medido 04/09/2026)', () => {
   // com sessão: nada a explicar
-  expect(diagnosticarRot({ sessoes: [{ id: '/app/con[0]/ses[0]' }] }))
+  expect(diagnosticarRot({ sessoes: [{ id: '/app/con[0]/ses[0]', usuario: 'MVJVELOSO' }] }))
     .toEqual({ estado: 'com-sessao', explicacao: null });
 
   // ⚠ os DOIS casos abaixo expiram IGUAL (medido: 15669 ms com o GUI fechado, 15663 ms com a janela
   // parada no logon) — o `expirou` não separa nada; quem separa é haver SAPgui.exe com janela
   const fechado = diagnosticarRot({ expirou: true, processos: [] });
   expect(fechado.estado).toBe('gui-fechado');
-  expect(fechado.explicacao).toMatch(/nenhum SAPgui\.exe está rodando/);
+  expect(fechado.explicacao).toMatch(/nenhum SAPgui\.exe nem saplogon\.exe está rodando/);
   expect(fechado.explicacao).toMatch(/^o GetObject\("SAPGUI"\) não respondeu no prazo/);
 
   // era este que mandava a investigação para RZ11/registro, por vir mudo
-  const logon = diagnosticarRot({ expirou: true, processos: [{ pid: 46708, titulo: 'Entrada do nome do usuário' }] });
+  const logon = diagnosticarRot({ expirou: true, processos: [{ pid: 46708, imagem: 'SAPgui.exe', titulo: 'Entrada do nome do usuário' }] });
   expect(logon.estado).toBe('logon-pendente');
   expect(logon.explicacao).toMatch(/TELA DE LOGON/);
   expect(logon.explicacao).toMatch(/46708:Entrada do nome do usuário/);
   expect(logon.explicacao).toMatch(/não mexa em RZ11/);
 
-  // processo de pé sem janela de usuário: subindo, ou o encerramento do § "Quando o sapshcut..."
-  const subindo = diagnosticarRot({ expirou: true, processos: [{ pid: 44840, titulo: '' }] });
+  // processo de pé sem janela de sessão: pad aberto sem sessão, ou GUI subindo
+  const subindo = diagnosticarRot({ expirou: true, processos: [{ pid: 44840, imagem: 'SAPgui.exe', titulo: '' }] });
   expect(subindo.estado).toBe('sem-janela');
-  expect(subindo.explicacao).toMatch(/nenhum com janela de usuário/);
+  expect(subindo.explicacao).toMatch(/nenhuma janela de sessão/);
+  const soPad = diagnosticarRot({ expirou: true, processos: [{ pid: 42432, imagem: 'saplogon.exe', titulo: '' }], janelas: interpretarJanelas(J.pad) });
+  expect(soPad.estado).toBe('sem-janela');
+  expect(soPad.explicacao).toMatch(/saplogon\.exe:42432/);
 
   // sem expirar, o mesmo tasklist decide — só muda a frase de abertura
-  const vazio = diagnosticarRot({ processos: [{ pid: 7556, titulo: 'S4H' }] });
+  const vazio = diagnosticarRot({ processos: [{ pid: 7556, imagem: 'SAPgui.exe', titulo: 'S4H' }] });
   expect(vazio.estado).toBe('logon-pendente');
   expect(vazio.explicacao).toMatch(/^o ROT respondeu vazio/);
 
   // Err do próprio GetObject é o ÚNICO caso que aponta para cliente/servidor
   expect(diagnosticarRot({ erroVbs: 'ActiveX component cant create object' }).estado).toBe('erro-scripting');
+});
+
+test('gui: diagnosticarRot enxerga o pad — sessão no ROT sem usuário, janela de sessão, senha pedida, mensagem (medido 04/09/2026)', () => {
+  const pad = [{ pid: 42432, imagem: 'saplogon.exe', titulo: '' }];
+  // a tela de logon ENTRA no ROT (usuário vazio, mandante 000, S000) — não é sessão logada
+  const telaNoRot = diagnosticarRot({ sessoes: [{ id: '/app/con[1]/ses[0]', sistema: 'S4H', mandante: '000', usuario: '', tcode: 'S000' }], processos: pad });
+  expect(telaNoRot.estado).toBe('logon-pendente');
+  expect(telaNoRot.explicacao).toMatch(/con\[1\]\/ses\[0\] S4H\/000 S000/);
+  expect(telaNoRot.explicacao).toMatch(/credencial não passou/);
+  // uma logada entre as conexões basta
+  expect(diagnosticarRot({ sessoes: [{ usuario: '' }, { usuario: 'MVJVELOSO' }] }).estado).toBe('com-sessao');
+
+  // ROT vazio, mas há janela SAP_FRONTEND_SESSION no pad: tela de logon
+  const janelaSessao = diagnosticarRot({ expirou: true, processos: pad, janelas: interpretarJanelas([J.pad, J.telaLogon].join('\n')) });
+  expect(janelaSessao.estado).toBe('logon-pendente');
+  expect(janelaSessao.explicacao).toMatch(/saplogon\.exe:42432 'SAP'/);
+
+  // o pad pediu a senha (atalho sem -pw)
+  const senha = diagnosticarRot({ expirou: true, processos: pad, janelas: interpretarJanelas([J.pad, J.pedeSenha].join('\n')) });
+  expect(senha.estado).toBe('pede-senha');
+  expect(senha.explicacao).toMatch(/Ligação SAP GUI - logon/);
+
+  // caixa de mensagem: o texto vai na explicação
+  const msg = diagnosticarRot({ processos: [{ pid: 48000, imagem: 'SAPgui.exe', titulo: 'SAP GUI' }], janelas: interpretarJanelas(J.mensagem) });
+  expect(msg.estado).toBe('mensagem');
+  expect(msg.explicacao).toMatch(/ID sistema desconhecido/);
 });
