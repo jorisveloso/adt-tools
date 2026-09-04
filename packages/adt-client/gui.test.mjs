@@ -3,7 +3,7 @@
 import { test, expect } from 'vitest';
 import {
   ACOES, PARAMETROS_SCRIPTING, escVbs, validarPasso, vbsDoPasso, montarVbs,
-  interpretarSaidaGui, resultadoDoPasso, interpretarTasklist, diagnosticarRot,
+  interpretarSaidaGui, resultadoDoPasso, interpretarTasklist, linhaTasklist, diagnosticarRot,
   interpretarJanelas, lerJanelas, sessaoLogada, CLASSE_SESSAO,
 } from './gui.mjs';
 
@@ -162,6 +162,17 @@ test('gui: interpretarTasklist lê SAPgui.exe E saplogon.exe e descarta a janela
   expect(p[2].titulo).toBe('');
   expect(p[3]).toEqual({ pid: 37016, imagem: 'saplogon.exe', titulo: '' });
   expect(interpretarTasklist('')).toEqual([]);
+});
+
+test('gui: linhaTasklist força UTF-8 — sem chcp 65001 o título acentuado chega com U+FFFD (medido 04/09/2026)', () => {
+  const linha = linhaTasklist('SAPgui.exe');
+  // o tasklist escreve na codepage OEM (850); cmd /U, TextDecoder do Node e WMI não resolvem — só o chcp
+  expect(linha.startsWith('chcp 65001>nul && tasklist ')).toBe(true);
+  // o filtro tem espaço e vai verbatim ao cmd: as aspas têm de estar NA linha, não no quoting do Node
+  expect(linha).toContain('/FI "IMAGENAME eq SAPgui.exe"');
+  expect(linha).toContain('/FO CSV /NH /V');
+  // dois /FI no mesmo tasklist são E, não OU — uma linha por imagem
+  expect(linhaTasklist('saplogon.exe')).not.toContain('SAPgui.exe');
 });
 
 // Janelas medidas em 04/09/2026 (SAP GUI 8.00 PT, S4H 758/250), no formato que o PowerShell emite.

@@ -378,6 +378,8 @@ const IMAGENS_SAPGUI = ['SAPgui.exe', 'saplogon.exe'];
  * ⚠ O `titulo` do tasklist só presta para o SAPgui.exe. Para o saplogon.exe ele vem `N/A` MESMO com
  * sessão logada de pé (medido 04/09/2026: `"saplogon.exe","37016",...,"N/A"` com 'SAP Easy Access'
  * aberta). Janela do pad se enxerga com `janelasSapGui()`, não aqui.
+ *
+ * Espera o CSV já em UTF-8 — quem garante isso é `linhaTasklist` (o `chcp 65001`), não este parser.
  */
 export function interpretarTasklist(csv) {
   const procs = [];
@@ -398,12 +400,24 @@ export function interpretarTasklist(csv) {
   return procs;
 }
 
+/**
+ * PURO: a linha de `cmd /c` que lista UMA imagem pelo `tasklist /V`, em UTF-8.
+ *
+ * ⚠ O `tasklist` escreve na codepage OEM do console (850 nesta máquina) e o Node decodifica o stdout
+ * como UTF-8: 'usuário' chegava 'usu\uFFFDrio' (byte A0 = 'á' em cp850). Medido 04/09/2026 contra um
+ * cmd com título 'Entrada do nome do usuário': `cmd /U` NÃO muda nada (só vale para comando interno),
+ * o `TextDecoder` do Node NÃO tem cp850 (ibm866 devolve cirílico), WMI `Win32_Process` NÃO tem título
+ * de janela — e `chcp 65001` antes do `tasklist` faz o título sair `c3 a1` (UTF-8) e chegar inteiro.
+ * A linha vai a `cmd /c` com `windowsVerbatimArguments` (o `&&` e as aspas do filtro não podem passar
+ * pelo quoting do Node). Dois `/FI` no mesmo tasklist são E, não OU — daí uma linha por imagem.
+ */
+export const linhaTasklist = (imagem) => `chcp 65001>nul && tasklist /FI "IMAGENAME eq ${imagem}" /FO CSV /NH /V`;
+
 /** Os SAPgui.exe e saplogon.exe vivos agora. Barato — ao contrário do ROT, que custa 15 s sem sessão. */
 export async function processosSapGui() {
-  const tasklist = `${process.env.WINDIR || 'C:\\Windows'}\\System32\\tasklist.exe`;
-  // dois filtros /FI no mesmo tasklist são E, não OU — daí uma chamada por imagem
+  const cmd = `${process.env.WINDIR || 'C:\\Windows'}\\System32\\cmd.exe`;
   const saidas = await Promise.all(IMAGENS_SAPGUI.map((imagem) =>
-    exec(tasklist, ['/FI', `IMAGENAME eq ${imagem}`, '/FO', 'CSV', '/NH', '/V'], { windowsHide: true, timeout: 10000 })
+    exec(cmd, ['/c', linhaTasklist(imagem)], { windowsHide: true, windowsVerbatimArguments: true, timeout: 10000 })
       .then((r) => r.stdout, (e) => e.stdout || '')));
   return interpretarTasklist(saidas.join('\n'));
 }

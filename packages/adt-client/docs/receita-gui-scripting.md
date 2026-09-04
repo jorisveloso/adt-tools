@@ -197,6 +197,11 @@ Gotchas medidos no caminho:
   sessão. Quem enxerga é `janelasSapGui()` (`EnumWindows`; 753 ms), e a janela de sessão se
   reconhece pela **classe** `SAP_FRONTEND_SESSION`, não pelo título (que muda com idioma e
   transação).
+- **O `tasklist` escreve na codepage OEM (850) e o Node lê UTF-8**: 'usuário' chegava
+  `usu�rio` (byte `A0`). Medido 04/09/2026: `cmd /U` não muda programa externo, o `TextDecoder`
+  do Node não tem cp850, WMI `Win32_Process` não tem título de janela — só `chcp 65001>nul &&
+  tasklist …` resolve (`linhaTasklist`, via `cmd /c` com `windowsVerbatimArguments`). O PowerShell
+  tem o mesmo mal sem `[Console]::OutputEncoding=UTF8` — o `janelasSapGui()` ainda sofre disso (fila).
 - **Aberto (anomalia anotada):** ~40 s depois de o lançador ter iniciado o pad (E), um
   `GetObject("SAPGUI")` devolveu engine **sem filhos** com a sessão `SAP Easy Access` visível; ~1 min
   depois o ROT listava a sessão normalmente. Não reproduzido de propósito; está na fila.
