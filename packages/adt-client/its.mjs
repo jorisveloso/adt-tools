@@ -34,13 +34,17 @@
 //   5. `/nex` encerra a sessão (200 `text/html` "logoff"); o POST seguinte volta 400
 //      `Session Timed Out`. Quem abre fecha: `fechar` manda o `/nex`.
 //
-// ⚠️ O que esta via NÃO tem, e o navegador tem: print de tela e leitura por DOM. A tela aqui é o
-// XML — os SIDs saem do `lsdata` de cada controle (`sids`); o modelo completo da tela
-// (`lerTela` com campos/rótulos/botões/mensagem por `montarTela`) é o item 21 da fila.
+// ⚠️ O que esta via NÃO tem, e o navegador tem: print de tela. A LEITURA ela tem: o `delta-update`
+// carrega a tela inteira como HTML dentro de CDATA, e `controlesDoDelta` o varre sem DOM, produzindo
+// o MESMO despejo que o `JS_DESPEJO_CONTROLES` do navegador — daí o `montarTela` do webgui.mjs
+// servir às duas vias, e `lerTela(sessao)` devolver o mesmo modelo (fila 21, § abaixo).
 
 import { passo, detalhe, http as logHttp } from './log.mjs';
 import { encerrarSessao } from './sap-connection.mjs';
-import { urlWebgui, autorizacao, interpretarSonda, okcodeDe, campoDoSid, OKCODES } from './webgui.mjs';
+import {
+  urlWebgui, autorizacao, interpretarSonda, okcodeDe, campoDoSid, OKCODES,
+  montarTela, sidDoLsdata, rotuloLimpo, teclaDoBotao, sidsDaTela,
+} from './webgui.mjs';
 
 // ---------- o vocabulário do protocolo (PURO) ----------
 
@@ -225,6 +229,204 @@ function sidDoBotao(sids, alvo) {
   throw new Error(`its: botão ${okcode} não está na tela — tenho ${tem}`);
 }
 
+// ---------- a tela do delta-update (PURO) ----------
+//
+// O `delta-update` é a tela inteira como HTML dentro de `<![CDATA[…]]>`, um bloco por região
+// (`cuaarea` = barras, `steploop0` = a dynpro, `msgarea` = a barra de mensagens, `webguiPopups` =
+// o popup). Medido no s4h 758/250 em 04/09/2026 (sap-accelerate/work/POC_webgui_okcode e
+// POC_webgui_its_lib, medicoes/raw/*): TODO POST que volta `delta` traz a tela inteira — o boot
+// (288 KB), um `enviar` só com `focus`+`value` (288 KB), o `/nSE38` (246 KB) — não um diff.
+//
+// ⚠️ A EXCEÇÃO, medida com `/nend` e `/o`: com POPUP aberto o `steploop0` vem VAZIO
+// (`<div id="steploop0" ct="PLP"></div>`) e a `wnd[0]/usr` SOME do delta — 0 SIDs, contra 48 do
+// mesmo menu sem popup; um `state/ur` posterior devolve a mesma coisa. Quem lê a tela com popup
+// aberto lê o popup: os campos da `wnd[0]` não estão lá para serem lidos.
+//
+// O que a via HTTP NÃO tem e o navegador tem: LAYOUT. `visivel` aqui é "não marcado invisível no
+// markup" (`lsControl--invisible`, `lsElement--invisible`, `display:none`, o `<xmp>` que embrulha os
+// menus) — o campo 0×0 do navegador (o `okcd`) sai `visivel: true` por esta via. A marcação de
+// radio/checkbox vem do `aria-checked` do markup, como no DOM (fila 9: o `lsdata` não muda).
+
+/** As tags HTML sem fechamento — não entram na pilha. */
+const TAGS_VAZIAS = new Set(['input', 'img', 'br', 'hr', 'col', 'meta', 'link', 'area', 'base', 'wbr', 'source', 'embed', 'param', 'track']);
+/** As tags que quebram linha no `innerText` — o resto é inline e cola (`<span class="urAccessKey">P</span>rograma` = "Programa"). */
+const TAGS_DE_BLOCO = new Set(['div', 'p', 'br', 'hr', 'tr', 'li', 'ul', 'ol', 'table', 'thead', 'tbody', 'tfoot', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'footer', 'section', 'article', 'form', 'fieldset', 'xmp', 'pre']);
+const COM_VALUE = new Set(['input', 'textarea', 'select', 'button']);
+// `pseudoHidden` é a dica de leitor de tela (" Destacado" no btn[0]) — fora da tela e fora do rótulo
+const RE_INVISIVEL = /\b(lsControl--invisible|lsElement--invisible|lsControl--hidden|lsControl--pseudoHidden)\b/;
+
+/** PURO: os atributos de uma tag (`id="…"`, `lsdata='…'`, `disabled`), sem decodificar. */
+export function atributosDe(tag) {
+  const attrs = {};
+  const re = /([^\s=/>"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+  let m;
+  while ((m = re.exec(tag))) attrs[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? '';
+  return attrs;
+}
+
+function lsdataDe(bruto) {
+  if (!bruto) return null;
+  try { return JSON.parse(decodificarEntidades(bruto)); } catch { /* entidade que virou aspa */ }
+  try { return JSON.parse(bruto); } catch { return null; }
+}
+
+/**
+ * PURO: os controles de um trecho de HTML do ITS — todo elemento com `ct`, no MESMO formato que o
+ * `JS_DESPEJO_CONTROLES` do webgui.mjs despeja do DOM: `{ id, ct, lsdata, title, aria, accesskey,
+ * valor, desabilitado, somenteLeitura, texto, visivel }`. É um scanner de tags com pilha (não um
+ * parser de HTML): `texto` é o que o `innerText` seria — os nós de texto do elemento e dos filhos,
+ * inline colado e bloco em linha nova, sem o que está em subárvore invisível, cortado em 120 — e
+ * `visivel` é a ausência de marca de invisível nele ou acima.
+ *
+ * Medido (SE38 por HTTP, c4-nse38.txt): a letra de atalho vem num `<span class="urAccessKey">`
+ * SEPARADO do resto (`<span>P</span>rograma`) — quem põe separador entre nós de texto lê
+ * "P\nrograma" e o rótulo vira "P". Só tag de BLOCO quebra linha.
+ */
+export function controlesDoHtml(html) {
+  const s = String(html ?? '');
+  const brutos = [];
+  const pilha = [];   // { nome, indice (em brutos) | -1, texto: '', invisivel }
+  const invisivelAcima = () => (pilha.length ? pilha[pilha.length - 1].invisivel : false);
+  let i = 0;
+  const texto = (t) => {
+    if (invisivelAcima()) return;                    // o innerText não traz o que não é renderizado
+    const limpo = decodificarEntidades(t).replace(/\s+/g, ' ');
+    if (!limpo.trim()) return;
+    for (const f of pilha) f.texto += limpo;
+  };
+  const quebra = () => { for (const f of pilha) f.texto += '\n'; };
+  const fechar = (nome) => {
+    // fecha até a tag de mesmo nome (o markup do ITS é bem formado; tag solta só encosta na pilha)
+    const k = pilha.map((f) => f.nome).lastIndexOf(nome);
+    if (k < 0) return;
+    while (pilha.length > k) {
+      const f = pilha.pop();
+      if (TAGS_DE_BLOCO.has(f.nome)) quebra();
+      if (f.indice >= 0) {
+        brutos[f.indice].texto = f.texto.split('\n').map((l) => l.trim()).filter(Boolean).join('\n').slice(0, 120) || null;
+      }
+    }
+  };
+  while (i < s.length) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) { texto(s.slice(i)); break; }
+    if (lt > i) texto(s.slice(i, lt));
+    if (s.startsWith('<!--', lt)) { const fim = s.indexOf('-->', lt); i = fim < 0 ? s.length : fim + 3; continue; }
+    if (s[lt + 1] === '/') {
+      const gt = s.indexOf('>', lt);
+      fechar(s.slice(lt + 2, gt < 0 ? s.length : gt).trim().toLowerCase());
+      i = gt < 0 ? s.length : gt + 1;
+      continue;
+    }
+    // tag de abertura: acha o `>` respeitando aspas (o lsdata é JSON entre aspas simples)
+    let k = lt + 1, aspas = null;
+    while (k < s.length) {
+      const c = s[k];
+      if (aspas) { if (c === aspas) aspas = null; }
+      else if (c === '"' || c === "'") aspas = c;
+      else if (c === '>') break;
+      k++;
+    }
+    const tag = s.slice(lt + 1, k);
+    i = k + 1;
+    const nome = (/^[a-zA-Z][\w:-]*/.exec(tag)?.[0] ?? '').toLowerCase();
+    if (!nome) continue;
+    if (nome === 'script' || nome === 'style') {   // conteúdo não é innerText
+      const fim = s.indexOf(`</${nome}`, i);
+      i = fim < 0 ? s.length : fim;
+      continue;
+    }
+    const attrs = atributosDe(tag.slice(nome.length));
+    const invisivel = invisivelAcima() || RE_INVISIVEL.test(attrs.class ?? '') ||
+      /display\s*:\s*none/i.test(attrs['data-sap-ls-style'] ?? attrs.style ?? '');
+    let indice = -1;
+    if ('ct' in attrs) {
+      indice = brutos.length;
+      brutos.push({
+        id: attrs.id ? decodificarEntidades(attrs.id) : null, ct: attrs.ct,
+        lsdata: lsdataDe(attrs.lsdata),
+        title: attrs.title ? decodificarEntidades(attrs.title) : null,
+        aria: attrs['aria-checked'] ?? null,
+        accesskey: attrs['data-sap-ls-accesskey'] ?? null,
+        valor: COM_VALUE.has(nome) ? decodificarEntidades(attrs.value ?? '') : null,
+        desabilitado: 'disabled' in attrs, somenteLeitura: 'readonly' in attrs,
+        texto: null, visivel: !invisivel,
+      });
+    }
+    const fechada = /\/\s*$/.test(tag) || TAGS_VAZIAS.has(nome);
+    if (TAGS_DE_BLOCO.has(nome)) quebra();
+    if (!fechada) pilha.push({ nome, indice, texto: '', invisivel });
+  }
+  while (pilha.length) fechar(pilha[0].nome);
+  return brutos;
+}
+
+/**
+ * PURO: os controles de um `delta-update` inteiro — os blocos CDATA de cada `<control-update>`,
+ * na ordem do documento (`cuaarea` antes de `steploop0`; o `msgarea` no fim). Os `<start-script>`
+ * (JS, não HTML) ficam de fora.
+ */
+export function controlesDoDelta(corpo) {
+  const s = String(corpo ?? '');
+  const brutos = [];
+  const re = /<control-update\b[^>]*>\s*<content>\s*<!\[CDATA\[([\s\S]*?)\]\]>/g;
+  let m;
+  while ((m = re.exec(s))) brutos.push(...controlesDoHtml(m[1]));
+  return brutos;
+}
+
+/**
+ * PURO: o POPUP (`wnd[1]`, `GuiModalWindow`) que o delta trouxe — ou `null`. O título é a primeira
+ * linha do texto da janela (o `header` é o primeiro filho); `textos` são os rótulos da `wnd[1]`
+ * (`txtSPOP-TEXTLINE1` "Os dados não gravados serão perdidos."); `botoes` são os da `wnd[1]` PELO
+ * SID (`wnd[1]/usr/btnSPOP-OPTION1` "Sim") — ⚠ eles NÃO são `btn[n]`, então não entram em
+ * `tela.botoes` e `acionar(s, 'Sim')` não os acha: é `acionar(s, { sid })`, e responder ao popup
+ * por esta via ainda não está medido (fila 23).
+ */
+export function popupDaTela(brutos = []) {
+  const controles = brutos.map((b) => ({ b, sid: sidDoLsdata(b.lsdata) }));
+  const janela = controles.find((c) => c.sid?.Type === 'GuiModalWindow');
+  if (!janela) return null;
+  const raiz = janela.sid.SID;                                       // wnd[1]
+  const dentro = controles.filter((c) => c.sid?.SID?.startsWith(`${raiz}/`));
+  return {
+    sid: raiz, id: janela.b.id ?? null,
+    titulo: rotuloLimpo(janela.b.texto, janela.b.title),
+    textos: dentro.filter((c) => c.sid.Type === 'GuiLabel' && (c.b.texto || c.b.title))
+      .map((c) => ({ sid: c.sid.SID, texto: c.b.texto || c.b.title })),
+    botoes: dentro.filter((c) => c.sid.Type === 'GuiButton')
+      .map((c) => ({ sid: c.sid.SID, rotulo: rotuloLimpo(c.b.texto, c.b.title), tecla: teclaDoBotao(c.b.lsdata), accesskey: c.b.accesskey ?? null })),
+    campos: dentro.filter((c) => TIPOS_DE_ENTRADA.has(c.sid.Type))
+      .map((c) => ({ sid: c.sid.SID, campo: campoDoSid(c.sid.SID), valor: c.b.valor ?? '', dica: c.b.title ?? null })),
+  };
+}
+
+/**
+ * PURO: o MODELO da tela a partir de um `delta-update` — o `montarTela` do webgui.mjs sobre os
+ * controles do XML, mais o que só o XML sabe (`screenId`, `dynpro`, `tcode`, `dnum`) e o `popup`.
+ * É o mesmo modelo do `lerTela` do navegador: `{ titulo, janela, mensagem, statusbar, campos
+ * (com rótulo costurado), radios, checkboxes, botoes, grids, rotulos, okcode }`. Corpo sem
+ * `<delta-update>` (multipart, logoff) devolve `null` — não há tela ali.
+ *
+ * Cruzado em 04/09/2026 contra o despejo DOM da MESMA SE38 (POC_webgui_lsdata/raw/se38.json ×
+ * POC_webgui_okcode/raw/c4-nse38.txt): campos, rótulos, dica, radios, checkboxes, botões (okcode,
+ * rótulo, tecla) e mensagem IGUAIS pelas duas vias — ver its.test.mjs.
+ */
+export function telaDoDelta(corpo) {
+  const s = String(corpo ?? '');
+  if (!/<delta-update/i.test(s)) return null;
+  const brutos = controlesDoDelta(s);
+  const tela = montarTela(brutos, { titulo: paramDe(s, 'cuatitle') });
+  const popup = popupDaTela(brutos);
+  return {
+    ...tela,
+    screenId: paramDe(s, 'ScreenId'), dynpro: paramDe(s, 'dynpro'), tcode: paramDe(s, 't-code'), dnum: paramDe(s, 'd-num'),
+    popup,
+    // com popup aberto a wnd[0]/usr NÃO vem no delta — quem lê `campos` vazio precisa saber por quê
+    aviso: popup && !tela.campos.length ? `popup ${popup.sid} aberto — a wnd[0]/usr não vem no delta enquanto ele estiver aberto` : null,
+  };
+}
+
 // ---------- a sessão ----------
 
 const cookieDoJar = (jar) => [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
@@ -279,7 +481,7 @@ export async function abrir(cfg, { transacao = null, parametros = {}, okcode = n
   }
   const sessao = {
     via: 'http', cfg, url, jar, action, moin, sysid: sonda.sid, mandante: sonda.mandante,
-    sids: [], ultimo: null, titulo: null, fila: [], aberta: true, tempos: { get: ms, boot: null },
+    sids: [], delta: null, ultimo: null, titulo: null, fila: [], aberta: true, tempos: { get: ms, boot: null },
   };
   detalhe(`its: sessão ${sonda.sid}/${sonda.mandante} aberta em ${ms} ms (moin ${moin ?? '—'})`);
   if (boot) {
@@ -296,7 +498,7 @@ export const abrirTransacao = (cfg, tcode, opts = {}) => abrir(cfg, { ...opts, t
 
 /**
  * O POST cru: manda o batch EXATAMENTE como veio e devolve o `lerResposta` (+ `ms`, `corpo`).
- * Atualiza o `moin`, o jar, os `sids` e o `titulo` da sessão quando veio `delta`; marca a sessão
+ * Atualiza o `moin`, o jar, os `sids`, o `titulo` e o `delta` da sessão quando veio `delta`; marca a sessão
  * encerrada quando veio `logoff` ou `sem-sessao`. As funções de cima (`acionar`, `comandar`…)
  * compõem o batch e fecham com `ESTADO`; esta não acrescenta nada.
  */
@@ -328,6 +530,7 @@ export async function postar(sessao, batch, { tetoMs = 30000 } = {}) {
   if (lida.forma === 'delta') {
     sessao.sids = sidsDaResposta(corpo);
     sessao.titulo = lida.titulo;
+    sessao.delta = corpo;   // a última tela — é dela que `lerTela` lê (multipart não a substitui)
   }
   if (lida.forma === 'logoff' || lida.forma === 'sem-sessao') sessao.aberta = false;
   sessao.ultimo = lida;
@@ -348,10 +551,27 @@ async function despachar(sessao, comandos = [], opts) {
 export const titulo = (sessao) => sessao.titulo;
 
 /**
+ * O que a tela É agora — o MESMO modelo do `lerTela` do webgui.mjs, lido do último `delta` sem
+ * tocar a rede: `{ titulo, janela, mensagem, statusbar, campos, radios, checkboxes, botoes, grids,
+ * rotulos, okcode, screenId, dynpro, tcode, dnum, popup, aviso }`. Cada campo traz `sid`, `campo`
+ * (o parâmetro da URL `~transaction`), `rotulo` (costurado pelo label), `dica` (o data element) e
+ * `valor`. ⚠ `popup` não nulo = `wnd[1]` aberta, e aí `campos` vem vazio (o delta não traz a
+ * `wnd[0]/usr`) — o `aviso` diz isso.
+ */
+export function lerTela(sessao) {
+  if (!sessao?.delta) throw new Error('its: sem delta para ler — abra a sessão (o boot traz a primeira tela)');
+  return telaDoDelta(sessao.delta);
+}
+
+/** Os parâmetros da URL `~transaction` desta tela — `{ id, title, sid, campo, rotulo }` por campo
+ * visível (o `sidsDaTela` do webgui.mjs sobre o `lerTela` daqui). */
+export const parametrosDaTela = (sessao) => sidsDaTela(lerTela(sessao));
+
+/**
  * Os SIDs da tela atual — `{ sid, tipo, campo, okcode, … }` por controle, do último `delta`.
  * É o endereçamento desta via: `campo` é o nome que `abrirTransacao(…, { parametros })` quer e
- * `okcode` é o `btn[n]` que `acionar` aceita. Só endereços; o MODELO da tela (rótulo, valor
- * legível, mensagem) é o `lerTela` do item 21.
+ * `okcode` é o `btn[n]` que `acionar` aceita. Só endereços (e o que o `lsdata` carrega); o MODELO
+ * da tela, com rótulo e mensagem, é `lerTela`.
  */
 export const sids = (sessao) => sessao.sids;
 /** Só os campos de entrada da tela atual. */

@@ -728,10 +728,69 @@ Custo por salto: **85–150 ms**. Evidência:
 
 ### O que o navegador ainda dá, e esta via não
 
-A leitura. O `delta-update` é HTML+script para o renderer aplicar; ler campo e botão dele é
-**parsear XML**, não `querySelectorAll`. O que já está medido que dá para tirar do XML sem
-navegador: `cuatitle`, `ScreenId`, `dynpro`, e cada `<input>` com seu `SID`, `title` e `value`
-(foi assim que a prova achou o `txtMAX_SEL`). Print de tela, esta via **não tem**.
+O **print de tela**. A leitura, desde o item 21 (2026-09-04), as duas vias têm — e é o **mesmo
+modelo**: § "Ler a tela do `delta-update`" abaixo.
+
+### Ler a tela do `delta-update` — `lerTela` sem DOM (item 21)
+
+**Medido nos brutos do s4h 758/250 de 2026-09-04** (`POC_webgui_okcode/medicoes/raw/*`,
+`POC_webgui_its_lib/medicoes/raw/*`; cruzamento em
+`POC_webgui_its_lib/medicoes/lertela-xml-x-dom.md`). O `delta-update` é a **tela inteira** como
+HTML dentro de `<![CDATA[…]]>`, um bloco por região — `cuaarea` (barras), `steploop0` (a dynpro),
+`msgarea` (barra de mensagens), `webguiPopups` (o popup). O `its.mjs` varre esse HTML com um
+scanner de tags (`controlesDoHtml`/`controlesDoDelta`) e produz **o mesmo despejo** que o
+`JS_DESPEJO_CONTROLES` tira do DOM no navegador — `{ id, ct, lsdata, title, aria, accesskey, valor,
+texto, visivel }` — e daí o **`montarTela` do `webgui.mjs` serve às duas vias**:
+
+```js
+import { abrirTransacao, lerTela, parametrosDaTela, fechar } from 'adt-client/its';
+const s = await abrirTransacao(cfg, 'SE38');
+const tela = lerTela(s);         // sem tocar a rede: lê o último delta da sessão
+tela.titulo;                     // 'Editor ABAP: 1ª tela'   (+ screenId, dynpro, tcode, dnum)
+tela.campos[0];                  // { sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', campo: 'RS38M-PROGRAMM', rotulo: 'Programa', dica: 'Nome do programa ABAP', valor: '', maxlen: 40 }
+tela.radios[0];                  // { campo: 'RS38M-FUNC_EDIT', rotulo: 'Texto fonte', selecionado: true, grupo: '%RBG0257' }
+tela.botoes.map((b) => [b.okcode, b.rotulo, b.tecla]);   // [['btn[3]','Voltar','F3'], ['btn[8]','Executar','F8'], …]
+tela.mensagem;                   // { tipo: 'OK', texto: 'Seleção restringida a 2 ocorrências' } | null
+tela.popup;                      // null, ou a wnd[1] (§ abaixo)
+parametrosDaTela(s);             // [{ campo: 'RS38M-PROGRAMM', rotulo: 'Programa', … }] — o ~transaction desta tela
+```
+
+**Cruzamento XML × DOM na MESMA SE38** (`c4-nse38.txt` por HTTP × `se38.json` pelo Chrome):
+título, mensagem, o campo (nome, rótulo, dica, maxlen), os 16 botões (okcode, rótulo, tecla), os
+5 radios (nome, rótulo, grupo) e o `okcd` saíram **iguais** pelas duas vias. A única diferença foi
+`selecionado` dos radios — e é o despejo DOM daquela POC que está errado (guardou `el.checked`, que
+é `false` num `<span role="radio">`; o `aria-checked="true"` do XML é o que o `RADIO_MARCADO` do
+`webgui.test.mjs` já usa). 325 controles em ~40 ms.
+
+**Três regras do texto, medidas no markup:**
+
+| regra | por quê |
+|---|---|
+| nó de texto inline **cola** (`<span class="urAccessKey">P</span>rograma` = "Programa") | a letra de atalho vem em span separado; separador entre nós dá "P\nrograma" e o rótulo vira "P" |
+| só tag de **bloco** quebra linha (`div`, `tr`, `p`…) | é o que o `innerText` faz — o `:` do checkbox chega em linha própria |
+| subárvore **invisível** não dá texto (`lsControl--invisible` do `<xmp>` do menu, `lsControl--hidden`, `lsControl--pseudoHidden`, `display:none`) | o " Destacado" do `btn[0]` é dica de leitor de tela num `pseudoHidden` DENTRO do botão |
+
+**O que esta via NÃO tem, e o DOM tem: layout.** `visivel` aqui é "não marcado invisível no
+markup" — o `okcd` (0×0 no navegador) sai `visivel: true`. E a `wnd[0]` (`GuiMainWindow`) mora no
+**shell do GET**, não no delta: sem popup, `tela.janela` é `null` por esta via.
+
+⚠ **Com popup aberto, o delta ESVAZIA a `wnd[0]/usr`.** Medido com `/nend` e `/o`: o `steploop0`
+vem `<div id="steploop0" ct="PLP"></div>`, **0** SIDs em `wnd[0]/usr` (contra 48 do mesmo menu
+sem popup), e um `state/ur` posterior devolve a mesma coisa. `tela.popup` traz a `wnd[1]`:
+
+```js
+tela.popup   // { sid: 'wnd[1]', id: 'SAPLSPO1100_1', titulo: 'Efetuar logoff',
+             //   textos: [{ sid: 'wnd[1]/usr/txtSPOP-TEXTLINE1', texto: 'Os dados não gravados serão perdidos.' }, …],
+             //   botoes: [{ sid: 'wnd[1]/usr/btnSPOP-OPTION1', rotulo: 'Sim', accesskey: 'S' }, { …OPTION2, rotulo: 'Não' }],
+             //   campos: [] }
+tela.aviso   // 'popup wnd[1] aberto — a wnd[0]/usr não vem no delta enquanto ele estiver aberto'
+```
+
+⚠ Os botões do popup (`btnSPOP-OPTION1`) **não são `btn[n]`**: não entram em `tela.botoes` e
+`acionar(s, 'Sim')` não os acha — o endereço é `acionar(s, { sid: tela.popup.botoes[0].sid })`.
+**Responder ao popup por esta via não está medido** (item 23). O `/o` mostrou ainda que a
+`wnd[1]` pode ter barra própria (`wnd[1]/tbar[0]/btn[0]` "Avançar", `btn[12]` "Cancelar") — e aí
+`tela.botoes` mistura os `btn[n]` das duas janelas na ordem do documento.
 
 ### O módulo `its.mjs` — o protocolo portado para a lib
 
@@ -790,14 +849,16 @@ item 8 mediu para o mesmo `/n` numa sessão nascida no menu. A causa não foi is
 
 ### O que **ainda não** está medido por esta via
 
-* ~~Porte para a lib~~ **feito** (item 20): `its.mjs`. O que o módulo ainda **não** tem é o
-  **`lerTela` completo** — rótulo, valor legível, mensagem, grid por `montarTela` sobre um parser
-  do `delta-update` (item 21). Hoje a leitura é `sids`/`campos`/`botoes` (endereços + o que o
-  `lsdata` carrega: `value`, `maxlen`, `applicationText` da barra).
+* ~~Porte para a lib~~ **feito** (item 20): `its.mjs`. ~~`lerTela` completo~~ **feito** (item 21):
+  `lerTela`/`telaDoDelta` — o mesmo modelo do navegador, lido do XML (§ "Ler a tela do
+  `delta-update`"). O que fica em aberto na leitura: **checkbox** por esta via não foi cruzado
+  (nenhum bruto HTTP tem um — o `chkALSOUSUB` só existe no despejo DOM), e o **grid** sai só como
+  cabeçalho (`ColumnIDs`, `totalRows`) — as linhas do ALV não estão no `lsdata`.
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * **O mapa do `vkey/<n>`**: só o `vkey/0` (Enter) está medido; F3, F8 e Shift+F3 como tecla direta
   ainda não (item 22). `vkey(s, n)` existe no módulo para MEDIR, não para afirmar.
 * Popup (`wnd[1]`) — `/o` e `/nend` abrem um, e ele **vem no mesmo `delta-update`**
-  (`lerResposta` sinaliza `popup: true`); falta medir como responder (item 23). ALV/table control
-  e upload/download por esta via também não.
+  (`lerResposta` sinaliza `popup: true`; `lerTela` devolve `popup` com textos e botões por SID —
+  e avisa que a `wnd[0]/usr` foi esvaziada); falta medir como responder (item 23). ALV/table
+  control e upload/download por esta via também não.

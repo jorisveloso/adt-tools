@@ -26,7 +26,8 @@
 //     ⚠ Limite DESTE MÓDULO, não do canal: a MESMA dynpro se dirige por HTTP puro, sem Chrome, em
 //     `its.mjs` (export `adt-client/its`) — mesmo vocabulário (`abrirTransacao`/`preencher`/
 //     `acionar`/`comandar`/`fechar`), endereço por SID, ~0,65 s até a tela contra ~9 s daqui.
-//     O que só ESTE módulo tem: `print` e a leitura por DOM (`lerTela` completo, `campos`, `botoes`).
+//     O que só ESTE módulo tem: `print`. A leitura (`lerTela`, `campos`, `botoes`) as duas têm — o
+//     `montarTela` daqui roda sobre o DOM aqui e sobre o XML do delta-update lá (fila 21).
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -681,6 +682,7 @@ export function montarTela(brutos, { titulo = null } = {}) {
     checkboxes: vis(dePapel('checkbox')),
     botoes: vis(dePapel('botao')).filter((b) => b.okcode),
     grids: vis(dePapel('grid')),
+    rotulos: vis(dePapel('rotulo')).filter((r) => r.texto), // o texto legível da tela (o que não é campo)
     okcode: dePapel('okcode')[0] ?? null,                 // invisível (rect 0×0), mas está lá
   };
 }

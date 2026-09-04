@@ -8,6 +8,7 @@ import {
   OKCD, ESTADO, BOOT, ENTER, batchPreencher, batchAcionar, batchComandar, batchVkey,
   decodificarEntidades, cabecalhoDoShell, paramDe, passosDoMultipart, sidsDaResposta, lerResposta,
   sidDoAlvo, preencher, campos, botoes, sids,
+  atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, telaDoDelta, lerTela, parametrosDaTela,
 } from './its.mjs';
 
 const SHELL = `<html><head><script>var moin = "FF671392BF705DEF";</script></head><body>
@@ -153,4 +154,166 @@ test('its: preencher ENFILEIRA (não posta) e resolve o alvo agora; campos/botoe
     expect.objectContaining({ okcode: 'btn[8]', nome: 'Executar' }),
   ]);
   expect(sids(sessao)).toBe(sessao.sids);
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// A TELA lida do delta-update (fila 21). Cada trecho de HTML abaixo é COPIADO do bruto do s4h
+// 758/250 de 04/09/2026 — SE38 por `/nSE38` (POC_webgui_okcode/raw/c4-nse38.txt), a barra de
+// mensagens da SE16 (POC_webgui_its_lib/raw/a-boot.xml) e o popup do `/nend` (raw/d3-nend.txt).
+// O `lsevents` foi tirado por ser irrelevante à leitura. Cruzado contra o despejo DOM da MESMA
+// SE38 em POC_webgui_its_lib/medicoes/lertela-xml-x-dom.md.
+// ---------------------------------------------------------------------------------------------
+
+const LABEL_SE38 = `<label ct="L" lsdata='{"x":0,"1":"M0:46:::2:14","3":"Programa","7":"100%","9":false,"12":"P","13":"ENDOFLINE","14":true,"19":{"SID":"wnd[0]/usr/lblRS38M-PROGRAMM","Type":"GuiLabel","focusable":"X"}}' id="M0:46:::2:0" bHasTabStop="false" data-interactionBehavior="REDIRECT_FOCUS" for="M0:46:::2:14" class="lsLabel lsLabel--valign lsControl--endaligned  lsLabel--standalone lsControl--fullwidth lsLabel--designbar-colon"><span id="M0:46:::2:0-text" class="lsLabel__text lsLabel__text--overflow"><span class="urAccessKey" >P</span>rograma</span></label>`;
+const CAMPO_SE38 = `<input id="M0:46:::2:14" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","3":"M0:46:::2:14_TALB","7":true,"12":true,"13":"P","14":"SERVER","16":true,"20":false,"21":{"SID":"wnd[0]/usr/ctxtRS38M-PROGRAMM","Type":"GuiCTextField","value":"","maxlen":40,"focusable":"X","showTypeAhead":"true"},"22":"pstxt","29":"M0:46:::2:0"}' type="text" data-sap-ls-accesskey="P" accesskey="P" autocomplete="off" tabindex="0" ti="0" title="Nome&#x20;do&#x20;programa&#x20;ABAP" class="lsField__input" role="textbox" aria-haspopup="true" aria-labelledby="M0&#x3a;46&#x3a;&#x3a;&#x3a;2&#x3a;0" name="InputField"/>`;
+const RADIO_SE38 = `<span ct="R_standards" lsdata='{"0":"%RBG0257","1":true,"4":"Texto fonte","5":"Editor","10":"T","13":{"SID":"wnd[0]/usr/radRS38M-FUNC_EDIT","Type":"GuiRadioButton","group":"%RBG0257","focusable":"X"},"15":true}' accessPoint="ROOT" title="Editor" data-sap-ls-accesskey="T" accesskey="T" name="&#x25;RBG0257" id="M0:46:::5:1" class="lsSelector--generic lsSelector--text lsRadioButton lsRadioButton--checked " role="radio" aria-checked="true" aria-disabled="false" aria-label="Texto&#x20;fonte" tabindex="-1" ti="-1"><svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" role="presentation" class="lsRadioButton--svg"><circle id="M0:46:::5:1-button" class="lsRadioButton--svg-button" r="50%"></circle></svg><span id="M0:46:::5:1-txt" class=" lsSelector--ellipsis"><span class="urAccessKey" >T</span>exto fonte</span><span tabindex="0" ti="0" role="none" accessPoint="NAV_HELPER" id="M0:46:::5:1-NAV_HELPER"></span></span>`;
+const BTN8_SE38 = `<div draggable="false" id="M0:48::btn[8]" ct="B" lsdata='{"0":"Executar","4":"Executar","17":"E","18":"F8","21":true,"25":"TOGGLE","27":{"SID":"wnd[0]/tbar[1]/btn[8]","Type":"GuiButton","SubType":"toolbar"}}' role="button" title="Executar" data-sap-ls-accesskey="E" accesskey="E" tabindex="0" ti="0" class="lsButton lsButton--base urNoUserSelect urBtnRadius  lsButton--useintoolbar  lsButton--active  lsButton--focusable  lsButton--up lsButton--behaviour-toggle lsButton--design-standard "><span id="M0:48::btn[8]-cnt" class="urNoUserSelect lsButton--content lsControl--centeraligned" role="presentation"><span class="lsButton__text  lsControl--noWrapping" id="M0:48::btn[8]-caption"><span class="urAccessKey" >E</span>xecutar</span></span></div>`;
+// o btn[0] da tbar[0]: o texto de leitor de tela " Destacado" vem num span pseudoHidden DENTRO do botão
+const BTN0_DESTACADO = `<div draggable="false" id="M0:50::btn[0]" ct="B" lsdata='{"0":"Executar","2":"EMPHASIZED","4":"Executar","17":"E","21":true,"27":{"SID":"wnd[0]/tbar[0]/btn[0]","Type":"GuiButton"}}' role="button" title="Executar" class="lsButton lsButton--base lsButton--design-emphasized"><span id="M0:50::btn[0]-cnt" class="urNoUserSelect lsButton--content lsControl--centeraligned lsButton--content-design" role="presentation"><span class="lsButton__text  lsControl--noWrapping" id="M0:50::btn[0]-caption"><span class="urAccessKey" >E</span>xecutar</span><span class="lsControl--pseudoHidden" id="M0:50::btn[0]-ariadescribedby">&nbsp;Destacado</span></span></div>`;
+const BTN3_VOLTAR = `<div draggable="false" id="M0:56::btn[3]" ct="B" lsdata='{"x":0,"2":"TRANSPARENT","4":"Voltar","18":"F3","21":true,"22":"BACK","27":{"SID":"wnd[0]/tbar[0]/btn[3]","Type":"GuiButton"}}' role="button" title="Voltar" class="lsButton"><span id="M0:56::btn[3]-cnt" class="lsButton--content" role="presentation"><span class="lsButton__icon"></span></span></div>`;
+const OKCD_HTML = `<input id="ToolbarOkCode" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","3":"ToolbarOkCode_TALB","6":"NONE","13":"o","14":"SERVER","21":{"SID":"wnd[0]/tbar[0]/okcd","Type":"GuiOKCodeField","display":"X"}}' type="text" title="Inserir&#x20;c&#xf3;digo&#x20;de&#x20;transa&#xe7;&#xe3;o" class="lsField__input" role="combobox"/>`;
+const MB_SE16 = `<div tabindex="0" ti="0" title="Para&#x20;tabela&#x20;T000&#x20;existe&#x20;uma&#x20;vis&#xe3;o&#x20;de&#x20;atualiza&#xe7;&#xe3;o" class="lsMessageBar lsMessageBar--nowrapping" id="wnd[0]/sbar_msg" ct="MB" lsdata='{"0":"Para tabela T000 existe uma visão de atualização","1":"OK","5":"Para tabela T000 existe uma visão de atualização","6":true,"7":"Exibir detalhes","11":{"SID":"wnd[0]/sbar_msg","Type":"MESSAGEBAR","visibility":0,"messageType":"OK","applicationText":"Para tabela T000 existe uma visão de atualização"},"12":false,"13":true}' role="note" aria-live="assertive"><span class="lsMessageBar__text">Para tabela T000 existe uma visão de atualização</span></div>`;
+// o menu vem embrulhado num <xmp class="lsControl--invisible"> — não é tela
+const MENU_INVISIVEL = `<span class="urNoUserSelect lsMnu-root-initstyles" id="mnu0_531-r"><xmp class="lsControl--invisible"><div id="mnu0_531-container" class="urMnu"><table border="0" id="mnu0_531" ct="POMN" lsdata='{"x":0,"5":{"SID":"wnd[0]/mbar","Type":"GuiMenu","ModalNo":0}}' class="lsMnuTable" role="menu"><tbody><tr ct="POMNI" lsdata='{"x":0,"1":"Programa","6":true,"7":"mnu0_513","18":{"SID":"wnd[0]/mbar/menu[0]","Type":"GuiMenu"},"19":"Programa"}' id="wnd[0]/mbar/menu[0]" title="Programa" role="menuitem"><td class="urMnuTxt"><span>Programa</span></td></tr></tbody></table></div></xmp></span>`;
+const POPUP_NEND = `<div ct="PW_standards" lsdata='{"0":false,"1":false,"4":"553px","5":"176px","8":"webguiKeys","13":{"SID":"wnd[1]","Type":"GuiModalWindow","ModalNo":1},"16":true}' id="SAPLSPO1100_1" role="dialog" aria-labelledby="SAPLSPO1100_1-header-title-txt" class="lsPWNew lsPopupWindow--message"><header class="lsPWNewHeader" id="SAPLSPO1100_1-header"><div id="SAPLSPO1100_1-header-title" tabindex="0" ti="0" class="lsPWNewHeaderDivMiddle" drag="move" role="heading" aria-level="1"><span id="SAPLSPO1100_1-header-title-txt" class="lsResponsivePaddingLeft " drag="move">Efetuar logoff</span></div></header><div id="M1:46" ct="RL" lsdata='{"0":4.00,"2":1.25,"4":{"SID":"wnd[1]/usr","Type":"GuiUserArea"}}' bNoPosRefContainer="X" role="presentation" class="lsRasterLayout"><span ct="L" lsdata='{"x":0,"3":"Os dados não gravados serão perdidos.","6":"LIGHT","7":"100%","13":"BEGINOFLINE","14":true,"16":"ACTIVATE","19":{"SID":"wnd[1]/usr/txtSPOP-TEXTLINE1","Type":"GuiLabel","focusable":"X"}}' id="M1:46:::0:6" bHasTabStop="true" tabindex="0" ti="0" role="button" class="lsLabel lsLabel--text"><span id="M1:46:::0:6-text" class="lsLabel__text">Os dados não gravados serão perdidos.</span></span><span ct="L" lsdata='{"0":"Pergunta","6":"LIGHT","7":"100%","8":true,"13":"BEGINOFLINE","16":"ACTIVATE","19":{"SID":"wnd[1]/usr/lbl%_AUTOTEXT001","Type":"GuiLabel","focusable":"X"}}' id="M1:46:::1:0" title="Pergunta" role="button" class="lsLabel lsLabel--onlyimage"><span class="lsLabel__icon"></span></span><span ct="L" lsdata='{"x":0,"3":"Efetuar o logoff?","6":"LIGHT","7":"100%","13":"BEGINOFLINE","14":true,"16":"ACTIVATE","19":{"SID":"wnd[1]/usr/txtSPOP-TEXTLINE2","Type":"GuiLabel","focusable":"X"}}' id="M1:46:::1:6" role="button" class="lsLabel lsLabel--text"><span id="M1:46:::1:6-text" class="lsLabel__text">Efetuar o logoff?</span></span><div draggable="false" id="M1:46:::3:6" ct="B" lsdata='{"0":"Sim","3":"100%","4":"Sim","17":"S","20":true,"21":true,"27":{"SID":"wnd[1]/usr/btnSPOP-OPTION1","Type":"GuiButton"}}' role="button" title="Sim" data-sap-ls-accesskey="S" accesskey="S" tabindex="0" ti="0" class="lsButton lsButton--design-standard "><span id="M1:46:::3:6-cnt" class="lsButton--content" role="presentation"><span class="lsButton__text" id="M1:46:::3:6-caption"><span class="urAccessKey" >S</span>im</span></span></div><div draggable="false" id="M1:46:::3:18" ct="B" lsdata='{"0":"Não","3":"100%","4":"Não","17":"N","20":true,"21":true,"27":{"SID":"wnd[1]/usr/btnSPOP-OPTION2","Type":"GuiButton"}}' role="button" title="N&#xe3;o" data-sap-ls-accesskey="N" accesskey="N" tabindex="0" ti="0" class="lsButton lsButton--design-standard "><span id="M1:46:::3:18-cnt" class="lsButton--content" role="presentation"><span class="lsButton__text" id="M1:46:::3:18-caption"><span class="urAccessKey" >N</span>ão</span></span></div></div></div>`;
+
+const cdata = (id, html) => `<control-update id="${id}"><content><![CDATA[${html}]]></content></control-update>`;
+const DELTA_SE38 = `<?xml version="1.0" encoding="utf-8" ?>
+<updates><delta-update><start-script><![CDATA[sap.its.arrSystemParams = {user:'MVJVELOSO','d-num':'0100',sysid:'S4H',client:'250',dynpro:'SAPLWBABAP','t-code':'SE38'};]]></start-script><start-script><![CDATA[sap.its.aParams = {wp:'1',moin:'2E7D0A4A2ABF2B0F',ScreenId:'M0:46',cuatitle:'Editor ABAP: 1ª tela'};]]></start-script>
+${cdata('backpackCUA', `<div id="backpackCUA" ct="CO">${MENU_INVISIVEL}</div>`)}
+${cdata('cuaarea', `<div id="cuaarea" ct="CO">${OKCD_HTML}${BTN3_VOLTAR}${BTN0_DESTACADO}${BTN8_SE38}</div>`)}
+${cdata('steploop0', `<div id="steploop0" ct="PLP"><div ct="RLI" lsdata='{"0":16,"1":112}' id="u1CFF4">${LABEL_SE38}</div><div ct="RLI" lsdata='{"0":16,"1":112}' id="u1CFF5">${CAMPO_SE38}</div><div ct="RLI" lsdata='{"0":8}' id="u1CFEF">${RADIO_SE38}</div></div>`)}
+${cdata('msgarea', `<div id="msgarea" ct="CO"><div id="wnd[0]/sbar_msg" ct="MB" lsdata='{"x":0,"1":"TEXT","3":"NONE","11":{"SID":"wnd[0]/sbar_msg","Type":"MESSAGEBAR","visibility":2,"messageType":"","applicationText":""},"12":false,"13":true}' class="lsMessageBar lsControl--hidden"></div></div>`)}
+</delta-update></updates>`;
+const DELTA_POPUP = `<updates><delta-update><start-script><![CDATA[sap.its.arrSystemParams = {'d-num':'1000',dynpro:'SAPLSMTR_NAVIGATION','t-code':'SMEN'};]]></start-script><start-script><![CDATA[sap.its.aParams = {moin:'A',cuatitle:'SAP Easy Access'};]]></start-script>
+${cdata('webguiPopups', `<div id="webguiPopups" ct="CO">${POPUP_NEND}</div>`)}
+${cdata('steploop0', `<div id="steploop0" ct="PLP" class="lsPagelayout__panel lsPagelayout__panel--end"></div>`)}
+${cdata('cuaarea', `<div id="cuaarea" ct="CO">${OKCD_HTML}${BTN3_VOLTAR}</div>`)}
+</delta-update></updates>`;
+
+test('its: os atributos saem da tag como estão — aspas duplas, simples (o lsdata) e booleanos', () => {
+  expect(atributosDe(` id="a:b" lsdata='{"x":"y"}' disabled title="N&#xba;"`)).toEqual({ id: 'a:b', lsdata: '{"x":"y"}', disabled: '', title: 'N&#xba;' });
+  expect(atributosDe(' draggable="false" ct=B')).toEqual({ draggable: 'false', ct: 'B' });
+  expect(atributosDe('')).toEqual({});
+});
+
+test('its: controlesDoHtml despeja o MESMO formato do JS_DESPEJO_CONTROLES — e o texto é o innerText, sem quebrar na letra de atalho', () => {
+  const [rotulo] = controlesDoHtml(LABEL_SE38);
+  expect(rotulo).toEqual({
+    id: 'M0:46:::2:0', ct: 'L', lsdata: expect.objectContaining({ 1: 'M0:46:::2:14', 3: 'Programa' }),
+    title: null, aria: null, accesskey: null, valor: null, desabilitado: false, somenteLeitura: false,
+    texto: 'Programa',     // <span class="urAccessKey">P</span>rograma — inline cola; "P\nrograma" seria o bug
+    visivel: true,
+  });
+  const [campo] = controlesDoHtml(CAMPO_SE38);
+  expect(campo).toMatchObject({ id: 'M0:46:::2:14', ct: 'CBS', title: 'Nome do programa ABAP', valor: '', accesskey: 'P', texto: null });
+  expect(campo.lsdata['21']).toMatchObject({ SID: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', Type: 'GuiCTextField', maxlen: 40 });
+  // radio: a marcação vem do aria-checked do markup; o svg e o NAV_HELPER não somam texto
+  const [radio] = controlesDoHtml(RADIO_SE38);
+  expect(radio).toMatchObject({ id: 'M0:46:::5:1', ct: 'R_standards', aria: 'true', title: 'Editor', accesskey: 'T', texto: 'Texto fonte' });
+  // botão: "Executar" — a dica de leitor de tela " Destacado" (pseudoHidden) fica de fora do texto
+  expect(controlesDoHtml(BTN8_SE38)[0]).toMatchObject({ id: 'M0:48::btn[8]', texto: 'Executar', title: 'Executar', accesskey: 'E' });
+  expect(controlesDoHtml(BTN0_DESTACADO)[0]).toMatchObject({ id: 'M0:50::btn[0]', texto: 'Executar' });
+  expect(controlesDoHtml(BTN3_VOLTAR)[0]).toMatchObject({ id: 'M0:56::btn[3]', texto: null, title: 'Voltar' });
+  // valor com entidade, e input sem value = '' (como el.value no DOM)
+  expect(controlesDoHtml(`<input ct="CBS" id="x" value="200&#x20;"/>`)[0].valor).toBe('200 ');
+  expect(controlesDoHtml(`<input ct="CBS" id="x"/>`)[0].valor).toBe('');
+  expect(controlesDoHtml(`<input ct="CBS" id="x" disabled readonly/>`)[0]).toMatchObject({ desabilitado: true, somenteLeitura: true });
+});
+
+test('its: o que está marcado invisível no markup (xmp do menu, lsControl--hidden, display:none) sai visivel: false — e o texto dele não vaza', () => {
+  const menu = controlesDoHtml(MENU_INVISIVEL);
+  expect(menu.map((c) => [c.ct, c.visivel])).toEqual([['POMN', false], ['POMNI', false]]);
+  expect(menu[1].texto).toBe(null);   // "Programa" do menu invisível não é texto de tela
+  expect(controlesDoHtml(`<div ct="MB" id="m" class="lsMessageBar lsControl--hidden"><span>x</span></div>`)[0]).toMatchObject({ visivel: false, texto: null });
+  expect(controlesDoHtml(`<div data-sap-ls-style="display:none"><div ct="B" id="b">Oculto</div></div><div ct="B" id="c">Visto</div>`).map((c) => [c.id, c.visivel, c.texto]))
+    .toEqual([['b', false, null], ['c', true, 'Visto']]);
+  // bloco quebra linha (é como o innerText do checkbox chega: ":\\nExibir…"); inline não
+  expect(controlesDoHtml(`<span ct="C_standards" id="k"><div>:</div><span>Exibir <b>também</b></span></span>`)[0].texto).toBe(':\nExibir também');
+  // script/style e comentário não são texto
+  expect(controlesDoHtml(`<div ct="L" id="l"><!-- c --><script>var x = "<b>";</script>Só isto</div>`)[0].texto).toBe('Só isto');
+  expect(controlesDoHtml('')).toEqual([]);
+  expect(controlesDoHtml(null)).toEqual([]);
+});
+
+test('its: controlesDoDelta varre só os CDATA dos control-update, na ordem do documento', () => {
+  const lista = controlesDoDelta(DELTA_SE38);
+  expect(lista.map((c) => c.id)).toEqual([
+    'backpackCUA', 'mnu0_531', 'wnd[0]/mbar/menu[0]',
+    'cuaarea', 'ToolbarOkCode', 'M0:56::btn[3]', 'M0:50::btn[0]', 'M0:48::btn[8]',
+    'steploop0', 'u1CFF4', 'M0:46:::2:0', 'u1CFF5', 'M0:46:::2:14', 'u1CFEF', 'M0:46:::5:1',
+    'msgarea', 'wnd[0]/sbar_msg',
+  ]);
+  expect(controlesDoDelta(MULTIPART)).toEqual([]);
+  expect(controlesDoDelta('')).toEqual([]);
+});
+
+test('its: telaDoDelta é o MESMO modelo do lerTela do navegador — rótulo costurado pelo label, dica do data element, radio pelo aria, botões com tecla', () => {
+  const tela = telaDoDelta(DELTA_SE38);
+  expect(tela).toMatchObject({ titulo: 'Editor ABAP: 1ª tela', screenId: 'M0:46', dynpro: 'SAPLWBABAP', tcode: 'SE38', dnum: '0100', popup: null, aviso: null });
+  expect(tela.campos).toHaveLength(1);
+  expect(tela.campos[0]).toMatchObject({ sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', campo: 'RS38M-PROGRAMM', rotulo: 'Programa',
+    dica: 'Nome do programa ABAP', valor: '', maxlen: 40, editavel: true, visivel: true });
+  expect(tela.radios).toEqual([expect.objectContaining({ campo: 'RS38M-FUNC_EDIT', grupo: '%RBG0257', rotulo: 'Texto fonte', selecionado: true })]);
+  expect(tela.botoes.map((b) => [b.okcode, b.rotulo, b.tecla])).toEqual([['btn[3]', 'Voltar', 'F3'], ['btn[0]', 'Executar', null], ['btn[8]', 'Executar', 'F8']]);
+  expect(tela.rotulos.map((r) => r.texto)).toEqual(['Programa']);
+  expect(tela.okcode.sid).toBe('wnd[0]/tbar[0]/okcd');
+  expect(tela.mensagem).toBe(null);
+  expect(tela.statusbar).toEqual([]);
+  expect(tela.checkboxes).toEqual([]);
+  expect(tela.grids).toEqual([]);
+  // a wnd[0] (GuiMainWindow) mora no SHELL do GET, não no delta: sem popup, `janela` é null por esta via
+  expect(tela.janela).toBe(null);
+  // multipart/logoff não têm tela
+  expect(telaDoDelta(MULTIPART)).toBe(null);
+  expect(telaDoDelta('')).toBe(null);
+});
+
+test('its: a barra de mensagens sai com a constante do tipo e o texto (o mesmo DELTA do lerResposta)', () => {
+  const tela = telaDoDelta(DELTA);
+  expect(tela.mensagem).toEqual({ tipo: 'OK', texto: 'Para tabela T000 existe uma visão de atualização' });
+  expect(tela.statusbar).toEqual(['Para tabela T000 existe uma visão de atualização']);
+  // o DELTA reduzido tem o <label> VAZIO (o texto só está no lsdata): o rótulo é o innerText do label, como no
+  // DOM — por isso null aqui; a costura de verdade está no DELTA_SE38 ("Programa")
+  expect(tela.campos.map((c) => [c.campo, c.rotulo, c.valor])).toEqual([['MAX_SEL', null, '200 '], ['I1-LOW', null, '']]);
+  expect(tela.grids).toEqual([expect.objectContaining({ sid: 'wnd[0]/usr/cntlGRID1/shellcont/shell', colunas: ['NAME', 'USER_VALUE'], linhas: 1617 })]);
+  expect(telaDoDelta(`<updates><delta-update>${cdata('msgarea', MB_SE16)}</delta-update></updates>`).mensagem)
+    .toEqual({ tipo: 'OK', texto: 'Para tabela T000 existe uma visão de atualização' });
+});
+
+test('its: com POPUP aberto o delta traz a wnd[1] e ESVAZIA a wnd[0]/usr — o modelo diz isso, e os botões do popup são por SID', () => {
+  const tela = telaDoDelta(DELTA_POPUP);
+  expect(tela.janela).toMatchObject({ sid: 'wnd[1]', principal: false });
+  expect(tela.campos).toEqual([]);
+  expect(tela.aviso).toMatch(/popup wnd\[1\] aberto — a wnd\[0\]\/usr não vem/);
+  expect(tela.popup).toEqual({
+    sid: 'wnd[1]', id: 'SAPLSPO1100_1', titulo: 'Efetuar logoff',
+    textos: [
+      { sid: 'wnd[1]/usr/txtSPOP-TEXTLINE1', texto: 'Os dados não gravados serão perdidos.' },
+      { sid: 'wnd[1]/usr/lbl%_AUTOTEXT001', texto: 'Pergunta' },   // só ícone: o texto é o title
+      { sid: 'wnd[1]/usr/txtSPOP-TEXTLINE2', texto: 'Efetuar o logoff?' },
+    ],
+    botoes: [
+      { sid: 'wnd[1]/usr/btnSPOP-OPTION1', rotulo: 'Sim', tecla: null, accesskey: 'S' },
+      { sid: 'wnd[1]/usr/btnSPOP-OPTION2', rotulo: 'Não', tecla: null, accesskey: 'N' },
+    ],
+    campos: [],
+  });
+  // ⚠ Sim/Não NÃO são btn[n]: não entram em tela.botoes, e acionar(s, 'Sim') não os acha — é { sid }
+  expect(tela.botoes.map((b) => b.okcode)).toEqual(['btn[3]']);
+  const sidsDaTela = sidsDaResposta(DELTA_POPUP);
+  expect(() => sidDoAlvo(sidsDaTela, { campo: 'SPOP-OPTION1' })).toThrow(/não está na tela/);
+  expect(sidDoAlvo(sidsDaTela, { sid: tela.popup.botoes[0].sid })).toBe('wnd[1]/usr/btnSPOP-OPTION1');
+  expect(popupDaTela(controlesDoDelta(DELTA_SE38))).toBe(null);
+  expect(popupDaTela([])).toBe(null);
+});
+
+test('its: lerTela lê o ÚLTIMO delta da sessão (multipart não o substitui) e parametrosDaTela responde o ~transaction', () => {
+  expect(() => lerTela({ delta: null })).toThrow(/sem delta para ler/);
+  const sessao = { delta: DELTA_SE38, sids: sidsDaResposta(DELTA_SE38), fila: [] };
+  expect(lerTela(sessao).campos[0].campo).toBe('RS38M-PROGRAMM');
+  expect(parametrosDaTela(sessao)).toEqual([{ id: 'M0:46:::2:14', title: 'Nome do programa ABAP', sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', campo: 'RS38M-PROGRAMM', rotulo: 'Programa' }]);
+  // o okcd não é parâmetro de dynpro — fica de fora
+  expect(parametrosDaTela(sessao).some((p) => p.sid.includes('okcd'))).toBe(false);
 });
