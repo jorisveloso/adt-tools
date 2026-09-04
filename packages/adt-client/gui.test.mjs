@@ -3,7 +3,7 @@
 import { test, expect } from 'vitest';
 import {
   ACOES, PARAMETROS_SCRIPTING, escVbs, validarPasso, vbsDoPasso, montarVbs,
-  interpretarSaidaGui, resultadoDoPasso,
+  interpretarSaidaGui, resultadoDoPasso, interpretarTasklist,
 } from './gui.mjs';
 
 const SEP = '\u0001';
@@ -140,4 +140,21 @@ test('gui: catálogo de ações e de parâmetros de perfil — o que o item 34 m
   expect(new Set(ACOES).size).toBe(ACOES.length);
   expect(PARAMETROS_SCRIPTING[0]).toBe('sapgui/user_scripting');
   expect(PARAMETROS_SCRIPTING).toHaveLength(5);
+});
+
+test('gui: interpretarTasklist lê o SAPgui.exe e descarta a janela de infraestrutura', () => {
+  const csv = [
+    '"SAPgui.exe","44840","Console","1","72.140 K","Running","DOM\joris","0:00:01","GDI+ Window (sapgui.exe)"',
+    '"SAPgui.exe","3364","Console","1","91.208 K","Running","DOM\joris","0:00:02","Entrada do nome do usuário"',
+    '"SAPgui.exe","7556","Console","1","64.000 K","Running","DOM\joris","0:00:00","N/A"',
+    'INFO: No tasks are running which match the specified criteria.',
+  ].join('\r\n');
+  const p = interpretarTasklist(csv);
+  expect(p).toHaveLength(3);
+  // o processo nasceu, mas "GDI+ Window" e "N/A" NÃO são janela de usuário — senão o ROT
+  // (120 s sem sessão) seria consultado à toa
+  expect(p[0]).toEqual({ pid: 44840, titulo: '' });
+  expect(p[1]).toEqual({ pid: 3364, titulo: 'Entrada do nome do usuário' });
+  expect(p[2].titulo).toBe('');
+  expect(interpretarTasklist('')).toEqual([]);
 });

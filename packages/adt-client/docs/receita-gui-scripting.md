@@ -81,14 +81,54 @@ funciona. E o VBS gravar num **arquivo UTF-16** (`CreateTextFile(caminho, True, 
 ROT**, que é o sinal real de que dá para falar com ela.
 
 ⚠ **O `sapshcut` fica VIVO enquanto a sessão existir.** Esperar o processo terminar pendura o script
-para sempre (medido: `await execFile` nunca voltou). O módulo o solta com `spawn({ detached })` e
-espera pelo ROT.
+para sempre (medido: `await execFile` nunca voltou). O módulo o solta com `spawn({ detached })`.
+
+⚠ **O ROT não pilota a espera.** Sem sessão de diálogo aberta, o `GetObject("SAPGUI")` do VBS **não
+volta**: consome o timeout inteiro do `cscript`. Medido em 04/09/2026, três chamadas seguidas de
+`sessoesAbertas()` com o GUI fechado: **120157, 120186 e 120142 ms** — e o resultado era
+`{ sessoes: [], erro: null }`, porque o `execFile` mata o `cscript`, o arquivo de saída fica vazio e
+isso é indistinguível de "rodou e não achou". Era essa a origem do `nenhuma sessão no ROT em
+30000 ms`: o laço de 500 ms fazia **uma** amostra, voltava 120 s depois e reportava o prazo errado.
+Hoje quem amostra é o `tasklist` (`processosSapGui()`), o ROT só é consultado quando já existe um
+`SAPgui.exe` **com janela de usuário**, e `sessoesAbertas({ timeout })` devolve `erro` ao estourar.
 
 ⚠ A senha vai na **linha de comando** do sapshcut — visível na lista de processos enquanto ele sobe.
 Laboratório, sim; credencial de produção, não.
 
 `fecharSapGui()` fecha a conexão no fim (`CloseSession` + `CloseConnection`); o SAP Logon pad
 continua aberto. Vale a mesma regra das sessões ADT: **sessão que o script abre, o script fecha.**
+
+## Quando o sapshcut não abre sessão
+
+Medido em 04/09/2026 na máquina do Joris — SAP GUI 8.00, `sapshcut.exe` 8000.1.4.10, alvo **S4H 758
+mandante 250** (pela internet, sem VPN). O sintoma tinha sido relatado no SXD; **reproduz igual no
+S4H**, logo a causa é **local**, não do SXD.
+
+| `-user` | `-pw` | o que acontece |
+|---|---|---|
+| existe no sistema | senha certa | `SAPgui.exe` nasce e **morre em ~0,5 s**, sem janela de usuário |
+| existe no sistema | senha errada | idem — morre igual |
+| existe no sistema | **sem `-pw`** | idem — morre igual |
+| não existe | com ou sem `-pw` | janela **fica de pé** na tela de logon (`Entrada do nome do usuário`) |
+| omitido | sem `-pw` | nenhuma janela |
+
+**O `-pw` não é a causa** — era essa a hipótese de partida e ela está desmentida: sem `-pw` nenhum,
+com usuário real, dá exatamente o mesmo. O `sapshcut` sempre sai com **exit 0 em ~240 ms** (ele
+delega ao `SAPgui.exe` e sai; o exit 0 não diz nada sobre o logon).
+
+Também **medidos e descartados** como causa: a ordem dos argumentos (`-pw` antes ou depois de
+`-language`: idêntico), `-maxgui`, `-command=SESSION_MANAGER`, `-type=Transaction -command=SU3`.
+E do lado do servidor está tudo em ordem — credencial válida (`/sap/bc/adt/discovery` responde
+**200**), `USR02-USTYP = A` (diálogo), `UFLAG = 0` (sem bloqueio), `GLTGB = 99991231`.
+Sem chave `SAPShortcut\Security` no registro; `UserScripting = 1`; sessão de desktop **ativa**
+(`qwinsta`: console/1/Ativo); nenhum evento de crash no log de aplicação; o trace do SAP GUI
+(`Trace\Enable = 1`) **não gera arquivo**.
+
+**Aberto:** por que o `SAPgui.exe` encerra logo após um logon que o servidor aceitaria. Enquanto
+isso, `abrirSapGui` **diagnostica em vez de mentir** — em ~2 s levanta `o SAP GUI subiu e ENCERROU
+sem abrir sessão`, com a trilha do processo (`+0,6s 44840:(ainda sem janela) | +1,7s (nenhum
+SAPgui.exe novo)`). Para dirigir dynpro sem sessão de GUI, o caminho é o **WebGUI**
+([receita-webgui.md](receita-webgui.md)), que não depende disto.
 
 ## Dirigir a tela: passos declarativos
 

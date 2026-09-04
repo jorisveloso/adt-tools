@@ -367,12 +367,41 @@ ENDCLASS.`;
   };
 }
 
+/** PURO: a saída CSV do `tasklist /V` vira `[{ pid, titulo }]` — o sensor barato de "o GUI subiu?". */
+export function interpretarTasklist(csv) {
+  const procs = [];
+  for (const linha of String(csv).split(/\r?\n/)) {
+    if (!linha.trim()) continue;
+    const campos = [...linha.matchAll(/"((?:[^"]|"")*)"/g)].map((m) => m[1]);
+    if (campos.length < 2 || !/^SAPgui\.exe$/i.test(campos[0])) continue;
+    const bruto = campos.at(-1) ?? '';
+    // ⚠ "GDI+ Window (sapgui.exe)" é janela de INFRAESTRUTURA — o processo a cria antes (e sem)
+    // qualquer tela de usuário. Tomá-la por janela real manda consultar o ROT à toa (medido).
+    const titulo = /^N\/A$/i.test(bruto) || /^GDI\+ Window/i.test(bruto) ? '' : bruto;
+    procs.push({ pid: Number(campos[1]), titulo });
+  }
+  return procs;
+}
+
+/** Os processos SAPgui.exe vivos agora. Barato — ao contrário do ROT, que custa 120 s sem sessão. */
+export async function processosSapGui() {
+  const tasklist = `${process.env.WINDIR || 'C:\\Windows'}\\System32\\tasklist.exe`;
+  const r = await exec(tasklist, ['/FI', 'IMAGENAME eq SAPgui.exe', '/FO', 'CSV', '/NH', '/V'],
+    { windowsHide: true, timeout: 10000 }).catch((e) => ({ stdout: e.stdout || '' }));
+  return interpretarTasklist(r.stdout);
+}
+
 /**
  * Abre uma sessão de diálogo no SAP GUI pelo `sapshcut` e espera ela aparecer no ROT.
  *
  * ⚠ A senha vai na LINHA DE COMANDO do sapshcut — visível na lista de processos enquanto ele sobe.
  * Aceitável em laboratório com credencial de POC; não use com credencial de produção.
  * `sistema` é o systemid do SAPUILandscape.xml (o SID de 3 letras que o SAP GUI mostra).
+ *
+ * ⚠ O ROT NÃO serve para pilotar a espera: sem sessão, `sessoesAbertas()` custa 120 s (medido
+ * 04/09/2026 — três chamadas seguidas: 120157/120186/120142 ms; é o `cscript` batendo no próprio
+ * timeout, e o erro era engolido). Quem amostra é o `tasklist`; o ROT só é consultado quando já
+ * existe um SAPgui.exe COM janela. Ver docs/receita-gui-scripting.md § Quando não abre sessão.
  */
 export async function abrirSapGui({ sistema, cliente, usuario, senha, idioma = 'PT', transacao, dir = SAPGUI_DIR, esperaMs = 30000 } = {}) {
   if (!sistema) throw new Error('abrirSapGui: informe { sistema } (o systemid do SAPUILandscape.xml)');
@@ -383,24 +412,63 @@ export async function abrirSapGui({ sistema, cliente, usuario, senha, idioma = '
   const args = [`-system=${sistema}`, `-client=${cliente}`, `-user=${usuario}`, `-pw=${senha}`, `-language=${idioma}`];
   if (transacao) args.push(`-command=${transacao}`);
   args.push('-maxgui');
-  // ⚠ NÃO esperar: o sapshcut fica VIVO enquanto a sessão existir (medido — `await execFile` pendura
-  // para sempre). Solta-se o processo e espera-se a sessão APARECER no ROT, que é o sinal real.
+  const antes = new Set((await processosSapGui()).map((p) => p.pid));
+  // ⚠ NÃO esperar pelo sapshcut: com sessão viva ele fica de pé (medido — `await execFile` pendura).
+  const inicio = Date.now();
   const filho = spawn(sapshcut, args, { detached: true, stdio: 'ignore', windowsHide: false });
   filho.unref();
 
-  const ate = Date.now() + esperaMs;
-  let ultima = null;
-  while (Date.now() < ate) {
-    const r = await sessoesAbertas().catch((e) => ({ erro: e.message, sessoes: [] }));
-    ultima = r;
-    if (r.sessoes?.length) return r;
+  const trilha = [];    // o que o tasklist mostrou, sem repetir estado igual
+  let nasceu = false;   // um SAPgui.exe NOVO chegou a existir
+  let ultimoRot = null;
+  while (Date.now() < inicio + esperaMs) {
+    const novos = (await processosSapGui()).filter((p) => !antes.has(p.pid));
+    const estado = novos.length
+      ? novos.map((p) => `${p.pid}:${p.titulo || '(ainda sem janela)'}`).join(', ')
+      : '(nenhum SAPgui.exe novo)';
+    if (!trilha.at(-1)?.endsWith(estado)) trilha.push(`+${((Date.now() - inicio) / 1000).toFixed(1)}s ${estado}`);
+    if (novos.length) {
+      nasceu = true;
+      // Só agora vale pagar o ROT: sem processo com janela, a consulta seria espera cega de 120 s.
+      if (novos.some((p) => p.titulo)) {
+        ultimoRot = await sessoesAbertas().catch((e) => ({ erro: e.message, sessoes: [] }));
+        if (ultimoRot.sessoes?.length) return ultimoRot;
+      }
+    } else if (nasceu) {
+      throw new Error(
+        'abrirSapGui: o SAP GUI subiu e ENCERROU sem abrir sessão — o logon automático não completou.\n' +
+        `Trilha: ${trilha.join(' | ')}\n` +
+        'Medido em 04/09/2026 (SAP GUI 8.00, sapshcut 8000.1.4.10, S4H 758): isto acontece com ' +
+        'usuário que EXISTE no sistema, com ou sem -pw e com senha certa ou errada — o -pw não é ' +
+        'a causa. Ver docs/receita-gui-scripting.md § Quando o sapshcut não abre sessão.',
+      );
+    }
     await new Promise((ok) => setTimeout(ok, 500));
   }
-  throw new Error(`abrirSapGui: nenhuma sessão no ROT em ${esperaMs} ms (último estado: ${JSON.stringify(ultima)})`);
+  throw new Error(
+    `abrirSapGui: nenhuma sessão no ROT em ${esperaMs} ms.\n` +
+    `Trilha do SAPgui.exe: ${trilha.join(' | ')}\n` +
+    (!nasceu
+      ? 'Nenhum SAPgui.exe chegou a nascer — confira o -system contra o systemid do ' +
+        'SAPUILandscape.xml e se o dispatcher responde.'
+      : trilha.some((t) => !/ainda sem janela|nenhum SAPgui/.test(t))
+        ? 'O processo está de pé COM janela mas não expõe sessão — se a janela é a tela de logon, ' +
+          'o logon automático não passou (confira -system/-client/-user).'
+        : 'O processo está de pé mas NUNCA abriu janela de usuário — é o quadro medido em ' +
+          '04/09/2026 com usuário que existe no sistema, e o -pw não é a causa (medido: sem -pw ' +
+          'dá o mesmo). Ver docs/receita-gui-scripting.md § Quando o sapshcut não abre sessão.') +
+    (ultimoRot ? `\nÚltimo ROT: ${JSON.stringify(ultimoRot)}` : ''),
+  );
 }
 
-/** As conexões/sessões que o SAP GUI local expõe agora. Vazio = GUI fechado ou ainda logando. */
-export async function sessoesAbertas() {
+/**
+ * As conexões/sessões que o SAP GUI local expõe agora. Vazio = GUI fechado ou ainda logando.
+ *
+ * ⚠ SEM sessão de diálogo aberta, o `GetObject("SAPGUI")` do VBS NÃO volta: a chamada consome o
+ * timeout inteiro (medido 04/09/2026: 120157/120186/120142 ms em três chamadas seguidas). Por isso
+ * o prazo padrão aqui é curto e o estouro vira `erro` — não `{ sessoes: [] }`, que mentia.
+ */
+export async function sessoesAbertas({ timeout = 15000 } = {}) {
   const vbs = `Option Explicit
 Dim app, i, j, conn, sess, fso, saida, S
 S = Chr(1)
@@ -422,9 +490,12 @@ For i = 0 To app.Children.Count - 1
   Next
 Next
 saida.Close`;
-  const { texto } = await rodarVbs(vbs);
+  const { texto, expirou } = await rodarVbs(vbs, { timeout });
   const sessoes = [];
-  let erro = null;
+  let erro = expirou
+    ? `o GetObject("SAPGUI") não respondeu em ${timeout} ms — é o que acontece quando NÃO há sessão `
+      + 'de diálogo aberta (não conclua "scripting desligado" a partir disto)'
+    : null;
   for (const linha of texto.split(/\r?\n/)) {
     const l = linha.replace(/^\uFEFF/, '');
     if (!l.trim()) continue;
@@ -446,6 +517,7 @@ async function rodarVbs(vbsTemplate, { timeout = 120000 } = {}) {
   fs.writeFileSync(arqVbs, vbs, 'latin1');
   let stdout = '';
   let stderr = '';
+  let expirou = false;
   try {
     const r = await exec(CSCRIPT, ['//nologo', arqVbs], { timeout, windowsHide: true });
     stdout = r.stdout;
@@ -453,9 +525,13 @@ async function rodarVbs(vbsTemplate, { timeout = 120000 } = {}) {
   } catch (e) {
     stdout = e.stdout || '';
     stderr = e.stderr || e.message;
+    // ⚠ O timeout do execFile MATA o cscript e deixa o arquivo de saída VAZIO — que é
+    // indistinguível de "rodou e não achou nada". Sem esta bandeira, `sessoesAbertas` devolvia
+    // `{ sessoes: [], erro: null }` depois de 120 s de espera cega (medido 04/09/2026).
+    expirou = e.killed === true || e.signal != null;
   }
   const texto = fs.existsSync(arqOut) ? fs.readFileSync(arqOut, 'utf16le') : '';
-  return { texto, stdout, stderr, arqVbs, arqOut, pasta: base };
+  return { texto, stdout, stderr, expirou, arqVbs, arqOut, pasta: base };
 }
 
 /**
