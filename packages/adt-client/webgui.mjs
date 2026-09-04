@@ -696,7 +696,24 @@ export async function lerTela(sessao) {
 }
 
 /**
+ * PURO: a resposta para "qual o parâmetro certo para a URL `~transaction` desta tela" — um por
+ * campo de entrada visível: `{ id, title, sid, campo, rotulo }`. É a peça do item 18 da fila,
+ * recortada do `lerTela`: `campo` já vem sem `wnd[0]/usr/` e sem o prefixo de tipo (`ctxt`, `txt`,
+ * `cmb`, `chk`), e é exatamente o nome que `abrirTransacao(s, tcode, { parametros })` quer. A caixa
+ * de OK-code (`wnd[0]/tbar[0]/okcd`) fica de fora: ela não é parâmetro de dynpro.
+ *
+ * ⚠️ Modo de falha CALADO que isto previne (item 6): nome errado no `~transaction` não preenche
+ * nada e não avisa — e com `DYNP_OKCODE` junto o fcode dispara com a dynpro vazia.
+ */
+export const sidsDaTela = (tela) => (tela?.campos ?? []).map(({ id, dica, sid, campo, rotulo }) =>
+  ({ id, title: dica ?? null, sid, campo, rotulo: rotulo ?? null }));
+
+/** Os SIDs dos campos da dynpro atual — `sidsDaTela(await lerTela(sessao))`. */
+export const sids = async (sessao) => sidsDaTela(await lerTela(sessao));
+
+/**
  * Os campos de entrada da dynpro atual (fora a caixa de OK-code da barra).
+ * ⚠️ Heurística de DOM, SEM o SID — para saber o nome do parâmetro use `sids`/`lerTela`.
  * ⚠️ O `title` vem do DATA ELEMENT, não do texto do parâmetro na tela — medido: `P_DOCNUM` aparece
  * como "Nº documento", não como o texto do parâmetro no report.
  */

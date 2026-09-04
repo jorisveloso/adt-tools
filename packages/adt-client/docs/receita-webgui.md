@@ -113,7 +113,7 @@ cookies, ms).
 
 ```js
 import {
-  abrirNavegador, abrirTransacao, campos, botoes, lerTela, preencher, acionar, print,
+  abrirNavegador, abrirTransacao, campos, botoes, lerTela, sids, preencher, acionar, print,
 } from 'adt-client/webgui';
 
 const cfg = { base: 'http://host:8000', client: '250', idioma: 'PT', user: 'U', pass: 's3nh4' };
@@ -165,10 +165,17 @@ vazia, e o que volta é o erro do programa (`"O programa  não existe"`, com o n
 Quem sabe o nome certo é a **própria tela**: o `lsdata` de cada campo carrega o SID do SAP GUI.
 
 ```js
-(await lerTela(s)).campos;
+await sids(s);                     // a pergunta "qual o parâmetro desta tela", respondida pela tela
+// SE38 -> [{ id: 'M0:46:::2:14', title: 'Nome do programa ABAP', sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM',
+//            campo: 'RS38M-PROGRAMM', rotulo: 'Programa' }]
+(await lerTela(s)).campos;         // o mesmo campo com o resto: valor, maxlen, editavel
 // SE38 -> [{ campo: 'RS38M-PROGRAMM', sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', rotulo: 'Programa',
 //            dica: 'Nome do programa ABAP', valor: '', maxlen: 40, editavel: true }]
 ```
+
+`sids` é um recorte PURO do `lerTela` (`sidsDaTela(tela)`), só os campos de entrada visíveis e sem a
+caixa de OK-code: o `campo` de cada um é o nome que `abrirTransacao(s, tcode, { parametros })` quer.
+Use-o **antes** de montar a URL — é o que troca o silêncio do parâmetro errado por uma lista.
 
 ⚠ **Não leia o SID por índice fixo.** O snippet original desta seção usava `lsdata['21']` e só
 funcionava para campo de entrada: medido em 04/09/2026 que o índice do SID **muda por tipo de

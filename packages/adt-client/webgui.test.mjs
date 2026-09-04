@@ -6,7 +6,7 @@ import {
   CAMINHOS_CHROME, POLYFILL_RANDOMUUID, TECLAS, JS_CARIMBO,
   expressaoTransacao, urlWebgui, jsDoAlvo, nomeDoAlvo, jsTelaPronta, autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
-  sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela,
+  sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
   interpretarSonda, jsComando,
 } from './webgui.mjs';
 
@@ -297,6 +297,19 @@ test('webgui: sem mensagem a statusbar é vazia, e controle invisível não entr
   expect(tela.statusbar).toEqual([]);
   expect(tela.campos).toEqual([]);          // o campo invisível some
   expect(tela.okcode).not.toBe(null);       // o okcd NÃO: ele é sempre invisível e sempre serve
+});
+
+test('webgui: sids responde "qual o parâmetro da URL ~transaction" — o okcd fica de fora', () => {
+  const tela = montarTela([JANELA, OKCODE, CAMPO_SE38, ROTULO_SE38, BOTAO_EXECUTAR], { titulo: 'SE38' });
+  expect(sidsDaTela(tela)).toEqual([{
+    id: 'M0:46:::2:14', title: 'Nome do programa ABAP', sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM',
+    campo: 'RS38M-PROGRAMM', rotulo: 'Programa',
+  }]);
+  // o `campo` é o que abrirTransacao quer — a contra-prova do item 6 (RS38M-PROGRAMMA cala)
+  expect(expressaoTransacao('SE38', { parametros: { [sidsDaTela(tela)[0].campo]: 'RSPARAM' } }))
+    .toContain('RS38M-PROGRAMM=RSPARAM');
+  expect(sidsDaTela(null)).toEqual([]);
+  expect(sidsDaTela(montarTela([JANELA, OKCODE]))).toEqual([]);
 });
 
 test('webgui: a sonda não acredita no status — quem prova o canal é o cookie de sessão', () => {
