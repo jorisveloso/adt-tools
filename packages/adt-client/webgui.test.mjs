@@ -5,6 +5,7 @@ import { test, expect } from 'vitest';
 import {
   CAMINHOS_CHROME, POLYFILL_RANDOMUUID, TECLAS, JS_CARIMBO,
   expressaoTransacao, urlWebgui, jsDoAlvo, nomeDoAlvo, jsTelaPronta, autorizacao, acharNavegador,
+  OKCODES, okcodeDe, anotarBotoes,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -79,4 +80,48 @@ test('webgui: navegador — candidatos conhecidos, e erro que diz onde procurou'
   expect(() => acharNavegador({ navegador: 'Z:/nao/existe/chrome.exe' })).toThrow(/não achado — procurei em Z:/);
   expect(Object.keys(TECLAS)).toContain('Enter');
   expect(TECLAS.F8.vk).toBe(119);
+});
+
+test('webgui: o btn[n] é o endereço ESTÁVEL — e o mapa só carrega o que foi medido', () => {
+  // o prefixo M0:nn muda por tela; o sufixo ::btn[n] não — é o que o mapa e o alvo exploram
+  expect(OKCODES['btn[11]'].nome).toBe('Gravar');
+  expect(OKCODES['btn[8]'].tecla).toBe('F8');
+  expect(OKCODES['btn[15]'].apelidos).toContain('Sair');
+  // toda entrada carrega a MEDIÇÃO que a pôs aqui (sistema + data): mapa não é palpite
+  for (const [k, v] of Object.entries(OKCODES)) {
+    expect(k).toMatch(/^btn\[\d+\]$/);
+    expect(v.medido).toMatch(/\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2}/);
+  }
+});
+
+test('webgui: okcodeDe aceita btn[n], número e apelido — e recusa apelido inventado', () => {
+  expect(okcodeDe('btn[11]')).toBe('btn[11]');
+  expect(okcodeDe('BTN[11]')).toBe('btn[11]');
+  expect(okcodeDe(11)).toBe('btn[11]');
+  expect(okcodeDe('11')).toBe('btn[11]');
+  expect(okcodeDe('Gravar')).toBe('btn[11]');
+  expect(okcodeDe(' gravar ')).toBe('btn[11]');
+  expect(okcodeDe('Sair')).toBe('btn[15]');       // apelido do "Encerrar" lido na tela
+  expect(okcodeDe('Executar')).toBe('btn[8]');
+  // btn[n] fora do mapa PASSA: o mapa é apelido, não whitelist
+  expect(okcodeDe('btn[42]')).toBe('btn[42]');
+  expect(okcodeDe(42)).toBe('btn[42]');
+  // apelido errado estoura AQUI, com a lista — não vira "não está na tela" 20 s depois
+  expect(() => okcodeDe('Salvar')).toThrow(/não é btn\[n\] nem apelido conhecido — tenho .*Gravar=btn\[11\]/);
+  expect(() => okcodeDe('')).toThrow(/informe o btn\[n\]/);
+});
+
+test('webgui: o alvo por okcode aceita o apelido, e a mensagem de erro mostra o btn[n] resolvido', () => {
+  expect(jsDoAlvo({ okcode: 'Gravar' })).toBe(jsDoAlvo({ okcode: 'btn[11]' }));
+  expect(jsDoAlvo({ okcode: 8 })).toContain('e.id.endsWith("::btn[8]")');
+  expect(nomeDoAlvo({ okcode: 'Gravar' })).toBe('okcode btn[11]');
+  expect(nomeDoAlvo({ okcode: 'Salvar' })).toBe('okcode Salvar');   // não resolveu: mostra o que veio
+});
+
+test('webgui: botoes vem anotado com o apelido medido, e botão fora do mapa não vira erro', () => {
+  expect(anotarBotoes([{ okcode: 'btn[11]', title: 'Gravar (Ctrl+S)' }])).toEqual([
+    { okcode: 'btn[11]', title: 'Gravar (Ctrl+S)', nome: 'Gravar', tecla: 'Ctrl+S' },
+  ]);
+  expect(anotarBotoes([{ okcode: 'btn[42]', title: 'X' }])[0]).toMatchObject({ nome: null, tecla: null });
+  expect(anotarBotoes()).toEqual([]);
 });

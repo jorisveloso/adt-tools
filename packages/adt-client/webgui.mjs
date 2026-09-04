@@ -69,6 +69,68 @@ export const TECLAS = {
   F12: { key: 'F12', code: 'F12', vk: 123 },
 };
 
+/**
+ * O MAPA dos OK-codes da barra — o endereçamento ESTÁVEL deste canal.
+ *
+ * Medido no SXD 816/100 (03/09/2026, SE38 e Writer da J1B1N) e no s4h 758/250 (04/09/2026, SE16):
+ * o WebGUI nomeia o botão da barra com o MESMO `btn[n]` do SAP GUI (o SID `wnd[0]/tbar[0]/btn[n]`),
+ * num id de DOM tipo `M0:48::btn[8]`. O prefixo `M0:nn` MUDA por tela — na mesma sessão da SE38 os
+ * botões saíram em `M0:48`, `M0:49`, `M0:55` e `M0:56`, e no Writer da J1B1N em `M0:50` — mas o
+ * sufixo `::btn[n]` NÃO muda. Daí casar pelo FIM do id (`jsDoAlvo`), nunca pelo id inteiro.
+ *
+ * ⚠️ Isto é APELIDO, não whitelist: `{ okcode: 'btn[42]' }` continua valendo. Só entra aqui o que
+ * foi LIDO de uma tela de verdade — o resto da convenção do SAP GUI fica de fora de propósito,
+ * para o mapa não virar palpite com cara de medição.
+ */
+export const OKCODES = {
+  'btn[0]': { nome: 'Enter', apelidos: ['Continuar'], tecla: 'Enter',
+    medido: 's4h 758/250 04/09/2026 — SE16: acionado, a tela virou "Data Browser: tabela T000: tela de seleção"' },
+  'btn[3]': { nome: 'Voltar', apelidos: [], tecla: 'F3',
+    medido: 'SXD 816/100 03/09/2026 — SE38: id M0:56::btn[3]' },
+  'btn[8]': { nome: 'Executar', apelidos: [], tecla: 'F8',
+    medido: 'SXD 816/100 03/09/2026 — SE38: id M0:48::btn[8], title " (F8)", lsdata {"0":"Executar"}' },
+  'btn[11]': { nome: 'Gravar', apelidos: [], tecla: 'Ctrl+S',
+    medido: 'SXD 816/100 03/09/2026 — Writer da J1B1N: M0:50::btn[11] criou a NF 0000000082, confirmada em outra LUW' },
+  'btn[12]': { nome: 'Cancelar', apelidos: [], tecla: 'Escape',
+    medido: 'SXD 816/100 03/09/2026 — Writer: M0:50::btn[12]. ⚠️ posta e o programa REABRE a mesma dynpro' },
+  'btn[15]': { nome: 'Encerrar', apelidos: ['Sair'], tecla: 'Shift+F3',
+    medido: 'SXD 816/100 03/09/2026 — SE38: M0:55::btn[15]. ⚠️ sem via de saída neste canal (fila adt-client, item 13)' },
+  'btn[71]': { nome: 'Procurar', apelidos: [], tecla: null,
+    medido: 'SXD 816/100 03/09/2026 — SE38: id M0:49::btn[71]' },
+  'btn[86]': { nome: 'Imprimir', apelidos: [], tecla: null,
+    medido: 'SXD 816/100 03/09/2026 — SE38: id M0:49::btn[86]' },
+};
+
+/** PURO: dois nomes de botão são o mesmo? Caixa e acento não contam — o `nome` vem do texto
+ * da tela, e "Gravar"/"gravar" têm de casar. */
+const mesmoNome = (a, b) =>
+  String(a).trim().localeCompare(String(b).trim(), 'pt', { sensitivity: 'base' }) === 0;
+
+/**
+ * PURO: normaliza o que se pede da barra em `btn[n]`. Aceita o próprio `btn[11]`, só o número
+ * (`11`, `'11'`) e o apelido MEDIDO (`'Gravar'`, `'gravar'`, `'Sair'`). Apelido desconhecido
+ * estoura AQUI, com a lista — errar o nome não pode virar "não está na tela" 20 s depois.
+ */
+export function okcodeDe(alvo) {
+  if (alvo === null || alvo === undefined || alvo === '') {
+    throw new Error('okcodeDe: informe o btn[n], o número ou o apelido (ex. "btn[11]", 11, "Gravar")');
+  }
+  const bruto = String(alvo).trim();
+  if (/^btn\[\d+\]$/i.test(bruto)) return bruto.toLowerCase();
+  if (/^\d+$/.test(bruto)) return `btn[${Number(bruto)}]`;
+  const achado = Object.entries(OKCODES).find(([, v]) =>
+    mesmoNome(v.nome, bruto) || (v.apelidos ?? []).some((a) => mesmoNome(a, bruto)));
+  if (achado) return achado[0];
+  const conhecidos = Object.entries(OKCODES).map(([k, v]) => `${v.nome}=${k}`).join(', ');
+  throw new Error(`okcodeDe: "${bruto}" não é btn[n] nem apelido conhecido — tenho ${conhecidos}`);
+}
+
+/** PURO: junta ao que a tela devolveu o apelido conhecido do OK-code (`nome`, `tecla`). Botão fora
+ * do mapa sai com `nome: null` — é botão da tela, não erro. */
+export const anotarBotoes = (lista = []) => lista.map((b) => ({
+  ...b, nome: OKCODES[b.okcode]?.nome ?? null, tecla: OKCODES[b.okcode]?.tecla ?? null,
+}));
+
 // ---------- parte PURA (o teste irmão cobre esta metade sem abrir navegador nenhum) ----------
 
 /**
@@ -111,9 +173,10 @@ export function jsDoAlvo(alvo) {
   if (alvo?.id) return `document.getElementById(${JSON.stringify(alvo.id)})`;
   if (alvo?.seletor) return `document.querySelector(${JSON.stringify(alvo.seletor)})`;
   if (alvo?.okcode) {
+    const okcode = okcodeDe(alvo.okcode); // 'Gravar', 11 e 'btn[11]' chegam no mesmo lugar
     return `(() => {
       const cont = [...document.querySelectorAll('*')].find(e =>
-        e.id && e.id.endsWith(${JSON.stringify('::' + alvo.okcode)}) && (e.offsetWidth || e.offsetHeight));
+        e.id && e.id.endsWith(${JSON.stringify('::' + okcode)}) && (e.offsetWidth || e.offsetHeight));
       if (!cont) return null;
       return document.getElementById(cont.id + '-cnt') || cont;
     })()`;
@@ -126,7 +189,7 @@ export const nomeDoAlvo = (alvo) =>
   typeof alvo === 'string' ? `id ${alvo}`
     : alvo?.id ? `id ${alvo.id}`
     : alvo?.seletor ? `seletor ${alvo.seletor}`
-    : `okcode ${alvo?.okcode}`;
+    : `okcode ${(() => { try { return okcodeDe(alvo?.okcode); } catch { return alvo?.okcode; } })()}`;
 
 /**
  * PURO: a expressão que diz se a dynpro TERMINOU de montar.
@@ -361,12 +424,17 @@ export function campos(sessao) {
     .map(e => ({ id: e.id, title: e.title, value: e.value }))`);
 }
 
-/** Os `btn[n]` que ESTA tela oferece — o que dá para acionar, antes de tentar. */
-export function botoes(sessao) {
-  return avaliar(sessao, `[...document.querySelectorAll('*')]
+/**
+ * Os `btn[n]` que ESTA tela oferece — o que dá para acionar, antes de tentar. Casa pelo sufixo
+ * `::btn[n]` (o prefixo `M0:nn` muda por tela, § OKCODES) e anota o apelido MEDIDO de cada um:
+ * `{ okcode: 'btn[11]', title: 'Gravar (Ctrl+S)', nome: 'Gravar', tecla: 'Ctrl+S' }`. Botão fora do
+ * mapa sai com `nome: null` — é botão da tela, não erro.
+ */
+export async function botoes(sessao) {
+  return anotarBotoes(await avaliar(sessao, `[...document.querySelectorAll('*')]
     .filter(e => (e.offsetWidth || e.offsetHeight) && e.id && e.id.indexOf('::btn') > 0 &&
                  e.id.charAt(e.id.length - 1) === ']')
-    .map(e => ({ okcode: e.id.split('::').pop(), title: e.title, texto: (e.innerText||'').trim().slice(0,30) }))`);
+    .map(e => ({ okcode: e.id.split('::').pop(), title: e.title, texto: (e.innerText||'').trim().slice(0,30) }))`));
 }
 
 export async function print(sessao, arquivo) {
@@ -435,7 +503,12 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = f
   return p;
 }
 
-/** Aciona um botão da barra pelo OK-code do SAP GUI e espera a resposta do ABAP. */
+/**
+ * Aciona um botão da barra pelo OK-code do SAP GUI e espera a resposta do ABAP. Aceita as três
+ * formas do `okcodeDe`: `acionar(s, 'btn[11]')`, `acionar(s, 11)` e `acionar(s, 'Gravar')`.
+ * ⚠️ `mudou: false` é INFORMAÇÃO: a tela ficou igual, a ação não pegou (é assim que `btn[15]` e
+ * `btn[12]` se denunciam neste canal).
+ */
 export const acionar = (sessao, okcode, opts = {}) => clicar(sessao, { okcode }, { ...opts, esperarResposta: true });
 
 export const digitar = (sessao, texto) => sessao.cmd('Input.insertText', { text: String(texto) });

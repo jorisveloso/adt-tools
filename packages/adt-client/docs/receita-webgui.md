@@ -55,11 +55,11 @@ try {
 
   // 2. ler o que a tela mostra
   console.log(await campos(s));                // [{ id, title, value }]
-  console.log(await botoes(s));                // [{ okcode: 'btn[11]', title: 'Gravar (Ctrl+S)' }]
+  console.log(await botoes(s));                // [{ okcode: 'btn[11]', title: 'Gravar (Ctrl+S)', nome: 'Gravar', tecla: 'Ctrl+S' }]
 
   // 3. dirigir
   await preencher(s, { id: 'M0:46:::2:21' }, 'T000');
-  const r = await acionar(s, 'btn[11]');       // clica e ESPERA a resposta do ABAP
+  const r = await acionar(s, 'Gravar');        // 'btn[11]', 11 ou o apelido — clica e ESPERA o ABAP
   if (!r.mudou) throw new Error('a tela não respondeu — a ação não pegou');
 
   console.log((await lerTela(s)).statusbar);
@@ -87,7 +87,55 @@ Três formas, todas pelo mesmo argumento `alvo` (`jsDoAlvo` é puro e testado):
 |---|---|
 | `{ id: 'M0:46:::2:21' }` | o caso normal — os ids do WebGUI têm `:` e `[]`, que **quebram seletor CSS**, daí `getElementById` |
 | `{ seletor: 'input#x' }` | CSS, quando o id não serve |
-| `{ okcode: 'btn[11]' }` | o botão da barra pelo **OK-code do SAP GUI** — `btn[0]` Enter, `btn[3]` Voltar, `btn[7]` F7, `btn[8]` F8, `btn[11]` Gravar, `btn[15]` Sair |
+| `{ okcode: 'btn[11]' }` | o botão da barra pelo **OK-code do SAP GUI** — o endereço ESTÁVEL, com apelido e mapa medido na seção abaixo (`'Gravar'` e `11` também servem) |
+
+## O `btn[n]` é o endereço ESTÁVEL da barra
+
+O id de DOM do WebGUI é volátil — `M0:48::btn[8]`, `M0:50::btn[11]` — mas a volatilidade está toda
+no **prefixo**. Medido no SXD 816/100 em 2026-09-03: na **mesma sessão** da SE38 os botões saíram
+em quatro prefixos diferentes (`M0:48`, `M0:49`, `M0:55`, `M0:56`) e no Writer da J1B1N em `M0:50`;
+o **sufixo `::btn[n]` não mudou em nenhum**. E o `n` é o **mesmo do SAP GUI** — o SID
+`wnd[0]/tbar[0]/btn[n]` que o GUI Scripting usa e que aparece cru no POST do ITS
+(`{"post":"action/3/wnd[0]/tbar[0]/btn[15]"}`).
+
+Por isso `{ okcode }` casa pelo **fim** do id, nunca pelo id inteiro — e por isso o mesmo endereço
+serve para os três canais que veem a dynpro (GUI Scripting, WebGUI e o protocolo do ITS).
+
+O que foi **lido de tela de verdade** está em `OKCODES`, com a medição de cada linha:
+
+| OK-code | nome na tela | tecla | onde foi lido |
+|---|---|---|---|
+| `btn[0]` | Enter | Enter | s4h 758/250, SE16 — acionado, a tela virou a de seleção da `T000` |
+| `btn[3]` | Voltar | F3 | SXD, SE38 — `M0:56::btn[3]` |
+| `btn[8]` | Executar | F8 | SXD, SE38 — `M0:48::btn[8]`, title `" (F8)"`, `lsdata {"0":"Executar"}` |
+| `btn[11]` | Gravar | Ctrl+S | SXD, Writer da J1B1N — `M0:50::btn[11]` **criou a NF 0000000082** |
+| `btn[12]` | Cancelar | Escape | SXD, Writer — `M0:50::btn[12]`; ⚠ posta e **reabre a mesma dynpro** |
+| `btn[15]` | Encerrar | Shift+F3 | SXD, SE38 — `M0:55::btn[15]`; ⚠ **sem via de saída** neste canal |
+| `btn[71]` | Procurar | — | SXD, SE38 — `M0:49::btn[71]` |
+| `btn[86]` | Imprimir | — | SXD, SE38 — `M0:49::btn[86]` |
+
+⚠ **É apelido, não whitelist.** O resto da convenção do SAP GUI ficou **de fora de propósito** —
+mapa de palpite com cara de medição é pior que mapa curto. Qualquer `btn[n]` continua endereçável:
+
+```js
+await acionar(s, 'btn[11]');   // o OK-code cru — sempre vale, esteja ou não no mapa
+await acionar(s, 11);          // só o número
+await acionar(s, 'Gravar');    // o apelido medido (sem caixa e sem acento: 'gravar' também)
+await acionar(s, 'btn[42]');   // fora do mapa: passa direto
+await acionar(s, 'Salvar');    // ✗ estoura AQUI, com a lista — não vira "não está na tela" 20 s depois
+```
+
+`botoes(s)` responde **antes de tentar** o que esta tela oferece, já com o apelido anotado
+(`nome: null` quando o botão está fora do mapa — é botão da tela, não erro):
+
+```js
+[{ okcode: 'btn[11]', title: 'Gravar (Ctrl+S)', texto: 'Gravar', nome: 'Gravar', tecla: 'Ctrl+S' },
+ { okcode: 'btn[15]', title: 'Encerrar (Shift+F3)', texto: '', nome: 'Encerrar', tecla: 'Shift+F3' }]
+```
+
+A **outra** via de comando da barra — o input `ToolbarOkCode` (SID `wnd[0]/tbar[0]/okcd`, title
+"Inserir código de transação") — existe em toda tela e é **invisível** (rect 0×0): não recebe
+digitação, e é por isso que este canal não manda OK-code arbitrário. Fila `adt-client`, item 13.
 
 ## ⚠ Cookie `secure` sobre HTTP puro — o gotcha que mata o canal calado
 
