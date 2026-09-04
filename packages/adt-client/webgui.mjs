@@ -32,6 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { passo, detalhe } from './log.mjs';
+import { encerrarSessao } from './sap-connection.mjs';
 
 /** Onde o Chrome costuma estar no Windows. `{ navegador }` sobrepõe; `JBV_CHROME` também. */
 export const CAMINHOS_CHROME = [
@@ -222,6 +223,104 @@ export const JS_CARIMBO = `document.title + '|' + document.querySelectorAll('*')
 export function autorizacao(cfg) {
   if (!cfg?.user || !cfg?.pass) throw new Error('webgui: cfg sem { user, pass } — o ICF não desafia, o Basic vai em todo request');
   return 'Basic ' + Buffer.from(`${cfg.user}:${cfg.pass}`).toString('base64');
+}
+
+// ---------- disponibilidade do canal ----------
+
+/**
+ * PURO: o veredito da sonda, a partir do que o ICM devolveu ao GET do nó do WebGUI.
+ *
+ * ⚠️ **O STATUS SOZINHO MENTE, e mente para o lado perigoso.** Medido no s4h 758/250 em
+ * 04/09/2026: com credencial ERRADA (usuário inexistente) e SEM credencial nenhuma, o nó responde
+ * **200 OK** com 23 KB da PÁGINA DE LOGON (`<title>Logon</title>`, cookie `sap-login-XSRF_S4H`) —
+ * não 401, não `WWW-Authenticate`. Uma sonda que olhasse só o `res.status` diria "WebGUI ok" e o
+ * Chrome subiria para encalhar numa tela de logon. O que separa os dois casos é o COOKIE: só o
+ * logon aceito devolve `SAP_SESSIONID_<SID>_<MANDANTE>` (35 KB de tela, em 423 ms).
+ *
+ * Os quatro casos, todos medidos no mesmo sistema e no mesmo dia:
+ *
+ * | caso                         | o que volta                                                    |
+ * |------------------------------|----------------------------------------------------------------|
+ * | nó ativo, credencial aceita  | 200 + `SAP_SESSIONID_S4H_250` (35 216 bytes, 423 ms)           |
+ * | credencial errada/ausente    | **200** + `sap-login-XSRF_S4H`, `<title>Logon</title>` (23 246) |
+ * | nó ausente OU desativado     | 404 `Service cannot be reached` (9 314 bytes, ~60 ms)          |
+ * | ICM fora do ar               | nenhuma resposta HTTP (`ENOTFOUND`, timeout)                   |
+ *
+ * ⚠️ **Ausente e desativado são o MESMO 404** — o ICF não os separa, de propósito. Medido: o path
+ * inventado `/sap/bc/gui/sap/its/webgui_jbv_naoexiste` e o nó `/sap/bc/gui/sap/its/test` — que
+ * EXISTE na `ICFSERVICE`, irmão do `webgui` — devolvem byte a byte a mesma página de 9 314 bytes.
+ * Daí a causa `sem-no` não prometer qual dos dois é: só a SICF do sistema responde isso.
+ * (Fica aberto: que o `test` esteja 404 por DESATIVAÇÃO não foi lido do sistema — a leitura do
+ * estado do nó por classrun não rodou; o que está medido é que existir na ICFSERVICE não muda o 404.)
+ *
+ * Ainda medidos, no mesmo varrimento: 403 `Forbidden - SSL required` (nó que exige HTTPS, ex.
+ * `/sap/bc/ui2/start_up`), 401 `Logon failed` (nó que DESAFIA em vez de mostrar formulário, ex.
+ * `/sap/bc/srt/lsc`) e 500 `Application Server Error`. Cada um vira uma causa própria: o que a
+ * sonda não pode fazer é empilhar tudo em "não deu".
+ */
+export function interpretarSonda({ status = null, statusText = '', cookies = [], corpo = '', erro = null } = {}) {
+  if (erro) return { ok: false, causa: 'sem-icm', motivo: `sem resposta do ICM: ${erro}`, status: null };
+  const nomes = cookies.map((c) => c.split('=')[0].trim());
+  const sessao = cookies.find((c) => /^SAP_SESSIONID_/i.test(c));
+  const base = { status, bytes: corpo.length, cookies: nomes };
+  const rotulo = `${status}${statusText ? ` ${statusText}` : ''}`;
+
+  if (status === 200 && sessao) {
+    const [, sid = null, mandante = null] = sessao.split('=')[0].match(/^SAP_SESSIONID_([^_]+)_(.+)$/i) || [];
+    // o `secure` sobre HTTP puro é o que decide a bandeira do Chrome (ver bandeirasDeOrigemSegura)
+    return { ...base, ok: true, causa: 'ok', motivo: 'nó ativo e logon aceito', sid, mandante, cookieSeguro: /;\s*secure/i.test(sessao) };
+  }
+  if (status === 200) {
+    const logon = nomes.some((n) => /^sap-login-XSRF/i.test(n)) || /<title>\s*Logon\s*<\/title>/i.test(corpo);
+    return logon
+      ? { ...base, ok: false, causa: 'credencial', motivo: '200, mas a resposta é a PÁGINA DE LOGON — o ICF não desafia, ele devolve formulário' }
+      : { ...base, ok: false, causa: 'inesperado', motivo: '200 sem cookie de sessão e sem página de logon' };
+  }
+  if (status === 401) return { ...base, ok: false, causa: 'credencial', motivo: `${rotulo} — o nó desafia por Basic e a credencial não passou` };
+  if (status === 404) return { ...base, ok: false, causa: 'sem-no', motivo: `${rotulo} — nó ICF ausente OU desativado na SICF (o ICF não distingue os dois)` };
+  if (status === 403) {
+    const ssl = /SSL required/i.test(statusText) || /SSL required/i.test(corpo);
+    return { ...base, ok: false, causa: ssl ? 'ssl' : 'proibido', motivo: ssl ? `${rotulo} — o nó só atende por HTTPS` : `${rotulo} — o ICF recusou o acesso` };
+  }
+  if (status >= 500) return { ...base, ok: false, causa: 'erro-servidor', motivo: `${rotulo} — o servidor de aplicação falhou ao atender o nó` };
+  return { ...base, ok: false, causa: 'inesperado', motivo: `${rotulo} — resposta não prevista` };
+}
+
+/**
+ * Dá para usar o WebGUI NESTE sistema? Um GET no nó, e o veredito do `interpretarSonda`.
+ *
+ * É a pergunta que se faz ANTES de subir Chrome nenhum: o nó `/sap/bc/gui/sap/its/webgui` roda no
+ * MESMO ICM da porta 8000 e com a MESMA credencial Basic do ADT (não há setup adicional), mas num
+ * sistema de cliente ele costuma estar desativado na SICF — e aí o canal simplesmente não existe
+ * lá. Mesma função que o `verificarScriptingNoServidor` faz para o GUI Scripting, mais barata:
+ * só um GET, nada de deploy.
+ *
+ * ⚠️ **QUEM SONDA FECHA.** O GET bem-sucedido não é leitura inócua: ele ABRE uma sessão de diálogo
+ * no servidor (é o `SAP_SESSIONID` que prova o sucesso). Medido em 04/09/2026: uma varredura de
+ * ~120 GETs sem logoff foi seguida de o POST do ADT do MESMO usuário passar a responder
+ * `Service nicht erreichbar` — a atribuição causal não foi isolada, mas a regra da lib já era
+ * "quem abre fecha" e aqui ela tem dente. O logoff sai daqui sempre que houve cookie.
+ */
+export async function sondarWebgui(cfg, { tetoMs = 15000 } = {}) {
+  const url = urlWebgui(cfg);
+  const cabecalho = autorizacao(cfg); // recusa cfg sem credencial ANTES de tocar a rede
+  passo(`webgui: sondando ${url}`);
+  const t = Date.now();
+  let res, corpo;
+  try {
+    res = await fetch(url, { headers: { Authorization: cabecalho }, redirect: 'manual', signal: AbortSignal.timeout(tetoMs) });
+    corpo = await res.text();
+  } catch (e) {
+    const r = { ...interpretarSonda({ erro: e.cause?.code || e.name }), url, ms: Date.now() - t };
+    detalhe(`webgui: ${r.causa} — ${r.motivo}`);
+    return r;
+  }
+  const cookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+  const r = { ...interpretarSonda({ status: res.status, statusText: res.statusText, cookies, corpo }), url, ms: Date.now() - t };
+  const cookie = cookies.map((c) => c.split(';')[0]).join('; ');
+  if (cookie) await encerrarSessao({ cfg, cookie }).catch((e) => detalhe(`webgui: logoff da sonda falhou (${e.message})`));
+  detalhe(`webgui: ${r.causa} — ${r.motivo}`);
+  return r;
 }
 
 // ---------- navegador ----------

@@ -7,6 +7,7 @@ import {
   expressaoTransacao, urlWebgui, jsDoAlvo, nomeDoAlvo, jsTelaPronta, autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela,
+  interpretarSonda,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -296,4 +297,45 @@ test('webgui: sem mensagem a statusbar é vazia, e controle invisível não entr
   expect(tela.statusbar).toEqual([]);
   expect(tela.campos).toEqual([]);          // o campo invisível some
   expect(tela.okcode).not.toBe(null);       // o okcd NÃO: ele é sempre invisível e sempre serve
+});
+
+test('webgui: a sonda não acredita no status — quem prova o canal é o cookie de sessão', () => {
+  // caso medido no s4h 758/250 (04/09/2026): nó ativo + credencial aceita
+  const ok = interpretarSonda({
+    status: 200, statusText: 'OK', corpo: 'x'.repeat(35216),
+    cookies: ['saplbS4H=3532650; path=/', 'SAP_SESSIONID_S4H_250=abc; path=/; secure; HttpOnly'],
+  });
+  expect(ok).toMatchObject({ ok: true, causa: 'ok', sid: 'S4H', mandante: '250', cookieSeguro: true });
+
+  // MESMO status 200 — e o canal NÃO existe: é a página de logon. Este é o caso que uma sonda
+  // ingênua erraria, subindo o Chrome para encalhar numa tela de logon.
+  const errada = interpretarSonda({
+    status: 200, statusText: 'OK', corpo: '<title>Logon</title>' + 'x'.repeat(23226),
+    cookies: ['sap-login-XSRF_S4H=1; secure', 'sap-usercontext=sap-client=250'],
+  });
+  expect(errada).toMatchObject({ ok: false, causa: 'credencial' });
+  expect(errada.motivo).toMatch(/PÁGINA DE LOGON/);
+});
+
+test('webgui: ausente e desativado são o MESMO 404 — a sonda não promete qual dos dois', () => {
+  const r = interpretarSonda({ status: 404, statusText: 'Not found', corpo: '<title>Service cannot be reached</title>' });
+  expect(r).toMatchObject({ ok: false, causa: 'sem-no' });
+  expect(r.motivo).toMatch(/ausente OU desativado/);
+});
+
+test('webgui: cada recusa tem causa própria — nada de empilhar tudo em "não deu"', () => {
+  // 403 do nó que só atende HTTPS (medido em /sap/bc/ui2/start_up)
+  expect(interpretarSonda({ status: 403, statusText: 'Forbidden - SSL required' }))
+    .toMatchObject({ ok: false, causa: 'ssl' });
+  expect(interpretarSonda({ status: 403, statusText: 'Forbidden', corpo: '403 Forbidden' }))
+    .toMatchObject({ ok: false, causa: 'proibido' });
+  // 401 do nó que DESAFIA em vez de mostrar formulário (medido em /sap/bc/srt/lsc)
+  expect(interpretarSonda({ status: 401, statusText: 'Unauthorized' }))
+    .toMatchObject({ ok: false, causa: 'credencial' });
+  expect(interpretarSonda({ status: 500, statusText: 'Internal Server Error' }))
+    .toMatchObject({ ok: false, causa: 'erro-servidor' });
+  // ICM fora do ar: não há status nenhum para interpretar
+  expect(interpretarSonda({ erro: 'ENOTFOUND' }))
+    .toMatchObject({ ok: false, causa: 'sem-icm', status: null });
+  expect(interpretarSonda({ erro: 'TimeoutError' }).motivo).toMatch(/sem resposta do ICM/);
 });

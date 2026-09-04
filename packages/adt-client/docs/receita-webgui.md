@@ -39,6 +39,69 @@ O preço, para não haver surpresa: um **Chrome nesta máquina**, ~5–10 s para
 `<delta-update>` de alguns MB por interação. É caro perto de um `callFunction`; é barato perto de
 mandar alguém abrir o SAP GUI.
 
+## Antes de subir Chrome nenhum: `sondarWebgui` — dá para usar este canal NESTE sistema?
+
+O nó `/sap/bc/gui/sap/its/webgui` roda no **mesmo ICM da porta 8000** que o ADT já usa e com a
+**mesma credencial Basic** — não há setup adicional. Mas ele é um nó da SICF como outro qualquer, e
+**num sistema de cliente ele costuma estar desativado**: lá o canal simplesmente não existe. A
+pergunta se responde com um GET, antes de qualquer navegador:
+
+```js
+import { sondarWebgui } from 'adt-client/webgui';
+
+const s = await sondarWebgui(cfg);
+// { ok: true, causa: 'ok', status: 200, sid: 'S4H', mandante: '250', cookieSeguro: true, ms: 731 }
+if (!s.ok) throw new Error(`WebGUI indisponível: ${s.motivo}`);
+```
+
+### ⚠ O status sozinho MENTE — e mente para o lado perigoso
+
+Medido no s4h 758/250 em 04/09/2026, com usuário INEXISTENTE e sem credencial nenhuma: o nó
+responde **200 OK** com 23 KB da **página de logon** (`<title>Logon</title>`, cookie
+`sap-login-XSRF_S4H`). Não é 401, não vem `WWW-Authenticate` — é o mesmo formulário que o
+`autorizacao()` já documenta (por isso a credencial vai por header em toda requisição). Uma sonda
+que olhasse `res.status` diria "canal ok" e o Chrome subiria para encalhar numa tela de logon.
+
+**Quem prova o canal é o COOKIE:** só o logon aceito devolve `SAP_SESSIONID_<SID>_<MANDANTE>`.
+
+| caso                          | o que volta (s4h 758/250, 04/09/2026)                            |
+|-------------------------------|------------------------------------------------------------------|
+| nó ativo, credencial aceita   | 200 + `SAP_SESSIONID_S4H_250` — 35 216 bytes em 423 ms           |
+| credencial errada ou ausente  | **200** + `sap-login-XSRF_S4H`, `<title>Logon</title>` — 23 246 bytes |
+| nó ausente **ou** desativado  | 404 `Service cannot be reached` — 9 314 bytes, ~60 ms            |
+| ICM fora do ar                | nenhuma resposta HTTP: `ENOTFOUND`, ou timeout                   |
+
+Ainda medidos no mesmo varrimento (209 paths ICF do s4h), cada um com causa própria na sonda:
+403 `Forbidden - SSL required` (nó que só atende HTTPS, ex. `/sap/bc/ui2/start_up`), 401
+`Logon failed` (nó que DESAFIA em vez de mostrar formulário, ex. `/sap/bc/srt/lsc`), 500
+`Application Server Error` (ex. os `/sap/bc/webdynpro/sap/*`).
+
+### ⚠ Ausente e desativado são o MESMO 404
+
+O ICF não separa os dois, de propósito. Medido: o path inventado
+`/sap/bc/gui/sap/its/webgui_jbv_naoexiste` e o nó `/sap/bc/gui/sap/its/test` — que **existe na
+`ICFSERVICE`**, irmão do `webgui` sob o mesmo pai (`BO11PUMK7J2UU0LPKQWG0KGS7`) — devolvem a mesma
+página de 9 314 bytes. Por isso a causa `sem-no` diz "ausente OU desativado": quem responde qual
+dos dois é a SICF do sistema, não o HTTP.
+
+*Ponto aberto:* que o `test` esteja em 404 por **desativação** não foi lido do sistema — a leitura
+do estado do nó por classrun não rodou (o POST do ADT ficou indisponível na janela da medição). O
+que está medido é que **existir na `ICFSERVICE` não muda o 404**. A `ICFSERVICE` também não serve
+de atalho: seu campo `ICF_NOACT` está vazio nas 17 474 linhas do s4h, e não existe tabela
+`ICFACTIVE` neste release.
+
+### ⚠ Quem sonda FECHA
+
+O GET bem-sucedido **não é leitura inócua**: ele abre uma sessão de diálogo no servidor — é
+justamente o `SAP_SESSIONID` que prova o sucesso. Medido em 04/09/2026: uma varredura de ~120 GETs
+sem logoff foi seguida de o **POST do ADT do mesmo usuário** passar a responder
+`Service nicht erreichbar`, voltando ao normal depois (a atribuição causal não foi isolada). O
+`sondarWebgui` faz o logoff sempre que houve cookie, pelo `encerrarSessao` do transporte — a mesma
+regra do `probe`.
+
+De quebra a sonda devolve `cookieSeguro`, que é o que decide a bandeira `--unsafely-treat-insecure-origin-as-secure`
+do Chrome (ver *Cookie `secure` sobre HTTP puro*): no s4h vem `true`, no SXD 816/100 vem `false`.
+
 ## A receita
 
 ```js
