@@ -12,7 +12,8 @@
 // (despedirCookie, desde 2026-09-01: uma sonda deixou sessão 202 viva no SXD; no s4h ela morre
 // sozinha — o timeout é configuração do alvo, e quem abre fecha).
 // O `--tipos` custa o discovery COMPLETO (~300 KB, ~300 ms por sistema — medido no s4h em 2026-08-31);
-// sem ele, cada sistema custa dois GETs paralelos (~150 ms).
+// sem ele, cada sistema custa três GETs paralelos: discovery + eco (~150 ms) e o nó do WebGUI
+// (~420 ms com logon aceito — a sonda encerra a sessão que abriu; medido no s4h em 2026-09-04).
 //
 // O que este script grava (`canais.json`, ao lado do sistemas.json) é REGISTRO, não cache — ver o
 // cabeçalho de canais.mjs. Nenhum código da lib lê esse arquivo para escolher canal.

@@ -102,6 +102,13 @@ regra do `probe`.
 De quebra a sonda devolve `cookieSeguro`, que é o que decide a bandeira `--unsafely-treat-insecure-origin-as-secure`
 do Chrome (ver *Cookie `secure` sobre HTTP puro*): no s4h vem `true`, no SXD 816/100 vem `false`.
 
+**Desde a fila adt-client 14 (2026-09-04) o `probe(cfg)` já faz esta sonda**, em paralelo com o
+discovery e o eco: o resumo traz `webgui: { ok, causa, cookieSeguro }`, e o registro do landscape
+(`canais.json`, `node scripts/canais.mjs`) mostra a coluna WebGUI como `✅ 🔒` (cookie `secure`),
+`✅`, `❌` com o motivo da sonda, ou `—` para medição anterior à sonda. Não precisa chamar
+`sondarWebgui` à parte para decidir o canal — só quando quiser o veredito completo (status, bytes,
+cookies, ms).
+
 ## A receita
 
 ```js

@@ -110,13 +110,39 @@ test('probe: falhas são independentes e explicadas', () => {
   expect(r.soapRfc.motivo).toBe('sem resposta');
   expect(r.classrun.motivo).toBe('sem ADT');
   expect(r.release).toBeNull();
+  expect(r.webgui).toBeUndefined(); // chamador antigo, sem a 3ª sonda: não medido ≠ falhou
+});
+
+// Fila adt-client 14: o WebGUI entra no probe com o veredito do sondarWebgui (webgui.mjs) — nó ativo
+// com esta credencial, e se o cookie de sessão vem `secure` (a bandeira do Chrome). Medido:
+// s4h 758/250 em 04/09/2026 cookieSeguro=true; SXD 816/100 em 03/09/2026 cookieSeguro=false.
+test('probe: WebGUI ok leva só ok, causa e cookieSeguro — o resto da sonda é ruído no resumo', () => {
+  const sonda = { ok: true, causa: 'ok', motivo: 'nó ativo e logon aceito', sid: 'S4H', mandante: '250', cookieSeguro: true, status: 200, bytes: 35216, cookies: ['SAP_SESSIONID_S4H_250'], url: 'x', ms: 423 };
+  const r = montarResumo({ ok: true }, { ok: true, release: '758' }, sonda);
+  expect(r.webgui).toEqual({ ok: true, causa: 'ok', cookieSeguro: true });
+
+  const semSecure = montarResumo({ ok: true }, { ok: true, release: '816' }, { ...sonda, cookieSeguro: false });
+  expect(semSecure.webgui.cookieSeguro).toBe(false);
+});
+
+test('probe: WebGUI que falhou carrega a causa e o motivo da sonda — 404 é "sem-no", logon é "credencial"', () => {
+  const r = montarResumo({ ok: true }, { ok: true, release: '758' },
+    { ok: false, causa: 'sem-no', motivo: '404 Not Found — nó ICF ausente OU desativado na SICF (o ICF não distingue os dois)' });
+  expect(r.webgui.ok).toBe(false);
+  expect(r.webgui.causa).toBe('sem-no');
+  expect(r.webgui.motivo).toContain('SICF');
+  expect(r.webgui.cookieSeguro).toBeUndefined();
+  // e o WebGUI não derruba os outros canais: é independente
+  expect(r.adt.ok).toBe(true);
+  expect(r.classrun.ok).toBe(true);
 });
 
 // ---------- registro das medições (canais.mjs) — REGISTRO, não cache ----------
 
 const AGORA = new Date('2026-08-31T12:00:00Z');
 const CFG_S4H = { alias: 's4h', client: '250', base: 'http://host:8000', cliente: 'moovi', descricao: 'S4H dev' };
-const OK = montarResumo({ ok: true }, { ok: true, release: '758', sysid: 'S4H', mandante: '250', usuario: 'MVJVELOSO' });
+const WEBGUI_OK = { ok: true, causa: 'ok', motivo: 'nó ativo e logon aceito', cookieSeguro: true };
+const OK = montarResumo({ ok: true }, { ok: true, release: '758', sysid: 'S4H', mandante: '250', usuario: 'MVJVELOSO' }, WEBGUI_OK);
 
 test('canais: a chave é o par sistema+mandante — o mesmo host em outro mandante é outro alvo', () => {
   expect(chaveDe(CFG_S4H)).toBe('s4h:250');
@@ -129,19 +155,31 @@ test('canais: a entrada carrega o que é do SISTEMA e a data — e o usuário de
   expect(e).toMatchObject({
     alias: 's4h', mandante: '250', cliente: 'moovi', sysid: 'S4H', release: '758',
     medidoEm: '2026-08-31T12:00:00.000Z', medidoPor: 'MVJVELOSO',
-    canais: { adt: true, soapRfc: true, classrun: true },
+    canais: { adt: true, soapRfc: true, classrun: true, webgui: true },
+    cookieSeguro: true,
   });
   expect(e.motivos).toBeUndefined(); // nada falhou: motivo seria ruído
   expect(e.tipos).toBeUndefined();   // discovery não foi medido nesta rodada
 });
 
 test('canais: só o canal que FALHOU grava motivo — é o que explica depois', () => {
-  const caiu = montarResumo({ ok: false, motivo: 'sem resposta: fetch failed' }, { ok: false, motivo: 'sem resposta' });
+  const caiu = montarResumo({ ok: false, motivo: 'sem resposta: fetch failed' }, { ok: false, motivo: 'sem resposta' },
+    { ok: false, causa: 'sem-icm', motivo: 'sem resposta do ICM: ENOTFOUND' });
   const e = entradaDaMedicao({ alias: 'sxd', client: '100' }, caiu, { agora: AGORA });
-  expect(e.canais).toEqual({ adt: false, soapRfc: false, classrun: false });
+  expect(e.canais).toEqual({ adt: false, soapRfc: false, classrun: false, webgui: false });
   expect(e.motivos.adt).toContain('fetch failed');
   expect(e.motivos.classrun).toBe('sem ADT');
+  expect(e.motivos.webgui).toContain('ENOTFOUND');
+  expect(e.cookieSeguro).toBeUndefined(); // sem cookie de sessão não há o que dizer sobre `secure`
   expect(e.release).toBeNull();
+});
+
+test('canais: resultado de probe SEM a sonda do WebGUI (registro antigo) não inventa coluna', () => {
+  const antigo = { adt: { ok: true }, soapRfc: { ok: true }, classrun: { ok: true }, release: '758', sysid: 'S4H' };
+  const e = entradaDaMedicao(CFG_S4H, antigo, { agora: AGORA });
+  expect(e.canais).toEqual({ adt: true, soapRfc: true, classrun: true });
+  expect(e.cookieSeguro).toBeUndefined();
+  expect(e.motivos).toBeUndefined();
 });
 
 test('canais: os tipos entram só quando o discovery foi medido, com a lista do que falta', () => {
@@ -175,9 +213,24 @@ test('canais: a tabela mostra a IDADE — é ela que impede de ler o mapa como e
   const registro = mesclarRegistro(mesclarRegistro({}, entradaDaMedicao(CFG_S4H, OK, { agora: AGORA })), velho);
   const md = tabelaMarkdown(registro, { agora: AGORA });
 
-  expect(md).toContain('| s4h:250 (moovi) | S4H | 758 | ✅ | ✅ | ✅ | hoje |');
-  expect(md).toContain('| sxd:100 | ? | ? | ❌ | ❌ | ❌ | 2 d |');
+  expect(md).toContain('| alvo | sysid | release | ADT | SOAP RFC | classrun | WebGUI | medido |');
+  expect(md).toContain('| s4h:250 (moovi) | S4H | 758 | ✅ | ✅ | ✅ | ✅ 🔒 | hoje |');
+  expect(md).toContain('| sxd:100 | ? | ? | ❌ | ❌ | ❌ | — | 2 d |'); // sem a 3ª sonda: não medido ≠ falhou
   expect(md).toContain('`sxd:100` · adt: sem resposta: VPN');
+  expect(md).toContain('🔒 = o cookie de sessão do WebGUI vem `secure`'); // a legenda só aparece quando há 🔒
+});
+
+test('canais: WebGUI na tabela — ✅ sem 🔒 quando o cookie não vem secure, ❌ com motivo quando o nó não respondeu', () => {
+  const sxd = entradaDaMedicao({ alias: 'sxd', client: '100' },
+    montarResumo({ ok: true }, { ok: true, release: '816', sysid: 'SXD' }, { ...WEBGUI_OK, cookieSeguro: false }), { agora: AGORA });
+  const semNo = entradaDaMedicao({ alias: 'd01', client: '100' },
+    montarResumo({ ok: true }, { ok: true, release: '750', sysid: 'D01' }, { ok: false, causa: 'sem-no', motivo: '404 — nó ICF ausente OU desativado' }), { agora: AGORA });
+  const md = tabelaMarkdown(mesclarRegistro(mesclarRegistro({}, sxd), semNo), { agora: AGORA });
+
+  expect(md).toContain('| sxd:100 | SXD | 816 | ✅ | ✅ | ✅ | ✅ | hoje |');
+  expect(md).toContain('| d01:100 | D01 | 750 | ✅ | ✅ | ❌ | ❌ | hoje |');
+  expect(md).toContain('`d01:100` · webgui: 404 — nó ICF ausente OU desativado');
+  expect(md).not.toContain('🔒 =');
 });
 
 test('canais: registro vazio não vira tabela vazia sem explicação', () => {

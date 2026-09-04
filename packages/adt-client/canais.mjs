@@ -5,15 +5,18 @@
 //
 //   • release, sysid e as coleções do discovery são fatos DO SISTEMA: mudam em upgrade/SP, e
 //     envelhecem bem (meses).
-//   • `adt.ok` / `soapRfc.ok` / `classrun.ok` são fatos DO MOMENTO — dependem de VPN, do nó SICF,
-//     da credencial e da autorização. Envelhecem em minutos, e do pior jeito: em 2026-08-30 13:36
+//   • `adt.ok` / `soapRfc.ok` / `classrun.ok` / `webgui.ok` são fatos DO MOMENTO — dependem de VPN,
+//     do nó SICF, da credencial e da autorização. Envelhecem em minutos, e do pior jeito: em 2026-08-30 13:36
 //     o ADT stateful do s4h passou a responder 400 a tudo enquanto o stateless seguia 200
 //     (fila 21), e o SXD fica inalcançável sem VPN (fila 15). Um `adt: true` cacheado mandaria o
 //     consumidor num canal morto — trocando o `motivo` claro do probe por um erro obscuro; um
 //     `adt: false` cacheado esconderia o sistema que voltou.
 //   • `mandante` e `usuario` são da CREDENCIAL, não do sistema.
+//   • `cookieSeguro` (o `SAP_SESSIONID` vem `secure` sobre HTTP puro) é configuração DO SISTEMA
+//     (perfil do ICM) — envelhece bem, e é o que decide a bandeira do Chrome no WebGUI.
 //
-// Sondar custa ~150 ms (dois GETs paralelos, medido no s4h em 2026-08-31). Não vale trocar isso
+// Sondar custa ~150 ms (dois GETs paralelos, medido no s4h em 2026-08-31) mais o GET do nó do
+// WebGUI, em paralelo (~420 ms com logon aceito, medido no s4h em 2026-09-04). Não vale trocar isso
 // por um mapa que mente. O que o registro serve:
 //
 //   • ver o landscape inteiro de uma vez — release, canais e tipos de cada sistema;
@@ -44,11 +47,13 @@ export function chaveDe(cfg) {
  * PURO: a entrada do registro a partir do `cfg` e do resultado do `probe`.
  * `tipos` (opcional) é o retorno de `tiposDisponiveis` — só entra quando foi medido de fato.
  * Os motivos só são gravados para os canais que FALHARAM: é o que explica, e o resto é ruído.
+ * `webgui` só entra quando foi sondado (resultado de probe anterior à fila 14 não tem a chave);
+ * `cookieSeguro` só quando o WebGUI respondeu — é lá que o cookie de sessão aparece.
  */
 export function entradaDaMedicao(cfg, resultado, { tipos = null, agora = new Date() } = {}) {
   const motivos = {};
-  for (const canal of ['adt', 'soapRfc', 'classrun']) {
-    if (!resultado[canal]?.ok && resultado[canal]?.motivo) motivos[canal] = resultado[canal].motivo;
+  for (const canal of ['adt', 'soapRfc', 'classrun', 'webgui']) {
+    if (resultado[canal] && !resultado[canal].ok && resultado[canal].motivo) motivos[canal] = resultado[canal].motivo;
   }
   const e = {
     alias: String(cfg.alias || '?').toLowerCase(),
@@ -64,8 +69,10 @@ export function entradaDaMedicao(cfg, resultado, { tipos = null, agora = new Dat
       adt: resultado.adt?.ok === true,
       soapRfc: resultado.soapRfc?.ok === true,
       classrun: resultado.classrun?.ok === true,
+      ...(resultado.webgui ? { webgui: resultado.webgui.ok === true } : {}),
     },
   };
+  if (resultado.webgui?.ok === true) e.cookieSeguro = resultado.webgui.cookieSeguro === true;
   if (Object.keys(motivos).length) e.motivos = motivos;
   if (tipos) {
     const faltando = Object.entries(tipos).filter(([, v]) => !v.ok).map(([k]) => k).sort();
@@ -95,21 +102,29 @@ const idadeLegivel = (d) => (d === null ? '?' : d === 0 ? 'hoje' : d === 1 ? 'on
 /**
  * PURO: o mapa do landscape em markdown — uma linha por alvo medido, ordenada por alias.
  * A coluna "medido" é o que impede de ler a tabela como verdade de agora.
+ * WebGUI: `✅ 🔒` = nó ativo E cookie de sessão `secure` (o Chrome precisa da bandeira de origem
+ * segura); `✅` = nó ativo, cookie sem `secure`; `❌` = não respondeu; `—` = medição anterior à sonda.
  */
 export function tabelaMarkdown(registro, { agora = new Date() } = {}) {
   const entradas = Object.entries(registro?.medicoes || {}).sort(([a], [b]) => a.localeCompare(b));
   if (!entradas.length) return '_nenhuma medição registrada._';
 
   const temTipos = entradas.some(([, e]) => e.tipos);
-  const cab = ['alvo', 'sysid', 'release', 'ADT', 'SOAP RFC', 'classrun', ...(temTipos ? ['tipos'] : []), 'medido'];
+  const cab = ['alvo', 'sysid', 'release', 'ADT', 'SOAP RFC', 'classrun', 'WebGUI', ...(temTipos ? ['tipos'] : []), 'medido'];
   const linhas = [`| ${cab.join(' | ')} |`, `|${cab.map(() => '---').join('|')}|`];
 
   for (const [chave, e] of entradas) {
     const s = (ok) => (ok ? '✅' : '❌');
+    const webgui = e.canais?.webgui === undefined ? '—' : e.canais.webgui ? (e.cookieSeguro ? '✅ 🔒' : '✅') : '❌';
     const tipos = e.tipos ? `${e.tipos.comColecao}/${e.tipos.medidos}` : '—';
     linhas.push(`| ${chave}${e.cliente ? ` (${e.cliente})` : ''} | ${e.sysid || '?'} | ${e.release || '?'} | ` +
-      `${s(e.canais?.adt)} | ${s(e.canais?.soapRfc)} | ${s(e.canais?.classrun)} | ` +
+      `${s(e.canais?.adt)} | ${s(e.canais?.soapRfc)} | ${s(e.canais?.classrun)} | ${webgui} | ` +
       `${temTipos ? `${tipos} | ` : ''}${idadeLegivel(idadeEmDias(e.medidoEm, agora))} |`);
+  }
+
+  if (entradas.some(([, e]) => e.canais?.webgui && e.cookieSeguro)) {
+    linhas.push('', '🔒 = o cookie de sessão do WebGUI vem `secure` sobre HTTP puro: o Chrome só entra com ' +
+      '`--unsafely-treat-insecure-origin-as-secure` (o `abrirNavegador` liga por default; sem ela é `400 Session not found`).');
   }
 
   const comMotivo = entradas.filter(([, e]) => e.motivos);

@@ -3,12 +3,20 @@
 // A seleção de canal é POR SISTEMA: classrun exige ABAP ≥ 7.52, SOAP RFC depende do nó SICF ativo,
 // ADT depende dos serviços ADT. Em vez de o consumidor decorar a matriz, ele pergunta:
 //
-//   const p = await probe(cfg);   // { adt, soapRfc, classrun, release, sysid, mandante, usuario }
+//   const p = await probe(cfg);   // { adt, soapRfc, classrun, webgui, release, sysid, mandante, usuario }
 //
 // Cada sonda é INDEPENDENTE e falha macia (false + motivo) — um sistema sem SOAP RFC ainda
-// responde ADT, e vice-versa. Nada aqui altera o sistema: são um GET de discovery e um eco.
+// responde ADT, e vice-versa. Nada aqui altera o sistema: são um GET de discovery, um eco e um GET
+// no nó do WebGUI (cuja sessão a sonda encerra em seguida — quem abre fecha).
+//
+// O `webgui` responde DUAS perguntas de uma vez (fila adt-client 14): se o nó
+// `/sap/bc/gui/sap/its/webgui` está ativo na SICF com esta credencial, e se o cookie de sessão
+// vem `secure` sobre HTTP puro (`cookieSeguro`) — que é o que decide se o Chrome precisa da
+// bandeira `--unsafely-treat-insecure-origin-as-secure`. Medido: s4h 758/250 vem `secure` (sem a
+// bandeira a tela é `400 Session not found`); SXD 816/100 não vem. Ver webgui.mjs § sondarWebgui.
 
 import { ping } from './rfc-soap.mjs';
+import { sondarWebgui } from './webgui.mjs';
 import { passo, detalhe, http as logHttp } from './log.mjs';
 import { MODULOS } from './tipos/index.mjs';
 
@@ -84,17 +92,24 @@ async function sondarAdt(cfg) {
  */
 export async function probe(cfg) {
   passo(`probe: ${cfg.base} mandante ${cfg.client ?? '(default)'}`);
-  const [adt, eco] = await Promise.all([
+  const [adt, eco, webgui] = await Promise.all([
     sondarAdt(cfg),
     ping(cfg).catch((e) => ({ ok: false, motivo: e.message })),
+    sondarWebgui(cfg).catch((e) => ({ ok: false, causa: 'inesperado', motivo: `sonda falhou: ${e.message}` })),
   ]);
-  const resultado = montarResumo(adt, eco);
-  detalhe(`adt=${resultado.adt.ok} soapRfc=${resultado.soapRfc.ok} classrun=${resultado.classrun.ok} release=${resultado.release ?? '?'}`);
+  const resultado = montarResumo(adt, eco, webgui);
+  detalhe(`adt=${resultado.adt.ok} soapRfc=${resultado.soapRfc.ok} classrun=${resultado.classrun.ok} ` +
+    `webgui=${resultado.webgui.ok}${resultado.webgui.ok ? ` (cookieSeguro=${resultado.webgui.cookieSeguro})` : ''} release=${resultado.release ?? '?'}`);
   return resultado;
 }
 
-/** Separado do probe() para ser testável offline: decide o mapa a partir das duas sondas. */
-export function montarResumo(adt, eco) {
+/**
+ * Separado do probe() para ser testável offline: decide o mapa a partir das sondas.
+ * `webgui` é o retorno de `sondarWebgui`: do veredito só passam adiante `ok`, `causa`, `motivo` e,
+ * quando ok, `cookieSeguro`. Sem a sonda (`null`, chamador antigo) a chave NÃO entra no resumo —
+ * "não medido" não é "falhou", e é o registro (canais.mjs) que precisa distinguir os dois.
+ */
+export function montarResumo(adt, eco, webgui = null) {
   const soapOk = eco.ok === true;
   return {
     adt,
@@ -102,6 +117,11 @@ export function montarResumo(adt, eco) {
     classrun: adt.ok && soapOk && classrunDisponivel(eco.release)
       ? { ok: true }
       : { ok: false, motivo: !adt.ok ? 'sem ADT' : (soapOk ? `release ${eco.release ?? '?'} < 7.52 (ou desconhecido)` : 'release desconhecido (sem eco)') },
+    ...(webgui ? {
+      webgui: webgui.ok === true
+        ? { ok: true, causa: 'ok', cookieSeguro: webgui.cookieSeguro === true }
+        : { ok: false, causa: webgui.causa ?? 'inesperado', motivo: webgui.motivo ?? 'sonda do WebGUI falhou' },
+    } : {}),
     release: soapOk ? eco.release : null,
     sysid: soapOk ? eco.sysid : null,
     mandante: soapOk ? eco.mandante : null,
