@@ -4,7 +4,8 @@
 import { test, expect } from 'vitest';
 import {
   CAMINHOS_CHROME, POLYFILL_RANDOMUUID, TECLAS, JS_CARIMBO,
-  expressaoTransacao, urlWebgui, jsDoAlvo, nomeDoAlvo, jsTelaPronta, autorizacao, acharNavegador,
+  expressaoTransacao, urlWebgui, jsDoAlvo, nomeDoAlvo, jsTelaPronta, JS_DYNPRO_PRESENTE, RE_SID_DA_DYNPRO,
+  autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
   interpretarSonda, jsComando,
@@ -51,13 +52,21 @@ test('webgui: o alvo tem três formas — e o botão da barra casa pelo FIM do i
   expect(nomeDoAlvo('X')).toBe('id X');
 });
 
-test('webgui: tela pronta NÃO olha document.title — olha controles [ct] e campos visíveis', () => {
+test('webgui: tela pronta NÃO olha document.title nem exige input — olha [ct] e a DYNPRO presente', () => {
   const js = jsTelaPronta();
   expect(js).not.toContain('document.title');            // medido: monta inteira com o título VAZIO
   expect(js).toContain("document.querySelectorAll('[ct]').length > 5");
-  expect(js).toContain('e.offsetWidth || e.offsetHeight');
   expect(js).toContain("(document.body.innerText || '').length >= 200");
-  expect(jsTelaPronta({ minimoTexto: 10, minimoControles: 0, minimoCampos: 0 })).toContain('.length >= 10');
+  // fila 19: seleção do RSPARAM, lista ALV e menu têm ZERO input visível — o piso default é 0 e é `>=`
+  expect(js).toContain('e.offsetWidth || e.offsetHeight).length >= 0');
+  expect(jsTelaPronta({ minimoTexto: 10, minimoControles: 0, minimoCampos: 2 })).toContain('.length >= 2');
+  // o casco (menu + barra) chega antes da dynpro e já tem 47 [ct]: quem prova a dynpro é o SID em usr/tbar[1]
+  expect(js).toContain(JS_DYNPRO_PRESENTE);
+  const re = RE_SID_DA_DYNPRO;
+  expect(re.test('{"27":{"SID":"wnd[0]/tbar[1]/btn[8]","Type":"GuiButton"}}')).toBe(true);
+  expect(re.test('{"14":{"SID":"wnd[0]/usr/chkALSOUSUB","Type":"GuiCheckBox"}}')).toBe(true);
+  expect(re.test('{"27":{"SID":"wnd[0]/tbar[0]/btn[3]","Type":"GuiButton"}}')).toBe(false);  // casco
+  expect(re.test('{"1":{"SID":"wnd[0]","Type":"GuiMainWindow"}}')).toBe(false);              // casco
   // o carimbo é o que prova a TROCA de tela (rede quieta não prova nada)
   expect(JS_CARIMBO).toContain('document.querySelectorAll(\'*\').length');
 });

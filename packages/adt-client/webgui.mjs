@@ -202,13 +202,30 @@ export const nomeDoAlvo = (alvo) =>
  * `~transaction=*TCODE …;DYNP_OKCODE=ONLI` monta INTEIRA — 3.063 elementos com `ct` e 10 inputs
  * visíveis em 3 s — com o título VAZIO (ele só é preenchido depois). Com o título na condição a
  * espera estourava o teto de 60 s e o script lia uma tela pronta como se tivesse zero campo.
- * O sinal certo é contagem de controles do Unified Renderer (`[ct]`) + campos de entrada VISÍVEIS.
+ *
+ * ⚠️ NÃO exigir campo de entrada visível: medido no s4h 758/250 em 04/09/2026 (fila 19,
+ * `POC_webgui_lsdata/medicoes/tela-pronta.json`) que a tela de seleção do RSPARAM (um checkbox), a
+ * lista ALV dele (960 controles) e o SAP Easy Access têm ZERO `<input>` visível — com `inputs > 0`
+ * na condição a espera rodava até o teto de 60 s e só então lia a tela (certa). E o casco da página
+ * (menu + barra, 47 `[ct]`, 3.574 chars) chega ANTES da dynpro e já satisfaz texto e `[ct]`, então
+ * tirar a condição sem pôr outra declararia pronto cedo demais.
+ *
+ * O sinal certo é a DYNPRO PRESENTE: algum controle cujo SID mora na área do usuário
+ * (`wnd[n]/usr/…`) ou na barra de aplicação (`wnd[n]/tbar[1]/…`). Medido: o casco tem 0 dos dois;
+ * SE38 fecha junto com o 1º input (12,3 s nessa rodada), a seleção do RSPARAM 325 ms depois do
+ * casco, o menu em 1,4 s. `minimoCampos` continua como PISO opcional (`>=`; 0 = não exige).
  */
+/** PURO: o SID que só uma DYNPRO tem — área do usuário ou barra de aplicação (o casco só tem `tbar[0]` e `wnd[0]`). */
+export const RE_SID_DA_DYNPRO = /"SID":"wnd\[\d+\]\/(usr|tbar\[1\])\//;
+export const JS_DYNPRO_PRESENTE = `[...document.querySelectorAll('[lsdata]')]
+    .some(e => ${RE_SID_DA_DYNPRO}.test(e.getAttribute('lsdata') || ''))`;
+
 export function jsTelaPronta({ minimoTexto = 200, minimoControles = 5, minimoCampos = 0 } = {}) {
   return `document.readyState === 'complete' &&
     !!document.body && (document.body.innerText || '').length >= ${minimoTexto} &&
     document.querySelectorAll('[ct]').length > ${minimoControles} &&
-    [...document.querySelectorAll('input')].filter(e => e.offsetWidth || e.offsetHeight).length > ${minimoCampos}`;
+    ${JS_DYNPRO_PRESENTE} &&
+    [...document.querySelectorAll('input')].filter(e => e.offsetWidth || e.offsetHeight).length >= ${minimoCampos}`;
 }
 
 /** PURO: o carimbo barato da tela — é ele que prova que ela TROCOU (rede quieta não prova nada). */

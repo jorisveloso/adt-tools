@@ -361,9 +361,28 @@ Dois sinais que **não** servem:
   exigir título fazia a espera estourar o teto de 60 s e o script ler uma tela pronta como se
   tivesse **zero campo**.
 
-O sinal certo (`jsTelaPronta`, puro) é **texto + contagem de controles `[ct]` + campos de entrada
-visíveis**. ⚠ E o piso de campos é `0` de propósito: a 1ª tela da SE16 tem **um** input visível —
-com o piso em 3 (herdado da J1B1N) a abertura levou **64 s**; com o piso certo, **9 s**.
+- **campo de entrada visível** — medido no s4h 758/250 em 04/09/2026 (fila 19,
+  `sap-accelerate/work/POC_webgui_lsdata/medicoes/tela-pronta.md`): a tela de seleção do RSPARAM
+  (um checkbox), a **lista ALV** dele (960 controles) e o SAP Easy Access têm **zero** `<input>`
+  visível. Com `inputs > 0` na condição, texto, `[ct]` e `readyState` fechavam em 0,5 s e a espera
+  rodava até o **teto de 60 s** mesmo assim — o resultado saía certo, a **64 s por chamada**.
+
+E um sinal que engana: o **casco** da página (menu + barra, 47 `[ct]`, 3.574 chars) chega ANTES da
+dynpro e já satisfaz texto e `[ct]` — só tirar a condição de input declararia pronto cedo demais.
+
+O sinal certo (`jsTelaPronta`, puro) é **texto + contagem de `[ct]` + DYNPRO PRESENTE**: algum
+controle cujo SID mora em `wnd[n]/usr/…` ou `wnd[n]/tbar[1]/…` (`RE_SID_DA_DYNPRO`). O casco tem
+só `tbar[0]` e `wnd[0]`, zero dos dois. Medido com a lib depois da troca, mesma sessão:
+
+| tela | antes | depois | o que `lerTela` leu |
+|---|---|---|---|
+| SA38 → seleção do RSPARAM (`DYNP_OKCODE=STRT`) | 64,2 s | **2,5 s** | 1 checkbox, 0 campos, 4 botões |
+| SAP Easy Access (sem `~transaction`) | — | 3,6 s | 13 botões |
+| SE16 tela de seleção da T000 | 8,2 s | 3,5 s | 34 campos |
+| SE38 inicial | 2,5 s | 10,3 s (1ª navegação da sessão; input e SID fecham juntos) | 1 campo |
+
+`minimoCampos` continua como **piso opcional** (`>=`; default 0 = não exige) para quem quer
+esperar uma tela específica com N campos.
 
 ## ⚠ Clicar de verdade
 
