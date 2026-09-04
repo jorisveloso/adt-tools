@@ -139,9 +139,10 @@ confirmada em outra LUW por `dataPreview`
    **calado** e, com `DYNP_OKCODE` junto, o fcode dispara com a tela vazia. Quem sabe o nome certo é
    `lerTela(s).campos[].campo`.
 3. **`html_enabled` é o default da lib** (`gui = {}` → `html: true` → `TSTCC S_WEBGUI = 1`) e o
-   driver imprime o que gravou (`t.gui.webgui`). ⚠ **Não medido**: a contraprova — se o ITS de fato
-   **recusa** uma transação com `S_WEBGUI` desligado. Trate como pré-requisito a conferir, não como
-   fato. (Item 29 da fila `adt-client`.)
+   driver imprime o que gravou (`t.gui.webgui`). ✅ **A contraprova foi feita — e o flag NÃO é
+   pré-requisito** (s4h 758/250, 04/09/2026, § abaixo): a transação com `S_WEBGUI` **vazio** abriu
+   pelo `~transaction` exatamente como a com `1`. Mantenha o default (é o que a SE93 gravaria), mas
+   não conte com ele como explicação quando uma tela não abrir — a causa é outra.
 4. **Não há via de saída pelo WebGUI** (`btn[15]`, `btn[12]`, `Shift+F3` postam e reabrem a mesma
    dynpro). A transação fica **aberta na sessão de diálogo** até o `s.fechar()`. Fluxo que precisa
    sair *sem gravar* é GUI Scripting.
@@ -150,6 +151,37 @@ confirmada em outra LUW por `dataPreview`
    2026-08-29, S4H 758/250). O driver `Y_TRAN_*`/`Y_TRAND_*` também sai sozinho (`keepDriver: false`
    é o default). No sistema do cliente isto **não é opcional** — a transação é um objeto de repositório
    e fica visível na SE93 de todo mundo.
+
+### A contraprova do `TSTCC S_WEBGUI` — o ITS **não** olha o flag
+
+**Medido no s4h 758, mandante 250, em 04/09/2026** (item 29 da fila `adt-client`). Duas transações
+Y* IGUAIS sobre o mesmo report (`RSPARAM`), `$TMP`, criadas no mesmo minuto pela mesma
+`deployTransaction`, diferindo **só** no `gui.html`:
+
+| transação | `gui` | TSTCC lida em outra LUW (`readTable`) | `~transaction` no ITS |
+|---|---|---|---|
+| `YJBV_WGON` | `{ html: true }` | `S_WEBGUI '1'` · `S_WIN32 'X'` | **abriu** — `delta-update`, título "Exibir parâmetro de perfil SAP", dynpro `RSPARAM` |
+| `YJBV_WGOFF` | `{ html: false }` | `S_WEBGUI ''` · `S_WIN32 'X'` | **abriu igual** — mesmo título, mesma dynpro |
+| `YJBV_WGNADA` | (não existe) | — | **recusou**: HTTP **500** `Invalid transaction code YJBV_WGNADA / Start of transaction failed (rc=1)` |
+
+O caso de controle é o que dá valor ao resultado: o canal **sabe** recusar — para transação
+inexistente ele recusa, e com mensagem própria. Para `S_WEBGUI` vazio ele não recusa nada.
+
+Duas coisas a mais, medidas no mesmo ciclo:
+
+- **O GET da URL não decide.** Nos TRÊS casos o `GET /sap/bc/gui/sap/its/webgui?~transaction=…`
+  respondeu **200** com `SAP_SESSIONID_S4H_250` (~36 KB do shell). Quem aceita ou recusa a
+  transação é o **POST de boot** — a mesma regra do § *o status HTTP é 200 nos dois desfechos* do
+  `its.mjs`. Sondar o GET para saber se a transação abre é medir a coisa errada.
+- **A lib escreveu o que prometeu:** `t.gui.webgui` do driver (`RPY_TRANSACTION_READ`) bateu com a
+  `TSTCC` lida em outra LUW nos dois casos (`'1'` e `''`) — o `html_enabled` chega ao banco.
+
+Ambas as transações foram apagadas ao final (`deleteTransaction`, subrc 0, `readTransaction` →
+`exists: false`).
+
+**Fica aberto** (não medido): se o flag pesa em OUTRO caminho de entrada — `/n<TCODE>` dentro de uma
+sessão de WebGUI já aberta, ou o menu SAP Easy Access. O medido aqui é o `~transaction` na URL, que
+é o que esta receita usa.
 
 ### O que este par NÃO resolve
 

@@ -62,6 +62,9 @@ const deleteAbap = (tcode) => `    CLEAR lv_msg.
 export function buildTransactionDriverSource(name, { tcode, text = '', type = 'report', program = '', dynpro = '', called = '', skip = true, params = [], variant = '', pkg = '$TMP', transport = '', language = '', gui = {}, replace = false }) {
   const T = validarTransacao({ tcode, type, program, dynpro, called, variant, params });
   const C = String(tcode).toUpperCase();
+  // `html` → TSTCC S_WEBGUI. É o que a SE93 gravaria, mas NÃO é pré-requisito do WebGUI: medido no
+  // s4h 758/250 em 04/09/2026 (item 29), a transação com S_WEBGUI VAZIO abriu pelo `~transaction`
+  // igual à com '1' — quem o ITS recusa (500 "Invalid transaction code") é transação inexistente.
   const { html = true, win = true, java = false } = gui;
   const pv = params.map((p) => `ls_p-field = '${esc(String(p.field).toUpperCase())}'. ls_p-value = '${esc(p.value ?? '')}'. APPEND ls_p TO lt_p.`).join(' ');
   const lang = language ? `language = '${esc(String(language).toUpperCase())}'` : '';
