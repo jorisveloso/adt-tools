@@ -7,7 +7,7 @@ import { test, expect } from 'vitest';
 import {
   OKCD, ESTADO, BOOT, ENTER, batchPreencher, batchAcionar, batchComandar, batchVkey,
   decodificarEntidades, cabecalhoDoShell, paramDe, passosDoMultipart, sidsDaResposta, lerResposta,
-  sidDoAlvo, preencher, campos, botoes, sids,
+  sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla,
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, telaDoDelta, lerTela, parametrosDaTela,
 } from './its.mjs';
 
@@ -44,6 +44,24 @@ test('its: o vocabulário do protocolo é o MEDIDO — focus+value, action/3, ok
   expect(() => batchComandar('')).toThrow(/informe o OK-code/);
   expect(batchVkey(0)).toEqual([ENTER]);
   expect(ESTADO).toEqual({ get: 'state/ur' });
+});
+
+test('its: a tecla vira vkey/<n>/ses[0] — o mapa MEDIDO por nome e apelido, número cru livre, nome inventado estoura', () => {
+  // fila 22, s4h 758/250 04/09/2026: o n do vkey é o MESMO número de tecla de função do SAP GUI
+  expect(numeroDaTecla('F8')).toBe(8);
+  expect(numeroDaTecla('Shift+F3')).toBe(15);
+  expect(numeroDaTecla('shift + f3')).toBe(15);      // caixa e espaço não contam
+  expect(numeroDaTecla('Sair')).toBe(15);            // apelido
+  expect(numeroDaTecla('Executar')).toBe(8);
+  expect(numeroDaTecla('Ctrl+S')).toBe(11);          // o Gravar do SAP GUI é o F11
+  expect(numeroDaTecla('Enter')).toBe(0);
+  expect(numeroDaTecla(21)).toBe(21);                // número cru: a via de MEDIR o não medido
+  expect(numeroDaTecla('7')).toBe(7);
+  expect(() => numeroDaTecla('F9')).toThrow(/tecla desconhecida "F9"/);
+  expect(VKEYS.F12.n).toBe(12);
+  // o sufixo /ses[0] é OBRIGATÓRIO — sem ele o ITS volta -1002 <control-id> is expected
+  expect(batchVkey(numeroDaTecla('F8'))).toEqual([{ post: 'vkey/8/ses[0]' }]);
+  expect(batchVkey(numeroDaTecla('Enter'))).toEqual([ENTER]);
 });
 
 test('its: o shell entrega o action (com o token de sessão) e o moin; a página de logon não tem action', () => {

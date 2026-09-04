@@ -15,11 +15,13 @@
 // webgui.mjs, e o VOCABULÁRIO é o mesmo (`abrir`/`abrirTransacao`, `preencher`, `acionar`,
 // `comandar`, `fechar`), para trocar de via ser trocar o import.
 //
-// Medido no s4h 758, mandante 250, em 04/09/2026 (fila adt-client, itens 7, 8 e 20;
+// Medido no s4h 758, mandante 250, em 04/09/2026 (fila adt-client, itens 7, 8, 20 e 22;
 // docs/receita-webgui.md § O protocolo do ITS por HTTP puro):
 //   • SE16 na T000, `txtMAX_SEL` de 200 → 2, `btn[8]` acionado: o título voltou
 //     "Data Browser: Tabela T000  2 acertos" — o valor CHEGOU ao ABAP e mudou o resultado;
 //   • OK-code por `value/okcd` + `vkey/0/ses[0]`: `/nSE16`, `ONLI`, `/8`, `/nSE38`, `/n`, `/nex`;
+//   • o TECLADO (item 22): `vkey/<n>/ses[0]` com o MESMO número de tecla do SAP GUI — `tecla(s, 'F8')`
+//     dispensa o okcd, leva o que foi preenchido no mesmo POST, e o sufixo `/ses[0]` é obrigatório;
 //   • custo: GET + boot + ação ≈ 0,95 s (341 + 423 + 190 ms), contra ~9 s do Chrome na mesma tela.
 //
 // ⚠️ Cinco regras MEDIDAS, todas embutidas aqui:
@@ -54,8 +56,7 @@ export const OKCD = 'wnd[0]/tbar[0]/okcd';
 export const ESTADO = { get: 'state/ur' };
 /** O boot — o primeiro POST, que monta a dynpro. ⚠ ação nele é PERDIDA. */
 export const BOOT = [ESTADO];
-/** `vkey/0/ses[0]` é o Enter — o que SUBMETE o OK-code e o que avança a dynpro. Só o 0 está medido
- * (o mapa do `vkey/<n>` é o item 22 da fila). */
+/** `vkey/0/ses[0]` é o Enter — o que SUBMETE o OK-code e o que avança a dynpro (§ `VKEYS`). */
 export const ENTER = { post: 'vkey/0/ses[0]' };
 
 /** PURO: escrever num campo — `focus` antes (o renderer manda assim) e `value` com o conteúdo. */
@@ -72,7 +73,43 @@ export function batchComandar(okcode) {
   if (!v) throw new Error('its: informe o OK-code (ex. "/nSE16", "ONLI", "/8", "/n", "/nex")');
   return [{ post: `value/${OKCD}`, content: v }, ENTER];
 }
-/** PURO: a tecla virtual `vkey/<n>/ses[0]`. ⚠ Só `0` (Enter) está medido — fila 22. */
+/**
+ * O TECLADO deste canal — o `n` do `vkey/<n>` é o MESMO número de tecla de função do SAP GUI.
+ *
+ * Medido no s4h 758/250 em 04/09/2026 (fila adt-client, item 22; evidência em
+ * `sap-accelerate/work/POC_webgui_vkey/medicoes/mapa-vkey.md`), cada tecla numa sessão nova, na
+ * SE16 da T000. A tecla é o endereço mais ESTÁVEL do canal: não depende de `btn[n]` (que muda de
+ * barra) nem do fcode da dynpro, e DISPENSA a caixa de comando — `vkey/8` sozinho executou a mesma
+ * lista que `acionar('Executar')` e que o OK-code `/8`.
+ *
+ * ⚠️ Isto é o MEDIDO, não a convenção inteira do SAP GUI. Tecla fora daqui vai crua pelo número:
+ * `vkey(s, 21)` — para MEDIR, não para afirmar.
+ */
+export const VKEYS = {
+  Enter: { n: 0, apelidos: ['Continuar'], medido: 'submete o OK-code e avança a dynpro (item 8)' },
+  F3: { n: 3, apelidos: ['Voltar'], medido: 'da lista ALV → tela de seleção; de novo → "Data Browser: 1ª tela"' },
+  F4: { n: 4, apelidos: ['Ajuda de pesquisa'], medido: 'com o foco em DATABROWSE-TABLENAME abriu POPUP (wnd[1]) — é o `FieldHelpPress` que a própria tela declara' },
+  F8: { n: 8, apelidos: ['Executar'], medido: 'na seleção da SE16 → "Data Browser: Tabela T000  5 acertos", igual ao botão Executar' },
+  F11: { n: 11, apelidos: ['Gravar', 'Ctrl+S'], medido: 'na seleção da SE16 → "Atributos variante" (SAPLSVAR) — a função Gravar daquela tela' },
+  F12: { n: 12, apelidos: ['Cancelar', 'Escape'], medido: 'da lista → tela de seleção; da seleção → "Data Browser: 1ª tela"' },
+  'Shift+F3': { n: 15, apelidos: ['Encerrar', 'Sair'], medido: 'da seleção → "Data Browser: 1ª tela" NUM SALTO (F3 dali levaria dois)' },
+};
+
+/** PURO: o número da tecla. Número passa direto (inclusive o não medido); nome e apelido saem do
+ * `VKEYS`, sem diferenciar caixa. Nome desconhecido estoura AQUI, com o que existe. */
+export function numeroDaTecla(tecla) {
+  if (typeof tecla === 'number' && Number.isInteger(tecla) && tecla >= 0) return tecla;
+  const t = String(tecla ?? '').trim();
+  if (/^\d+$/.test(t)) return Number(t);
+  const chave = t.toLowerCase().replace(/\s+/g, '');
+  for (const [nome, v] of Object.entries(VKEYS)) {
+    if (nome.toLowerCase() === chave || v.apelidos.some((a) => a.toLowerCase() === chave)) return v.n;
+  }
+  throw new Error(`its: tecla desconhecida "${tecla}" — medidas: ${Object.keys(VKEYS).join(', ')} (número cru também vale: vkey(s, 21))`);
+}
+
+/** PURO: a tecla virtual `vkey/<n>/ses[0]`. ⚠ O sufixo `/ses[0]` é OBRIGATÓRIO — medido: `vkey/8`
+ * sem ele volta `multipart -1002 <control-id> is expected`. */
 export const batchVkey = (n) => [{ post: `vkey/${Number(n)}/ses[0]` }];
 
 // ---------- ler o que o ITS devolve (PURO) ----------
@@ -614,8 +651,16 @@ export async function acionar(sessao, alvo, opts) {
  * campo + Enter → tela de seleção da T000. */
 export const enter = (sessao, opts) => despachar(sessao, [ENTER], opts);
 
-/** Tecla virtual `vkey/<n>` — ⚠ só `0` medido (fila 22); use para MEDIR, não para afirmar. */
+/** Tecla virtual pelo NÚMERO cru (`vkey/<n>/ses[0]`) — a via de MEDIR uma tecla fora do `VKEYS`. */
 export const vkey = (sessao, n, opts) => despachar(sessao, batchVkey(n), opts);
+
+/**
+ * A TECLA pelo nome — o mesmo gesto do `tecla` do webgui.mjs, e o endereço mais estável do canal:
+ * `tecla(s, 'F8')`, `'F3'`, `'Shift+F3'`, `'F12'`, `'F11'`, `'F4'`, `'Enter'` (ou o apelido:
+ * `'Executar'`, `'Voltar'`, `'Sair'`, `'Cancelar'`, `'Gravar'`). Ao contrário do OK-code, a tecla
+ * LEVA o que foi preenchido no mesmo POST — medido: `MAX_SEL=2` + `tecla('F8')` deu "2 acertos".
+ */
+export const tecla = (sessao, nome, opts) => despachar(sessao, batchVkey(numeroDaTecla(nome)), opts);
 
 /**
  * Manda um OK-code pela caixa de comando: `/nSE16` (de qualquer tela), `/n` (menu), `ONLI`/`/8`

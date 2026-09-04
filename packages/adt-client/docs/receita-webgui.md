@@ -656,7 +656,7 @@ depois — sempre.
 | `{"post":"value/<SID>","content":"<valor>"}` | **escreve** no campo | sim (`txtMAX_SEL` 200 → 2) |
 | `{"post":"action/3/<SID>"}` | **aciona** (o `Press` do renderer) | sim (`tbar[1]/btn[8]`) |
 | `{"post":"action/304/<SID>","content":"position=3","logic":"ignore"}` | posição do cursor no texto | mandado pelo renderer; **dispensável** |
-| `{"post":"vkey/<n>/ses[0]"}` | **dispara a tecla** — `vkey/0` é o Enter, e é o que SUBMETE o OK-code | sim (§ caixa de comando) |
+| `{"post":"vkey/<n>/ses[0]"}` | **dispara a tecla** — `vkey/0` é o Enter, e é o que SUBMETE o OK-code | sim — o mapa `0/3/4/8/11/12/15` no § O teclado |
 | `{"post":"okcode/ses[0]","content":"<okcode>"}` | escreve o OK-code (o `Change` do campo) — **não dispara sozinho** | sim |
 | `{"post":"action/0/wnd[0]"}` | — | **não existe**: `X-Code: -101 failed to fire action: not supported` |
 
@@ -695,6 +695,45 @@ em botão (medido: `DATABROWSE-TABLENAME=T000` + `vkey/0` → tela de seleção 
 
 Custo por salto: **85–150 ms**. Evidência:
 `sap-accelerate/work/POC_webgui_okcode/medicoes/okcode-http.md`.
+
+### O teclado — o mapa do `vkey/<n>` (o endereço mais estável do canal)
+
+**Medido no s4h 758/250 em 2026-09-04** (item 22; evidência em
+`sap-accelerate/work/POC_webgui_vkey/medicoes/mapa-vkey.md`). O `n` do `vkey/<n>/ses[0]` é o
+**mesmo número de tecla de função do SAP GUI** — e a tecla **dispensa a caixa de comando**:
+
+```js
+preencher(s, 'MAX_SEL', 2);
+await tecla(s, 'F8');        // "Data Browser: Tabela T000  2 acertos" — a tecla LEVA o valor
+await tecla(s, 'Voltar');    // apelido de F3
+await tecla(s, 'Shift+F3');  // sai da transação num salto
+await vkey(s, 21);           // a via CRUA — para MEDIR uma tecla fora do mapa
+```
+
+| tecla | `vkey` | medido (SE16 da T000) |
+|---|---|---|
+| Enter | `0` | submete o OK-code; avança a dynpro (item 8) |
+| F3 Voltar | `3` | da lista → tela de seleção; dali → "Data Browser: 1ª tela" |
+| F4 Ajuda de pesquisa | `4` | com o foco no campo, abriu **popup `wnd[1]`** de pesquisa de tabelas |
+| F8 Executar | `8` | → "Data Browser: Tabela T000  5 acertos" — **igual** ao `btn[8]` e ao OK-code `/8` |
+| F11 Gravar | `11` | → "Atributos variante" (`SAPLSVAR`) — o Gravar **daquela** tela |
+| F12 Cancelar | `12` | da seleção → "1ª tela"; da lista → seleção |
+| Shift+F3 Encerrar | `15` | da seleção → "1ª tela" **num salto** (`Shift+Fn = 12+n`) |
+
+Por que a tecla é o endereço mais estável: não depende de `btn[n]` (que muda de barra entre
+`tbar[0]` e `tbar[1]`) nem do fcode da dynpro. Quem confirma o isomorfismo com o SAP GUI é a
+própria tela: todo campo com match code publica `"FieldHelpPress":[{},{"1":"vkey/4",…}]`.
+
+⚠ **O sufixo `/ses[0]` é obrigatório.** `{"post":"vkey/8"}` cru volta `multipart` com
+`X-Code -1002` / `<control-id> is expected` — não pega, e a tela não muda.
+
+⚠ **A tecla leva o que foi preenchido; o OK-code não.** `preencher` + `tecla(s,'F8')` no mesmo POST
+deu "2 acertos"; `comandar` recusa com valores pendentes (§ acima).
+
+⚠ **`VKEYS` é o MEDIDO, não a convenção inteira.** F1, F2, F5–F7, F9, F10 e os `Ctrl+Fn` ficaram
+de fora de propósito — `tecla(s,'F9')` estoura listando o que existe. Para medir um deles, use o
+número cru: `vkey(s, n)`. **Não medido:** F12 × Shift+F3 não se distinguem nas telas da SE16 (nas
+duas o alvo é o mesmo); a diferença apareceria num popup — item 23.
 
 ### As duas formas de resposta
 
@@ -799,7 +838,7 @@ tela.aviso   // 'popup wnd[1] aberto — a wnd[0]/usr não vem no delta enquanto
 e fala o **mesmo vocabulário** do `webgui.mjs` — trocar de via é trocar o import:
 
 ```js
-import { abrirTransacao, preencher, acionar, enter, enviar, comandar, fechar, sids, campos, botoes } from 'adt-client/its';
+import { abrirTransacao, preencher, acionar, enter, tecla, enviar, comandar, fechar, sids, campos, botoes } from 'adt-client/its';
 
 const cfg = { base: 'http://host:8000', client: '250', idioma: 'PT', user: 'U', pass: 's3nh4' };
 const s = await abrirTransacao(cfg, 'SE16', { parametros: { 'DATABROWSE-TABLENAME': 'T000' } });
@@ -856,8 +895,9 @@ item 8 mediu para o mesmo `/n` numa sessão nascida no menu. A causa não foi is
   cabeçalho (`ColumnIDs`, `totalRows`) — as linhas do ALV não estão no `lsdata`.
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
-* **O mapa do `vkey/<n>`**: só o `vkey/0` (Enter) está medido; F3, F8 e Shift+F3 como tecla direta
-  ainda não (item 22). `vkey(s, n)` existe no módulo para MEDIR, não para afirmar.
+* ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
+  O que fica: as teclas fora do mapa (F1, F2, F5–F7, F9, F10, `Ctrl+Fn`) e a distinção F12 ×
+  Shift+F3 — `vkey(s, n)` continua no módulo para MEDIR, não para afirmar.
 * Popup (`wnd[1]`) — `/o` e `/nend` abrem um, e ele **vem no mesmo `delta-update`**
   (`lerResposta` sinaliza `popup: true`; `lerTela` devolve `popup` com textos e botões por SID —
   e avisa que a `wnd[0]/usr` foi esvaziada); falta medir como responder (item 23). ALV/table
