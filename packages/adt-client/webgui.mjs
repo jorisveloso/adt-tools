@@ -23,6 +23,9 @@
 //   • **statusbar e print NÃO são assert** — a tela pode aceitar tudo e não gravar nada (o mesmo
 //     desmentido do GUI Scripting). O assert é `readTable`/`dataPreview` em OUTRA LUW.
 //   • **não roda sem navegador**: exige um Chrome instalado NESTA máquina (é headless, não remoto).
+//     ⚠ Limite DESTE MÓDULO, não do canal: medido no s4h 758/250 em 04/09/2026 que o ITS fala um
+//     protocolo HTTP simples e o `fetch` do Node lê, ESCREVE e ACIONA a dynpro sem Chrome nenhum,
+//     em ~0,95 s contra 9 s — docs/receita-webgui.md § O protocolo do ITS por HTTP puro.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';

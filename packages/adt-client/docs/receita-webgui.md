@@ -1,4 +1,4 @@
-# Receita — WebGUI (SAP GUI for HTML) por Chrome headless e CDP cru
+# Receita — WebGUI (SAP GUI for HTML): por Chrome headless e CDP cru, ou por HTTP puro
 
 **Medido em dois sistemas.** SXD 816, mandante 100, 2026-09-03 (POC 4029823 — protótipo): abriu a
 J1B1N preenchida por URL, leu a tela, preencheu duas datas e **acionou o Gravar**, criando a
@@ -301,22 +301,123 @@ significa que a ação não pegou, e é assim que `btn[15]`/`btn[12]` se denunci
    Fluxo que precisa **sair sem gravar** ainda é GUI Scripting. (Fila `adt-client`, item 13.)
 2. **Statusbar e print não são assert.** A tela pode aceitar tudo e não gravar nada, calada — o
    mesmo desmentido do GUI Scripting. O assert é em **outra LUW**.
-3. **Não roda sem navegador nesta máquina.** É Chrome headless local, não um cliente HTTP.
+3. **Não roda sem navegador nesta máquina** — *pela via do CDP*. É Chrome headless local. ⚠ Isto
+   deixou de ser limite do CANAL: o ITS fala HTTP puro e o `fetch` dirige a dynpro sozinho
+   (§ "O protocolo do ITS por HTTP puro", medido no s4h em 2026-09-04). O que a via HTTP não tem
+   é print de tela e leitura por DOM.
 
 Fora isso: o `httpCredentials` do Playwright **não autentica no ICF** — o SAP não devolve 401 com
 `WWW-Authenticate`, devolve a **página de logon**. O Basic tem de ir em header, em toda requisição
 (é o que `abrirNavegador` faz com `Network.setExtraHTTPHeaders`).
 
-## De quebra: o protocolo do ITS
+## O protocolo do ITS por HTTP puro — **sem navegador nenhum**
 
-O corpo do POST que o renderer manda é **JSON com os SIDs do SAP GUI** — os mesmos do GUI Scripting:
+**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 7). O canal WebGUI **não precisa
+de Chrome**: o ITS fala um protocolo HTTP simples, e o `fetch` do Node dirige a dynpro sozinho —
+lê, **escreve** e **aciona**. Isso põe o WebGUI na mesma prateleira do ADT e do SOAP RFC.
+
+**A prova, ponta a ponta e sem navegador:** SE16 na `T000`, campo "Nº máximo de entradas"
+(`wnd[0]/usr/txtMAX_SEL`) mudado de `200` para `2`, `btn[8]` acionado — o título da lista voltou
+`Data Browser: Tabela T000          2 acertos` em vez dos `5 acertos` que a mesma sessão devolve
+sem tocar no campo. O valor **chegou ao ABAP** e mudou o resultado.
+
+### O handshake, em três passos
+
+**1. GET** — cria a sessão e devolve o **shell** da página (~36 KB):
+
+```
+GET {base}/sap/bc/gui/sap/its/webgui?sap-client=250&sap-language=PT&~transaction=*SE16 DATABROWSE-TABLENAME=T000
+Authorization: Basic …
+```
+
+Do HTML saem as duas peças: o `action` do `<form id="webguiform0">`, que carrega o **token de
+sessão** (`/sap(cz1TSUQ…ANON…)/bc/gui/sap/its/webgui/`), e o `var moin = "…"`. Do `set-cookie` sai
+o `SAP_SESSIONID_…` — **guarde o jar**, ele é obrigatório (§ contra-provas). O `~transaction`
+obedece às mesmas duas regras da via de URL (§ "Entrar na tela já preenchida").
+
+**2. POST de boot** — o GET **ainda não tem a dynpro** (`ScreenId=screenarea0`, `cuatitle` vazio).
+Quem a monta é o primeiro POST, e é isso que o `crypto.randomUUID` quebrava no navegador:
+
+```
+POST {base}{action}batch/json?~RG_WEBGUI=X&
+Content-Type: application/json;charset=UTF-8
+Accept: multipart/mixed
+Cookie: SAP_SESSIONID_S4H_250=…; sap-usercontext=…; saplbS4H=…
+moin: 854BDC2593B8763E
+
+[{"get":"state/ur"}]
+```
+
+⚠ **Ação no POST de boot é PERDIDA.** Medido: `action/3/…/btn[8]` no primeiro POST devolveu a
+**tela de seleção**; o mesmo comando no POST seguinte devolveu a **lista**. Boot primeiro, ação
+depois — sempre.
+
+**3. POST de ação** — o batch de comandos, na ordem em que o renderer os manda:
 
 ```json
-[{"post":"action/304/wnd[0]/usr/tabsTABSTRIP1/tabpTAB1/ssubHEADER_TAB:SAPLJ1BB2:2100/tblSAPLJ1BB2ITEM_CONTROL/ctxtJ_1BDYLIN-ITMTYP[1,1]","content":"position=0","logic":"ignore"},
- {"post":"action/3/wnd[0]/tbar[0]/btn[15]"},
+[{"post":"focus/wnd[0]/usr/txtMAX_SEL","logic":"ignore"},
+ {"content":"2","post":"value/wnd[0]/usr/txtMAX_SEL"},
+ {"post":"action/3/wnd[0]/tbar[1]/btn[8]"},
  {"get":"state/ur"}]
 ```
 
-Verbos `post`/`get`; ações `action/<n>/<SID>`, `focus/<SID>`, `value/<SID>` com `content`; e
-`state/ur` fechando. É o insumo de falar o ITS **por HTTP puro**, sem navegador — o que tornaria
-este canal barato. Não está medido; é a próxima pergunta, não uma promessa.
+### O vocabulário
+
+| Comando | O que faz | Medido |
+|---|---|---|
+| `{"get":"state/ur"}` | pede o estado da tela — **fecha todo batch** | sim |
+| `{"post":"focus/<SID>","logic":"ignore"}` | põe o cursor no campo antes de escrever | sim |
+| `{"post":"value/<SID>","content":"<valor>"}` | **escreve** no campo | sim (`txtMAX_SEL` 200 → 2) |
+| `{"post":"action/3/<SID>"}` | **aciona** (o `Press` do renderer) | sim (`tbar[1]/btn[8]`) |
+| `{"post":"action/304/<SID>","content":"position=3","logic":"ignore"}` | posição do cursor no texto | mandado pelo renderer; **dispensável** |
+| `{"post":"action/0/wnd[0]"}` | — | **não existe**: `X-Code: -101 failed to fire action: not supported` |
+
+Os `<SID>` são os **mesmos do GUI Scripting** (`wnd[0]/usr/txtMAX_SEL`, `wnd[0]/tbar[1]/btn[8]`) —
+endereço estável, não id volátil de DOM. A tela os entrega: cada `<input>` traz
+`lsdata='{…"21":{"SID":"wnd[0]/usr/…"}}'` (é a mesma peça do item 18).
+
+### As duas formas de resposta
+
+* **HTTP 200 + `text/xml`** — `<updates><delta-update><start-script><![CDATA[…]]>`: houve update.
+  O estado da tela sai dos `sap.its.aParams` embutidos — `cuatitle` (o título da dynpro),
+  `ScreenId`, `dynpro`, `d-num`, e o `moin` novo.
+* **HTTP 200 + `multipart/mixed`** — `--SAP_RESTGUI_BATCH_STEP…` com `X-Order`, `X-Code` e
+  `X-Status`: **nada mudou, e ele diz por quê**. É o canal de erro do protocolo, e é o que faz
+  este canal falhar FALANDO, ao contrário do clique por CDP.
+
+⚠ O status HTTP é **200 nos dois casos**. Quem diz se pegou é o `X-Code` (ou a ausência de
+`delta-update`), nunca o código HTTP.
+
+### Contra-provas (o que é obrigatório, medido dos dois lados)
+
+| Peça | Sem ela | Veredito |
+|---|---|---|
+| `Cookie` de sessão | **HTTP 400** em 48 ms, HTML alemão `Service nicht erreichbar` | **obrigatório** |
+| header `moin` | HTTP 200, resposta **idêntica** (288 KB, mesma tela) | **dispensável** no que foi medido |
+| `SAP-PASSPORT`, `sap-statistics`, `X-Requested-With` | nunca enviados, tudo funcionou | dispensáveis |
+| `Authorization` Basic | vai em toda requisição — o ICF não desafia (§ acima) | **obrigatório** |
+
+### Por que isto importa
+
+* **Custo.** GET + boot + ação por `fetch`: ~0,95 s (341 + 423 + 190 ms). Abrir o Chrome e chegar
+  na mesma tela da SE16: **9 s** (§ porte). Uma ordem de grandeza, e sem Chrome instalado.
+* **Some a dependência de máquina.** O item 3 de "O que este canal NÃO faz" deixa de valer por
+  esta via: roda em CI, em container, em servidor sem navegador.
+* **Some o `crypto.randomUUID`, o clique sintético e o CDP inteiro** — não há página, não há
+  renderer, não há evento para sintetizar.
+
+### O que o navegador ainda dá, e esta via não
+
+A leitura. O `delta-update` é HTML+script para o renderer aplicar; ler campo e botão dele é
+**parsear XML**, não `querySelectorAll`. O que já está medido que dá para tirar do XML sem
+navegador: `cuatitle`, `ScreenId`, `dynpro`, e cada `<input>` com seu `SID`, `title` e `value`
+(foi assim que a prova achou o `txtMAX_SEL`). Print de tela, esta via **não tem**.
+
+### O que **ainda não** está medido por esta via
+
+* **Porte para a lib** — hoje isto é receita, não módulo (fila `adt-client`, item novo).
+* **A saída** (item 13) continua sem via, mas ganhou pista: `{"post":"value/wnd[0]/tbar[0]/okcd",
+  "content":"ONLI"}` volta **`X-Code: 0 / X-Status: OK`** — o ITS **aceita** o OK-code na caixa de
+  comando por HTTP puro (o que o navegador não conseguia, porque o campo é invisível). Falta o
+  comando que o **dispara**: `action/0/wnd[0]` não é (`-101 not supported`).
+* Popup (`wnd[1]`), ALV/table control e upload/download por esta via.
