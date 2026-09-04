@@ -340,10 +340,12 @@ test('webgui: a sonda não acredita no status — quem prova o canal é o cookie
   expect(errada.motivo).toMatch(/PÁGINA DE LOGON/);
 });
 
-test('webgui: ausente e desativado são o MESMO 404 — a sonda não promete qual dos dois', () => {
+test('webgui: o 404 não promete estado — ausente, sem handler e desativado saem iguais', () => {
+  // medido no s4h 758/250 em 04/09/2026: /sap/bc/gui/sap/its/test está ATIVO (cl_icf_tree=>is_service_active
+  // devolve X) e responde 404 porque não tem handler na ICFHANDLER — logo a sonda não pode dizer "desativado".
   const r = interpretarSonda({ status: 404, statusText: 'Not found', corpo: '<title>Service cannot be reached</title>' });
   expect(r).toMatchObject({ ok: false, causa: 'sem-no' });
-  expect(r.motivo).toMatch(/ausente OU desativado/);
+  expect(r.motivo).toMatch(/ausente, sem handler .*ou desativado/);
 });
 
 test('webgui: cada recusa tem causa própria — nada de empilhar tudo em "não deu"', () => {

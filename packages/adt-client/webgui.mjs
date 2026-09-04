@@ -296,7 +296,10 @@ export function interpretarSonda({ status = null, statusText = '', cookies = [],
       : { ...base, ok: false, causa: 'inesperado', motivo: '200 sem cookie de sessão e sem página de logon' };
   }
   if (status === 401) return { ...base, ok: false, causa: 'credencial', motivo: `${rotulo} — o nó desafia por Basic e a credencial não passou` };
-  if (status === 404) return { ...base, ok: false, causa: 'sem-no', motivo: `${rotulo} — nó ICF ausente OU desativado na SICF (o ICF não distingue os dois)` };
+  // 404 tem MAIS de uma causa e o HTTP não separa nenhuma: nó ausente, nó existente e ATIVO mas sem
+  // handler (nó de pasta — medido no /sap/bc/gui/sap/its/test), e desativado na SICF. Quem separa é o
+  // ABAP: `cl_icf_tree=>is_service_active( url )` (ver receita-webgui.md § O 404 não é veredito de estado).
+  if (status === 404) return { ...base, ok: false, causa: 'sem-no', motivo: `${rotulo} — o nó não atende: ausente, sem handler (nó de pasta) ou desativado na SICF; o HTTP não distingue os três` };
   if (status === 403) {
     const ssl = /SSL required/i.test(statusText) || /SSL required/i.test(corpo);
     return { ...base, ok: false, causa: ssl ? 'ssl' : 'proibido', motivo: ssl ? `${rotulo} — o nó só atende por HTTPS` : `${rotulo} — o ICF recusou o acesso` };

@@ -77,19 +77,58 @@ Ainda medidos no mesmo varrimento (209 paths ICF do s4h), cada um com causa pró
 `Logon failed` (nó que DESAFIA em vez de mostrar formulário, ex. `/sap/bc/srt/lsc`), 500
 `Application Server Error` (ex. os `/sap/bc/webdynpro/sap/*`).
 
-### ⚠ Ausente e desativado são o MESMO 404
+### ⚠ O 404 não é veredito de estado — e uma das causas é nó ATIVO
 
-O ICF não separa os dois, de propósito. Medido: o path inventado
+O ICF não separa as causas do 404, de propósito. Medido: o path inventado
 `/sap/bc/gui/sap/its/webgui_jbv_naoexiste` e o nó `/sap/bc/gui/sap/its/test` — que **existe na
 `ICFSERVICE`**, irmão do `webgui` sob o mesmo pai (`BO11PUMK7J2UU0LPKQWG0KGS7`) — devolvem a mesma
-página de 9 314 bytes. Por isso a causa `sem-no` diz "ausente OU desativado": quem responde qual
-dos dois é a SICF do sistema, não o HTTP.
+página de 9 314 bytes.
 
-*Ponto aberto:* que o `test` esteja em 404 por **desativação** não foi lido do sistema — a leitura
-do estado do nó por classrun não rodou (o POST do ADT ficou indisponível na janela da medição). O
-que está medido é que **existir na `ICFSERVICE` não muda o 404**. A `ICFSERVICE` também não serve
-de atalho: seu campo `ICF_NOACT` está vazio nas 17 474 linhas do s4h, e não existe tabela
-`ICFACTIVE` neste release.
+**O que estava escrito aqui como "ausente OU desativado" estava incompleto.** Medido no s4h 758/250
+em 04/09/2026 (fila `adt-client` item 27): o `test` está **ATIVO**, e o 404 dele não tem nada a ver
+com ativação — ele **não tem handler**. São três causas para o mesmo 404:
+
+| causa do 404 | como se reconhece (só pelo ABAP) | exemplo medido |
+|---|---|---|
+| nó **ausente** | `is_service_active` levanta `INVALID_URL` (subrc 1) | `/sap/bc/gui/sap/its/webgui_jbv_naoexiste` |
+| nó **ativo, sem handler** (nó de pasta) | `active = 'X'` e **zero linhas** na `ICFHANDLER` | `/sap/bc/gui/sap/its/test` (5 filhos, nenhum handler); também `/sap`, `/sap/bc`, `/sap/public` |
+| nó **desativado** | `active = ''` (espaço) | *ainda não provado contra o HTTP* — ver o aberto abaixo |
+
+O `webgui`, ao lado, tem `ICFHANDLER` com `CL_HTTP_EXT_ITS_2` — é essa linha, e não a ativação, que
+separa o 200 do 404 entre os dois irmãos.
+
+### Ler o estado do nó DO SISTEMA: `cl_icf_tree=>is_service_active`
+
+O estado não está em tabela nenhuma que dê para `dataPreview`: a `ICFSERVICE.ICF_NOACT` está vazia
+nas 17 474 linhas do s4h, a `ICF_SERV_STAT` tem 0 linhas, a `ICFINSTACT` só guarda as 241 ativações
+*de instalação* (por serviço SAP, com `PATH` legível), e `ICFACTIVE` não existe como tabela neste
+release. O estado se pergunta ao ABAP, por classrun:
+
+```abap
+DATA lv_ativo TYPE icfactive.
+CALL METHOD cl_icf_tree=>is_service_active   " ESTÁTICO, exceções clássicas
+  EXPORTING url                    = `/sap/bc/gui/sap/its/webgui`  " ou nodeguid = <ICFNODGUID>
+  RECEIVING active                 = lv_ativo
+  EXCEPTIONS invalid_url            = 1
+             empty_url_and_nodeguid = 2
+             internal_error         = 3
+             OTHERS                 = 4.
+```
+
+Segundo caminho, independente e concordante em todos os casos medidos (útil como contra-prova):
+`NEW /iwfnd/cl_icf_access( )->is_service_active_by_url( iv_url = … )` — método de **instância**,
+exceção de classe `/IWFND/CX_COS_ICF`.
+
+**Contrafactual medido** (sem ele o `X` não valeria nada): o método não devolve `X` para tudo —
+URL inexistente levanta `INVALID_URL`, e o nó `public` do virtual host `ZLHSGW_VOOS` volta com
+`active` vazio. Cuidado com o `nodeguid`: ele lê o nó EXATO, inclusive de **outro virtual host**;
+a forma por `url` resolve no host padrão. Foi essa diferença que fez o `/sap/public` parecer
+inativo numa varredura por guid e ativo por URL — são dois nós homônimos, em hosts diferentes
+(`ICFVIRHOST` no s4h: `DEFAULT_HOST`, `SAPCONNECT`, `ZLHSGW_VOOS`).
+
+*Aberto:* que um nó **desativado** responda 404 continua sem prova direta — no s4h nenhum nó inativo
+é endereçável pelo host padrão, e a prova exige desativar de propósito um nó que hoje responde 200
+(alvo escolhido: `/sap/bc/gui/sap/its/ewm_mobgui`), medir e reativar. Fila `adt-client`, item 51.
 
 ### ⚠ Quem sonda FECHA
 
