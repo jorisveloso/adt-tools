@@ -392,6 +392,47 @@ export async function processosSapGui() {
 }
 
 /**
+ * PURO: por que o ROT veio VAZIO. O ROT sozinho não distingue "GUI fechado" de "GUI aberto na tela
+ * de logon" — nos dois casos não há sessão —, e o segundo manda a investigação para RZ11/registro
+ * à toa. Quem separa é o `tasklist`: há processo? esse processo tem janela de usuário?
+ *
+ * ⚠ O `expirou` NÃO distingue nada — medido 04/09/2026 (SAP GUI 8.00, máquina do Joris, alvo S4H):
+ *   • GUI fechado, `sessoesAbertas()`: `expirou`, **15669 ms**, nenhum SAPgui.exe.
+ *   • Janela ABERTA na TELA DE LOGON (`Entrada do nome do usuário`, pid vivo): `expirou` também,
+ *     **15663 ms**. O `GetObject("SAPGUI")` não volta enquanto ninguém estiver logado.
+ *   Isto DESMENTE a leitura de 03/09 ("o GetObject funciona, o ROT só não tem a sessão"): aquele
+ *   `{ sessoes: [], erro: null }` era o timeout ENGOLIDO, antes de o `rodarVbs` sinalizar `expirou`.
+ *   O ROT só existe depois do logon — é a sessão que se registra nele, não a janela.
+ *
+ * Por isso o sensor é o `tasklist`, não o prazo. Estados: `com-sessao` · `logon-pendente` (janela de
+ * usuário de pé e ninguém logado) · `sem-janela` (processo de pé sem janela — subindo, ou o quadro
+ * do § "Quando o sapshcut não abre sessão") · `gui-fechado` (nenhum SAPgui.exe) · `erro-scripting`
+ * (o `GetObject` levantou Err — o ÚNICO caso que aponta para cliente/servidor).
+ */
+export function diagnosticarRot({ sessoes = [], expirou = false, processos = [], erroVbs = null } = {}) {
+  if (sessoes.length) return { estado: 'com-sessao', explicacao: null };
+  if (erroVbs) return { estado: 'erro-scripting', explicacao: `o GetObject("SAPGUI") falhou — ${erroVbs}` };
+  const mudo = expirou ? 'o GetObject("SAPGUI") não respondeu no prazo, e ' : 'o ROT respondeu vazio, e ';
+  const comJanela = processos.filter((p) => p.titulo);
+  if (!processos.length) {
+    return { estado: 'gui-fechado', explicacao: `${mudo}nenhum SAPgui.exe está rodando — o SAP GUI está fechado` };
+  }
+  if (comJanela.length) {
+    return {
+      estado: 'logon-pendente',
+      explicacao: `${mudo}há janela de usuário de pé ` +
+        `(${comJanela.map((p) => `${p.pid}:${p.titulo}`).join(', ')}) — ninguém logado, é a TELA DE ` +
+        'LOGON: o ROT só existe depois do logon. Não é scripting desligado; não mexa em RZ11 nem no registro.',
+    };
+  }
+  return {
+    estado: 'sem-janela',
+    explicacao: `${mudo}há ${processos.length} SAPgui.exe de pé, nenhum com janela de usuário — o GUI ` +
+      'está subindo, ou encerrou o logon sem abrir tela (§ Quando o sapshcut não abre sessão)',
+  };
+}
+
+/**
  * Abre uma sessão de diálogo no SAP GUI pelo `sapshcut` e espera ela aparecer no ROT.
  *
  * ⚠ A senha vai na LINHA DE COMANDO do sapshcut — visível na lista de processos enquanto ele sobe.
@@ -462,11 +503,18 @@ export async function abrirSapGui({ sistema, cliente, usuario, senha, idioma = '
 }
 
 /**
- * As conexões/sessões que o SAP GUI local expõe agora. Vazio = GUI fechado ou ainda logando.
+ * As conexões/sessões que o SAP GUI local expõe agora — com o motivo, quando vier vazio.
+ *
+ * Devolve `{ sessoes, estado, erro, processos }`. Sem sessão, `estado` diz QUAL vazio é
+ * (`gui-fechado` · `logon-pendente` · `sem-janela` · `sem-resposta`, ver `diagnosticarRot`) e `erro`
+ * carrega a explicação: nunca mais `{ sessoes: [], erro: null }` mudo.
  *
  * ⚠ SEM sessão de diálogo aberta, o `GetObject("SAPGUI")` do VBS NÃO volta: a chamada consome o
  * timeout inteiro (medido 04/09/2026: 120157/120186/120142 ms em três chamadas seguidas). Por isso
  * o prazo padrão aqui é curto e o estouro vira `erro` — não `{ sessoes: [] }`, que mentia.
+ *
+ * ⚠ Com a janela ABERTA na tela de logon é o contrário: o GetObject responde na hora e o engine
+ * está vazio (medido 03/09/2026). O ROT só enxerga sessão JÁ LOGADA — daí o `logon-pendente`.
  */
 export async function sessoesAbertas({ timeout = 15000 } = {}) {
   const vbs = `Option Explicit
@@ -492,20 +540,22 @@ Next
 saida.Close`;
   const { texto, expirou } = await rodarVbs(vbs, { timeout });
   const sessoes = [];
-  let erro = expirou
-    ? `o GetObject("SAPGUI") não respondeu em ${timeout} ms — é o que acontece quando NÃO há sessão `
-      + 'de diálogo aberta (não conclua "scripting desligado" a partir disto)'
-    : null;
+  let erroVbs = null;
   for (const linha of texto.split(/\r?\n/)) {
     const l = linha.replace(/^\uFEFF/, '');
     if (!l.trim()) continue;
     const [rotulo, ...c] = l.split(SEP);
-    if (rotulo === '@erro') { erro = c.join(' '); continue; }
+    if (rotulo === '@erro') { erroVbs = c.join(' '); continue; }
     if (rotulo === '@ses') {
       sessoes.push({ conexao: Number(c[0]), sessao: Number(c[1]), id: c[2], sistema: c[3], mandante: c[4], usuario: c[5], tcode: c[6] });
     }
   }
-  return { sessoes, erro };
+  if (sessoes.length) return { sessoes, estado: 'com-sessao', erro: erroVbs, processos: null };
+  // Vazio nunca sai mudo: o `tasklist` (barato) diz QUAL vazio é este.
+  const processos = await processosSapGui();
+  const { estado, explicacao } = diagnosticarRot({ sessoes, expirou, processos, erroVbs });
+  const prazo = expirou ? ` — prazo de ${timeout} ms` : '';
+  return { sessoes, estado, processos, erro: `sem sessão no ROT: ${explicacao}${prazo}` };
 }
 
 /** Escreve o VBS num arquivo temporário, roda por cscript e devolve o que o VBS gravou. */

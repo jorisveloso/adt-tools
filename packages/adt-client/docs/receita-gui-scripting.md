@@ -95,6 +95,49 @@ Hoje quem amostra é o `tasklist` (`processosSapGui()`), o ROT só é consultado
 ⚠ A senha vai na **linha de comando** do sapshcut — visível na lista de processos enquanto ele sobe.
 Laboratório, sim; credencial de produção, não.
 
+## O ROT só existe depois do LOGON — e por que o vazio precisa de motivo
+
+**O ROT não enxerga janela; enxerga sessão logada.** Com o SAP GUI **aberto na tela de logon**, não
+há nada no ROT — o mesmo nada de quando o GUI está fechado. E o vazio mudo (`{ sessoes: [], erro:
+null }`) manda a investigação para o lugar errado: RZ11, registro, "scripting desligado".
+
+Medido em 04/09/2026 (SAP GUI 8.00, máquina do Joris, alvo S4H 758/250), `sessoesAbertas()` com o
+prazo padrão de 15 s:
+
+| estado da máquina | `expirou` | tempo | `tasklist` |
+|---|---|---|---|
+| SAP GUI fechado | sim | **15669 ms** | nenhum `SAPgui.exe` |
+| janela de pé na **tela de logon** (`Entrada do nome do usuário`) | sim | **15663 ms** | 1 `SAPgui.exe` **com janela** |
+
+**O prazo não distingue os dois** — os dois estouram, com 6 ms de diferença. Quem distingue é o
+`tasklist`: há processo? esse processo tem janela de usuário?
+
+Isso **desmente a leitura de 03/09/2026** ("o `GetObject("SAPGUI")` funciona, o ROT é que não tem a
+sessão"). Ele não funciona: pendura igual. Aquele `erro: null` era o **timeout engolido**, de antes
+de o `rodarVbs` sinalizar `expirou` — não prova de um engine que respondeu.
+
+Por isso `sessoesAbertas()` devolve **`{ sessoes, estado, erro, processos }`**, e o vazio nunca sai
+mudo — `diagnosticarRot` (puro, testado) classifica:
+
+| `estado` | o que é | o que fazer |
+|---|---|---|
+| `com-sessao` | há sessão no ROT | seguir |
+| `logon-pendente` | `SAPgui.exe` **com janela**, ninguém logado | **logar** (ou `abrirSapGui`) — não é scripting desligado |
+| `sem-janela` | processo de pé, nenhuma janela | esperar, ou § *Quando o sapshcut não abre sessão* |
+| `gui-fechado` | nenhum `SAPgui.exe` | abrir o GUI |
+| `erro-scripting` | o `GetObject` levantou `Err` | **o único** que aponta para cliente/servidor (RZ11, registro) |
+
+```js
+const r = await sessoesAbertas();
+// { sessoes: [], estado: 'logon-pendente', processos: [{ pid: 2428, titulo: 'Entrada do nome do usuário' }],
+//   erro: 'sem sessão no ROT: o GetObject("SAPGUI") não respondeu no prazo, e há janela de usuário
+//          de pé (2428:…) — ninguém logado, é a TELA DE LOGON: o ROT só existe depois do logon.
+//          Não é scripting desligado; não mexa em RZ11 nem no registro. — prazo de 15000 ms'
+```
+
+O `logon-pendente` acima é **medido**, não construído: reproduzido com `sapshcut -user=<inexistente>`,
+que deixa a janela parada no logon (ver a tabela do § seguinte).
+
 `fecharSapGui()` fecha a conexão no fim (`CloseSession` + `CloseConnection`); o SAP Logon pad
 continua aberto. Vale a mesma regra das sessões ADT: **sessão que o script abre, o script fecha.**
 

@@ -3,7 +3,7 @@
 import { test, expect } from 'vitest';
 import {
   ACOES, PARAMETROS_SCRIPTING, escVbs, validarPasso, vbsDoPasso, montarVbs,
-  interpretarSaidaGui, resultadoDoPasso, interpretarTasklist,
+  interpretarSaidaGui, resultadoDoPasso, interpretarTasklist, diagnosticarRot,
 } from './gui.mjs';
 
 const SEP = '\u0001';
@@ -157,4 +157,37 @@ test('gui: interpretarTasklist lê o SAPgui.exe e descarta a janela de infraestr
   expect(p[1]).toEqual({ pid: 3364, titulo: 'Entrada do nome do usuário' });
   expect(p[2].titulo).toBe('');
   expect(interpretarTasklist('')).toEqual([]);
+});
+
+test('gui: diagnosticarRot separa os vazios do ROT pelo tasklist, não pelo prazo (medido 04/09/2026)', () => {
+  // com sessão: nada a explicar
+  expect(diagnosticarRot({ sessoes: [{ id: '/app/con[0]/ses[0]' }] }))
+    .toEqual({ estado: 'com-sessao', explicacao: null });
+
+  // ⚠ os DOIS casos abaixo expiram IGUAL (medido: 15669 ms com o GUI fechado, 15663 ms com a janela
+  // parada no logon) — o `expirou` não separa nada; quem separa é haver SAPgui.exe com janela
+  const fechado = diagnosticarRot({ expirou: true, processos: [] });
+  expect(fechado.estado).toBe('gui-fechado');
+  expect(fechado.explicacao).toMatch(/nenhum SAPgui\.exe está rodando/);
+  expect(fechado.explicacao).toMatch(/^o GetObject\("SAPGUI"\) não respondeu no prazo/);
+
+  // era este que mandava a investigação para RZ11/registro, por vir mudo
+  const logon = diagnosticarRot({ expirou: true, processos: [{ pid: 46708, titulo: 'Entrada do nome do usuário' }] });
+  expect(logon.estado).toBe('logon-pendente');
+  expect(logon.explicacao).toMatch(/TELA DE LOGON/);
+  expect(logon.explicacao).toMatch(/46708:Entrada do nome do usuário/);
+  expect(logon.explicacao).toMatch(/não mexa em RZ11/);
+
+  // processo de pé sem janela de usuário: subindo, ou o encerramento do § "Quando o sapshcut..."
+  const subindo = diagnosticarRot({ expirou: true, processos: [{ pid: 44840, titulo: '' }] });
+  expect(subindo.estado).toBe('sem-janela');
+  expect(subindo.explicacao).toMatch(/nenhum com janela de usuário/);
+
+  // sem expirar, o mesmo tasklist decide — só muda a frase de abertura
+  const vazio = diagnosticarRot({ processos: [{ pid: 7556, titulo: 'S4H' }] });
+  expect(vazio.estado).toBe('logon-pendente');
+  expect(vazio.explicacao).toMatch(/^o ROT respondeu vazio/);
+
+  // Err do próprio GetObject é o ÚNICO caso que aponta para cliente/servidor
+  expect(diagnosticarRot({ erroVbs: 'ActiveX component cant create object' }).estado).toBe('erro-scripting');
 });
