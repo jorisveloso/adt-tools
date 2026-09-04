@@ -298,6 +298,32 @@ que fazem o clique cair no vazio, todas resolvidas dentro de `apontar`/`clique`:
 E **`mudou: false` é informação**: `acionar` compara o carimbo da tela antes e depois; tela idêntica
 significa que a ação não pegou, e é assim que `btn[15]`/`btn[12]` se denunciam neste canal.
 
+## Playwright — instrumento de bancada, nunca dependência
+
+**Medido no SXD 816/100 em 2026-09-03.** A hipótese era que o Playwright acionasse onde o CDP cru
+não aciona — ele não dispara `Input.dispatchMouseEvent` na marra: tem snapshot de acessibilidade,
+espera de *actionability* e clique por referência. **Não acionou.** Mesmo alvo, mesma tela, mesma
+inércia do CDP cru; o que destrava é o polyfill de `crypto.randomUUID` (§ acima). Daí a decisão da
+lib: **CDP cru, zero dependência nova** — o Chrome que já está na máquina e o `WebSocket` do Node.
+
+Onde ele ganha é na bancada, quando o canal está mudo e a pergunta é *por quê*. Liga por uma
+sessão, mede, desliga:
+
+* **o que sai na rede** — `pagina.on('request', r => r.postData())` mostra o corpo do POST do ITS
+  sem escrever parser nenhum, e `pagina.on('pageerror')` entrega os erros de boot em uma linha
+  (foi assim que os quatro erros em cascata apareceram);
+* **quem tem listener** — `DOMDebugger.getEventListeners` sobre o `objectId` de um
+  `Runtime.evaluate`; isto é CDP e o cru já faz, foi o que provou "0 listener, 0 POST";
+* **actionability** — se o Playwright recusa o clique, o alvo está coberto ou fora da tela: o
+  problema é de apontamento, não de protocolo.
+
+Dois equivalentes, para traduzir receita de um lado para o outro:
+
+| CDP cru (a lib) | Playwright (bancada) |
+|---|---|
+| `Page.addScriptToEvaluateOnNewDocument` | `contexto.addInitScript` |
+| `Network.setExtraHTTPHeaders` | `newContext({ extraHTTPHeaders })` — **nunca** `httpCredentials`, que não autentica no ICF (§ "O que este canal NÃO faz") |
+
 ## O vocabulário `lsdata` — a tela é um MODELO, não pixel
 
 **Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 9). Bruto, agregado e prova em
