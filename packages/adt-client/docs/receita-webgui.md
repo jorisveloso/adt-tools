@@ -9,7 +9,8 @@ virou "Data Browser: tabela T000: tela de seleção".
 Módulo: [`webgui.mjs`](../webgui.mjs) (export `adt-client/webgui`); teste puro em
 `webgui.test.mjs`. **Zero dependência nova**: o Chrome que já está na máquina e o `WebSocket`
 nativo do Node — sem playwright, sem puppeteer (o Playwright serviu de instrumento na
-investigação, não de dependência).
+investigação, não de dependência). **A segunda via, sem navegador nenhum**, é
+[`its.mjs`](../its.mjs) (export `adt-client/its`) — § "O protocolo do ITS por HTTP puro".
 
 ## Para que serve — e o lugar dele na ordem
 
@@ -597,6 +598,10 @@ Fora isso: o `httpCredentials` do Playwright **não autentica no ICF** — o SAP
 de Chrome**: o ITS fala um protocolo HTTP simples, e o `fetch` do Node dirige a dynpro sozinho —
 lê, **escreve** e **aciona**. Isso põe o WebGUI na mesma prateleira do ADT e do SOAP RFC.
 
+**Desde o item 20 (2026-09-04) isto é módulo, não só receita:** [`its.mjs`](../its.mjs) (export
+`adt-client/its`), teste puro em `its.test.mjs` — ver § "O módulo `its.mjs`" no fim desta seção.
+O que segue é o protocolo que ele embute.
+
 **A prova, ponta a ponta e sem navegador:** SE16 na `T000`, campo "Nº máximo de entradas"
 (`wnd[0]/usr/txtMAX_SEL`) mudado de `200` para `2`, `btn[8]` acionado — o título da lista voltou
 `Data Browser: Tabela T000          2 acertos` em vez dos `5 acertos` que a mesma sessão devolve
@@ -728,12 +733,71 @@ A leitura. O `delta-update` é HTML+script para o renderer aplicar; ler campo e 
 navegador: `cuatitle`, `ScreenId`, `dynpro`, e cada `<input>` com seu `SID`, `title` e `value`
 (foi assim que a prova achou o `txtMAX_SEL`). Print de tela, esta via **não tem**.
 
+### O módulo `its.mjs` — o protocolo portado para a lib
+
+**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 20; E2E em
+`sap-accelerate/work/POC_webgui_its_lib/medicoes/its-lib.md`). É a **segunda via do mesmo canal**
+e fala o **mesmo vocabulário** do `webgui.mjs` — trocar de via é trocar o import:
+
+```js
+import { abrirTransacao, preencher, acionar, enter, enviar, comandar, fechar, sids, campos, botoes } from 'adt-client/its';
+
+const cfg = { base: 'http://host:8000', client: '250', idioma: 'PT', user: 'U', pass: 's3nh4' };
+const s = await abrirTransacao(cfg, 'SE16', { parametros: { 'DATABROWSE-TABLENAME': 'T000' } });
+try {                                          // GET + boot: 657 ms até a tela de seleção já com a T000
+  campos(s);                                   // [{ sid: 'wnd[0]/usr/txtMAX_SEL', tipo: 'GuiTextField', campo: 'MAX_SEL', value: '200 ', maxlen: 11 }, …]
+  botoes(s);                                   // [{ sid: 'wnd[0]/tbar[1]/btn[8]', okcode: 'btn[8]', nome: 'Executar' }, …]
+  preencher(s, 'MAX_SEL', 2);                  // enfileira focus+value — NÃO posta ainda
+  const r = await acionar(s, 'Executar');      // value + action/3 + state/ur num POST só (105 ms)
+  if (!r.pegou) throw new Error(r.motivo);     // multipart: "-101 failed to fire action: not supported"
+  r.titulo;                                    // 'Data Browser: Tabela T000          2 acertos'
+  await comandar(s, '/nSE38');                 // OK-code: value/okcd + vkey/0 — de qualquer tela
+} finally {
+  await fechar(s);                             // /nex (75 ms); o postar seguinte estoura sem tocar a rede
+}
+```
+
+**Por que módulo próprio, e não `{ via: 'http' }` no `webgui.mjs`.** A sessão é outra (jar de
+cookie + `action` + `moin`, em vez de WebSocket do CDP), o endereço é outro (SID, em vez de
+id/rect de DOM) e o gesto é outro (batch JSON, em vez de mouse/teclado sintético). Pôr as duas vias
+na mesma função faria cada uma virar um `if` de duas pernas. O que é comum vem importado do
+`webgui.mjs`: `urlWebgui`, `autorizacao`, `interpretarSonda` (a página de logon com 200 estoura no
+`abrir`, com causa), `okcodeDe`/`OKCODES` (apelidos), `campoDoSid`.
+
+**O que o módulo embute, e onde cada regra foi medida:**
+
+| regra | onde mora | medido |
+|---|---|---|
+| jar de cookie obrigatório | `abrir` guarda o `set-cookie`; `postar` manda `Cookie` | item 7 (sem ele, 400 em 48 ms) |
+| primeiro POST é o boot, ação nele é perdida | `abrir` boota sempre antes de devolver a sessão | item 7 |
+| forma da resposta = veredito, não o HTTP 200 | `lerResposta` → `forma` (`delta`/`multipart`/`logoff`/`sem-sessao`), `pegou`, `motivo` | item 7; item 20 D4 |
+| SID como endereço, tirado da própria tela | `sidsDaResposta` (regex sobre o `lsdata`), `sidDoAlvo` | item 20 (221 SIDs na seleção da SE16) |
+| a barra do botão não se adivinha | `acionar(s, 'btn[8]')` casa `…/btn[8]` no fim do SID da tela; fora dela estoura com a lista | item 20 D3 |
+| OK-code = `value/okcd` + `vkey/0` | `comandar` | item 8 |
+| `/nex` encerra; depois é 400 | `fechar`; `postar` recusa sessão encerrada | item 8; item 20 E |
+
+**Medição nova do item 20: o valor mandado em POST separado PERSISTE.** `preencher` + `enviar()`
+(só `focus`+`value`+`state/ur`) e `acionar('btn[8]')` no POST seguinte deram "3 acertos". O batch
+com a ação é otimização (um POST em vez de dois), não exigência — `enviar` é uma escrita válida.
+
+⚠ **`comandar` recusa com valores pendentes.** O OK-code levar o que foi digitado NÃO está medido
+nesta via (no navegador está medido que **não** leva — item 31). Mande os valores por
+`acionar`/`enter`/`enviar` antes, ou descarte com `sessao.fila = []`.
+
+⚠ **Observação não explicada (item 20, D5):** `/n` numa sessão aberta por `~transaction=*SE16 …`
+devolveu `t-code S000`, dynpro `SAPMSYST`, título "SAP" — não o SAP Easy Access (`SMEN`) que o
+item 8 mediu para o mesmo `/n` numa sessão nascida no menu. A causa não foi isolada (fila).
+
 ### O que **ainda não** está medido por esta via
 
-* **Porte para a lib** — hoje isto é receita, não módulo (fila `adt-client`, item novo).
+* ~~Porte para a lib~~ **feito** (item 20): `its.mjs`. O que o módulo ainda **não** tem é o
+  **`lerTela` completo** — rótulo, valor legível, mensagem, grid por `montarTela` sobre um parser
+  do `delta-update` (item 21). Hoje a leitura é `sids`/`campos`/`botoes` (endereços + o que o
+  `lsdata` carrega: `value`, `maxlen`, `applicationText` da barra).
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * **O mapa do `vkey/<n>`**: só o `vkey/0` (Enter) está medido; F3, F8 e Shift+F3 como tecla direta
-  ainda não (fila `adt-client`).
-* Popup (`wnd[1]`) — `/o` e `/nend` abrem um, e ele **vem no mesmo `delta-update`**; falta medir
-  como responder. ALV/table control e upload/download por esta via também não.
+  ainda não (item 22). `vkey(s, n)` existe no módulo para MEDIR, não para afirmar.
+* Popup (`wnd[1]`) — `/o` e `/nend` abrem um, e ele **vem no mesmo `delta-update`**
+  (`lerResposta` sinaliza `popup: true`); falta medir como responder (item 23). ALV/table control
+  e upload/download por esta via também não.

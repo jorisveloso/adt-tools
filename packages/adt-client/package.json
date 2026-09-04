@@ -17,6 +17,7 @@
     "./ui5": "./ui5.mjs",
     "./gui": "./gui.mjs",
     "./webgui": "./webgui.mjs",
+    "./its": "./its.mjs",
     "./probe": "./probe.mjs",
     "./canais": "./canais.mjs",
     "./config": "./config.mjs",
