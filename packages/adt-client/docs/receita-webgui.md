@@ -370,11 +370,45 @@ depois — sempre.
 | `{"post":"value/<SID>","content":"<valor>"}` | **escreve** no campo | sim (`txtMAX_SEL` 200 → 2) |
 | `{"post":"action/3/<SID>"}` | **aciona** (o `Press` do renderer) | sim (`tbar[1]/btn[8]`) |
 | `{"post":"action/304/<SID>","content":"position=3","logic":"ignore"}` | posição do cursor no texto | mandado pelo renderer; **dispensável** |
+| `{"post":"vkey/<n>/ses[0]"}` | **dispara a tecla** — `vkey/0` é o Enter, e é o que SUBMETE o OK-code | sim (§ caixa de comando) |
+| `{"post":"okcode/ses[0]","content":"<okcode>"}` | escreve o OK-code (o `Change` do campo) — **não dispara sozinho** | sim |
 | `{"post":"action/0/wnd[0]"}` | — | **não existe**: `X-Code: -101 failed to fire action: not supported` |
 
 Os `<SID>` são os **mesmos do GUI Scripting** (`wnd[0]/usr/txtMAX_SEL`, `wnd[0]/tbar[1]/btn[8]`) —
 endereço estável, não id volátil de DOM. A tela os entrega: cada `<input>` traz
 `lsdata='{…"21":{"SID":"wnd[0]/usr/…"}}'` (é a mesma peça do item 18).
+
+### A caixa de comando (OK-code) — a navegação genérica do canal
+
+**Medido no s4h 758/250 em 2026-09-04** (item 8). Dois comandos levam a sessão a **qualquer**
+transação, de **qualquer** tela — sem depender de botão, de menu ou de id de DOM:
+
+```json
+[{"post":"value/wnd[0]/tbar[0]/okcd","content":"/nSE16"},
+ {"post":"vkey/0/ses[0]"},
+ {"get":"state/ur"}]
+```
+
+⚠ **Quem dispara é o `vkey/0/ses[0]`, não um `action`.** Escrever no `okcd` sozinho volta
+`X-Code: 0` e **não navega** (medido: a tela continua no SAP Easy Access) — foi o que travou o
+item 13. `action/3/wnd[0]/tbar[0]/okcd` devolve `-101 not supported`. Quem entrega o comando certo
+é a própria tela: o `lsevents` do campo diz `"Enter":[{},{"1":"vkey/0/ses[0]","2":true}]`.
+
+O mesmo `vkey/0` é o **Enter da dynpro**: preencher um campo e mandá-lo avança a tela sem clicar
+em botão (medido: `DATABROWSE-TABLENAME=T000` + `vkey/0` → tela de seleção da T000).
+
+| OK-code | O que faz | Medido |
+|---|---|---|
+| `/nXXXX` | vai para a transação `XXXX`, **de qualquer tela** | sim — `/nSE16` do menu; `/nSE38` de dentro de uma lista ALV |
+| `/n` | volta ao menu (SMEN) | sim |
+| `ONLI`, `STRT`, … | o **fcode da dynpro** (o mesmo do `DYNP_OKCODE` da URL) | sim — `ONLI` executou a SE16 |
+| `/8` | a **tecla** F8 — vale o `/n` de qualquer tecla de função | sim — mesma lista que o `ONLI` |
+| `/o`, `/oXXXX` | abre **popup `wnd[1]`** com a lista de modos (não uma janela nova) | sim |
+| `/nend` | abre **popup `wnd[1]` "Pergunta"** (Sim/Não) — a sessão continua viva | sim |
+| `/nex` | **encerra a sessão**: HTTP 200 `text/html` "Adeus — o logoff foi efetuado"; o POST seguinte volta **400 Session Timed Out** | sim |
+
+Custo por salto: **85–150 ms**. Evidência:
+`sap-accelerate/work/POC_webgui_okcode/medicoes/okcode-http.md`.
 
 ### As duas formas de resposta
 
@@ -416,8 +450,9 @@ navegador: `cuatitle`, `ScreenId`, `dynpro`, e cada `<input>` com seu `SID`, `ti
 ### O que **ainda não** está medido por esta via
 
 * **Porte para a lib** — hoje isto é receita, não módulo (fila `adt-client`, item novo).
-* **A saída** (item 13) continua sem via, mas ganhou pista: `{"post":"value/wnd[0]/tbar[0]/okcd",
-  "content":"ONLI"}` volta **`X-Code: 0 / X-Status: OK`** — o ITS **aceita** o OK-code na caixa de
-  comando por HTTP puro (o que o navegador não conseguia, porque o campo é invisível). Falta o
-  comando que o **dispara**: `action/0/wnd[0]` não é (`-101 not supported`).
-* Popup (`wnd[1]`), ALV/table control e upload/download por esta via.
+* ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
+  (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
+* **O mapa do `vkey/<n>`**: só o `vkey/0` (Enter) está medido; F3, F8 e Shift+F3 como tecla direta
+  ainda não (fila `adt-client`).
+* Popup (`wnd[1]`) — `/o` e `/nend` abrem um, e ele **vem no mesmo `delta-update`**; falta medir
+  como responder. ALV/table control e upload/download por esta via também não.
