@@ -1,9 +1,13 @@
 // gui.mjs — SAP GUI Scripting: dirigir o SAP GUI local por COM, do Node, sem GUI "manual".
 //
-// É o canal de ÚLTIMO RECURSO — o único que enxerga a tela: popup modal, ALV Grid (shell), table
-// control, toolbar. O BDC (docs/receita-bdc-classrun.md) preenche campos de dynpro e não vê nada
-// disso; aqui LÊ-SE a tela. O preço: exige SAP GUI instalado, uma sessão de diálogo ABERTA e
-// VISÍVEL na máquina, e o servidor com `sapgui/user_scripting = TRUE`.
+// É o canal de ÚLTIMO RECURSO: popup modal, ALV Grid (shell), table control, toolbar — e a SAÍDA de
+// uma transação. O BDC (docs/receita-bdc-classrun.md) preenche campos de dynpro e não vê nada disso;
+// aqui LÊ-SE a tela. O preço: exige SAP GUI instalado, uma sessão de diálogo ABERTA e VISÍVEL na
+// máquina, e o servidor com `sapgui/user_scripting = TRUE`.
+//
+// ⚠ Antes deste, tente o WebGUI (webgui.mjs): desde 2026-09-04 ele também enxerga e dirige a dynpro,
+// sem SAP GUI instalado e sem ninguém na frente da tela. A ordem é ADT → SOAP RFC → classrun → BDC →
+// WebGUI → GUI Scripting; aqui é o que o WebGUI não alcança.
 //
 // Medido 2026-08-31, S4H 758 mandante 250, SAP GUI 8.00 (8000.257.4.1) — docs/receita-gui-scripting.md:
 //   • Servidor: `sapgui/user_scripting=TRUE` (lido por `cl_spfl_profile_parameter=>get_value` num

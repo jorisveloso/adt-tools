@@ -12,8 +12,14 @@ quantas linhas a table control tem. Aqui isso é leitura direta.
 
 O preço é alto e não some: **SAP GUI instalado**, uma **sessão de diálogo aberta e visível** na
 máquina de quem roda, e o servidor com `sapgui/user_scripting = TRUE`. Não roda em CI, não roda em
-servidor, não roda sem alguém logado no Windows. Por isso: **último recurso**. A ordem de escolha
-continua sendo ADT → SOAP RFC → classrun → BDC → **GUI Scripting**.
+servidor, não roda sem alguém logado no Windows. Por isso: **último recurso**. A ordem de escolha é
+ADT → SOAP RFC → classrun → BDC → **WebGUI** → **GUI Scripting**.
+
+Desde 2026-09-04 há um degrau ANTES deste: o **WebGUI**
+([receita-webgui.md](receita-webgui.md)) também enxerga e dirige a dynpro, e **não** exige SAP GUI
+instalado nem sessão visível — roda sem ninguém na frente da tela. O GUI Scripting fica para o que o
+WebGUI não alcança: a **saída** de uma transação (medido: no WebGUI nenhum caminho devolve o `fcode`
+de saída) e o ALV Grid / table control **como objeto** (`lerGrid` por nome de coluna, `toolbarGrid`).
 
 | Precisa de… | Canal |
 |---|---|
@@ -21,7 +27,8 @@ continua sendo ADT → SOAP RFC → classrun → BDC → **GUI Scripting**.
 | chamar FM/BAPI | SOAP RFC |
 | rodar ABAP arbitrário | classrun |
 | dirigir dynpro clássica sem tela | BDC por classrun |
-| **popup modal, ALV Grid, table control, toolbar, "o que a tela mostra"** | **GUI Scripting** |
+| ver e dirigir a dynpro sem SAP GUI e sem ninguém na tela | WebGUI |
+| **popup modal, ALV Grid, table control, toolbar, e a SAÍDA de uma transação** | **GUI Scripting** |
 
 ## Os dois lados do interruptor
 
