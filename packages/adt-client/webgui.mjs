@@ -404,16 +404,196 @@ export async function abrirTransacao(sessao, tcode, { parametros, okcode, ...opt
   return await ir(sessao, urlWebgui(sessao.cfg, { transacao: tcode, parametros, okcode }), opts);
 }
 
-/** O que a tela mostra agora: título, statusbar e os campos PREENCHIDOS. */
-export function lerTela(sessao) {
-  return avaliar(sessao, `(() => {
-    const campos = [...document.querySelectorAll('input,textarea')]
-      .filter(e => (e.offsetWidth || e.offsetHeight) && e.value)
-      .map(e => ({ id: e.id, titulo: e.title, valor: e.value }));
-    const barra = [...document.querySelectorAll('[id*="sapMsg"],[class*="urMsgBar"],[class*="lsMessageBar"],[role="status"]')]
-      .map(e => e.innerText.trim()).filter(Boolean);
-    return { titulo: document.title, statusbar: barra, campos };
-  })()`);
+// ---------- ler a tela pelo que ELA declara (lsdata), não por heurística de DOM ----------
+//
+// Todo controle do Unified Renderer carrega três atributos que são um MODELO da dynpro, não pixel:
+//   `ct`       — o tipo do controle (`CBS` campo, `B` botão, `R_standards` radio, `C_standards`
+//                checkbox, `STCS` grid ALV, `MB` barra de mensagem, `PL` janela, `L` rótulo);
+//   `lsdata`   — um JSON de índices NUMÉRICOS com rótulo, tooltip, tecla, SID e flags;
+//   `lsevents` — os eventos que ele publica (`{"Press":[{},{"1":"action/3"}]}`).
+//
+// Medido no s4h 758/250 em 04/09/2026 sobre 7 telas (menu, SE38, SE16, SE11, SM30, tela de seleção
+// do RSPARAM e a lista ALV do RSPARAM), bruto e agregado em
+// `sap-accelerate/work/POC_webgui_lsdata/medicoes/` — 49 `ct` distintos, 37 com `lsdata`.
+//
+// ⚠️ **O ÍNDICE NÃO É ESTÁVEL ENTRE TIPOS.** O SID mora em `27` no botão, `21` no campo, `19` no
+// rótulo, `13` no radio, `14` no checkbox, `12` no box, `11` na barra de mensagem, `34` no grid e
+// `1` na janela. Hard-codear `lsdata['21']` acerta o campo e MENTE para todo o resto — daí tudo
+// aqui endereçar por CONTEÚDO (o valor que tem `.SID`), nunca por posição.
+//
+// ⚠️ **`lsdata` é o estado que o SERVIDOR mandou, não o que está na tela agora.** Medido: clicar no
+// checkbox `chkALSOUSUB` da tela de seleção do RSPARAM não mexeu UM byte do `lsdata` — quem virou
+// foi `aria-checked` (`false` → `true`) e a classe (`lsCheckBox--unchecked` → `--checked`). Então
+// marcação de radio/checkbox sai do ARIA; identidade, rótulo, tecla e SID saem do `lsdata`.
+
+/** PURO: o SID do SAP GUI de um `lsdata` — pelo VALOR que o carrega, não pelo índice. */
+export function sidDoLsdata(lsdata) {
+  if (!lsdata || typeof lsdata !== 'object') return null;
+  for (const [indice, v] of Object.entries(lsdata)) {
+    if (v && typeof v === 'object' && typeof v.SID === 'string') return { ...v, indice };
+  }
+  return null;
+}
+
+/**
+ * PURO: o nome do campo que a URL `~transaction` quer, a partir do SID (a peça do item 18).
+ * `wnd[0]/usr/ctxtRS38M-PROGRAMM` → `RS38M-PROGRAMM`. Os prefixos são os do SAP GUI: `ctxt` campo
+ * com busca, `txt` texto, `rad` radio, `chk` checkbox, `cmb` combo, `lbl` rótulo, `box` box.
+ */
+export function campoDoSid(sid) {
+  if (!sid) return null;
+  const folha = String(sid).split('/').pop();
+  const m = /^(ctxt|txt|rad|chk|cmb|lbl|box|tbl|sub)(.+)$/.exec(folha);
+  return m ? m[2] : folha;
+}
+
+/** PURO: o papel de um controle, pelo `Type` que o PRÓPRIO SAP põe no SID. */
+export const PAPEL_POR_TIPO = {
+  GuiCTextField: 'campo', GuiTextField: 'campo', GuiPasswordField: 'campo', GuiComboBox: 'campo',
+  GuiOKCodeField: 'okcode', GuiRadioButton: 'radio', GuiCheckBox: 'checkbox', GuiButton: 'botao',
+  GuiGridView: 'grid', GuiMainWindow: 'janela', GuiModalWindow: 'janela', MESSAGEBAR: 'mensagem',
+  GuiLabel: 'rotulo', GuiBox: 'grupo',
+};
+
+/**
+ * PURO: a tecla de atalho de um botão — a CONSTANTE (`F8`, `CTRL_F2`, `SHIFT_F9`), não o tooltip.
+ * Medido: ela é o único valor do `lsdata` com essa forma; o tooltip é `"Executar (F8)"`.
+ */
+export function teclaDoBotao(lsdata = {}) {
+  return Object.values(lsdata).find((v) => typeof v === 'string' &&
+    /^(F\d{1,2}|(CTRL|SHIFT|ALT)(_(CTRL|SHIFT|ALT))*_(F\d{1,2}|[A-Z0-9]))$/.test(v)) ?? null;
+}
+
+/**
+ * PURO: o rótulo LEGÍVEL de um controle — a primeira linha do texto; na falta dela, o tooltip sem
+ * a tecla no fim.
+ *
+ * ⚠️ Duas coisas medidas, as duas produzindo lixo se ignoradas: (1) o `innerText` do botão traz
+ * texto OCULTO do tema colado por `\n` (`btn[8]` sai `"Executar\n Destacado"` — "Destacado" é a
+ * pista ARIA do design `EMPHASIZED`); (2) botão da `tbar[0]` NÃO tem texto nenhum, e cair no
+ * primeiro valor string do `lsdata` devolve a CONSTANTE DE DESIGN (`btn[3]` → `"TRANSPARENT"`, não
+ * `"Voltar"`). O tooltip é quem sabe: `"Voltar (F3)"`, `"Verificar (Ctrl+F2)"`.
+ */
+export function rotuloLimpo(texto, dica) {
+  const primeira = String(texto || '').split('\n')[0].trim();
+  if (primeira) return primeira;
+  const semTecla = String(dica || '').replace(/\s*\((?:Ctrl|Shift|Alt|F\d)[^)]*\)\s*$/i, '').trim();
+  return semTecla || null;
+}
+
+/**
+ * PURO: um controle bruto (id/ct/lsdata/aria/DOM) virando peça de tela.
+ *
+ * O `rotulo` sai do `lsdata` do próprio controle quando ele tem um (botão, radio, checkbox); o
+ * campo de entrada NÃO tem — o texto dele está no `L` ao lado, e é o `montarTela` que costura.
+ * ⚠️ O `title` do campo vem do DATA ELEMENT, não do texto na tela: na SE38 o title é
+ * "Nome do programa ABAP" e o rótulo da tela é "Programa". Por isso `dica` ≠ `rotulo`.
+ */
+export function interpretarControle(bruto) {
+  const sid = sidDoLsdata(bruto.lsdata);
+  const papel = PAPEL_POR_TIPO[sid?.Type] ?? null;
+  const d = bruto.lsdata || {};
+  const textos = Object.values(d).filter((v) => typeof v === 'string');  // só a mensagem usa
+  const base = {
+    id: bruto.id, ct: bruto.ct, papel, sid: sid?.SID ?? null, tipoGui: sid?.Type ?? null,
+    campo: campoDoSid(sid?.SID), visivel: !!bruto.visivel,
+  };
+  switch (papel) {
+    case 'campo': case 'okcode':
+      return { ...base, valor: bruto.valor ?? '', dica: bruto.title ?? null,
+        maxlen: sid?.maxlen ?? null, editavel: !(bruto.desabilitado || bruto.somenteLeitura) };
+    case 'radio':
+      // o grupo é o `%RBGnnnn` — o mesmo valor no lsdata do controle e no `group` do SID
+      return { ...base, grupo: sid?.group ?? null, rotulo: rotuloLimpo(bruto.texto, bruto.title),
+        dica: bruto.title ?? null, selecionado: bruto.aria === 'true' };
+    case 'checkbox':
+      // o innerText vem com o `:` do layout CHECKBOXLAST grudado na frente
+      return { ...base, rotulo: rotuloLimpo((bruto.texto || '').replace(/^:\s*/, ''), bruto.title),
+        dica: bruto.title ?? null, marcado: bruto.aria === 'true' };
+    case 'botao': {
+      // o `btn[n]` é o OK-code — e ele está no FIM do SID (`wnd[0]/tbar[1]/btn[8]`)
+      const okcode = /\/(btn\[\d+\])$/.exec(sid?.SID || '')?.[1] ?? null;
+      return { ...base, okcode, rotulo: rotuloLimpo(bruto.texto, bruto.title), dica: bruto.title ?? null,
+        tecla: teclaDoBotao(d), accesskey: bruto.accesskey ?? null };
+    }
+    case 'grid':
+      return { ...base, colunas: sid?.ColumnIDs ?? null, linhas: sid?.totalRows ?? null,
+        editavel: sid?.editable ?? null };
+    case 'janela':
+      return { ...base, principal: sid?.Type === 'GuiMainWindow' };
+    case 'mensagem':
+      // sem mensagem o lsdata fica `{"1":"TEXT","3":"NONE"}` e o applicationText vazio; COM
+      // mensagem entram o texto e a CONSTANTE do tipo (`ERROR`) — o `messageType` do SID vem
+      // TRADUZIDO ("Erro"), então quem serve de chave é a constante.
+      return { ...base, tipo: sid?.applicationText ? textos.find((t) => /^[A-Z_]+$/.test(t)) ?? null : null,
+        texto: sid?.applicationText || null };
+    case 'rotulo':
+      return { ...base, texto: bruto.texto || null };
+    default:
+      return base;
+  }
+}
+
+/**
+ * PURO: os controles interpretados viram UMA tela.
+ *
+ * O rótulo de cada campo é costurado aqui: o `L` guarda, em algum índice, o **id do campo que ele
+ * rotula** — e o índice varia, então o casamento é por conteúdo (o valor string que É um id da
+ * tela), a mesma regra do SID.
+ */
+export function montarTela(brutos, { titulo = null } = {}) {
+  const controles = brutos.map(interpretarControle);
+  const ids = new Set(brutos.map((b) => b.id).filter(Boolean));
+  const rotuloDoId = new Map();
+  for (const b of brutos) {
+    if (PAPEL_POR_TIPO[sidDoLsdata(b.lsdata)?.Type] !== 'rotulo') continue;
+    const alvo = Object.values(b.lsdata || {}).find((v) => typeof v === 'string' && v !== b.id && ids.has(v));
+    const texto = (b.texto || '').trim();
+    if (alvo && texto) rotuloDoId.set(alvo, texto);
+  }
+  const dePapel = (p) => controles.filter((c) => c.papel === p);
+  const vis = (lista) => lista.filter((c) => c.visivel);
+  const mensagem = dePapel('mensagem').find((m) => m.texto) ?? null;
+  return {
+    titulo,
+    janela: dePapel('janela')[0] ?? null,
+    mensagem: mensagem ? { tipo: mensagem.tipo, texto: mensagem.texto } : null,
+    statusbar: mensagem ? [mensagem.texto] : [],          // compat com o `lerTela` antigo
+    campos: vis(dePapel('campo')).map((c) => ({ ...c, rotulo: rotuloDoId.get(c.id) ?? null })),
+    radios: vis(dePapel('radio')),
+    checkboxes: vis(dePapel('checkbox')),
+    botoes: vis(dePapel('botao')).filter((b) => b.okcode),
+    grids: vis(dePapel('grid')),
+    okcode: dePapel('okcode')[0] ?? null,                 // invisível (rect 0×0), mas está lá
+  };
+}
+
+/** PURO: o despejo bruto de TODO controle com `ct` — o insumo do `montarTela`. */
+export const JS_DESPEJO_CONTROLES = `[...document.querySelectorAll('[ct]')].map((el) => {
+  let lsdata = null; try { lsdata = JSON.parse(el.getAttribute('lsdata') || 'null'); } catch (x) {}
+  return { id: el.id || null, ct: el.getAttribute('ct'), lsdata,
+    title: el.title || null, aria: el.getAttribute('aria-checked'),
+    accesskey: el.getAttribute('data-sap-ls-accesskey'),
+    valor: 'value' in el ? el.value : null, desabilitado: !!el.disabled, somenteLeitura: !!el.readOnly,
+    texto: (el.innerText || '').trim().slice(0, 120) || null,
+    visivel: !!(el.offsetWidth || el.offsetHeight) };
+})`;
+
+/**
+ * O que a tela É agora — o modelo, não o innerText: `{ titulo, janela, mensagem, statusbar,
+ * campos, radios, checkboxes, botoes, grids, okcode }`. Cada peça traz o **SID** (o endereço do
+ * SAP GUI) e o **campo** (o nome que a URL `~transaction` quer), então dá para responder "qual o
+ * parâmetro certo para esta tela" sem adivinhar nome nenhum.
+ *
+ * `janela.principal === false` é POPUP (`wnd[1]`), e `mensagem.tipo` é a constante do SAP
+ * (`ERROR`, `WARNING`, `SUCCESS`…) — medido: `ERROR` + "O programa ZZNAOEXISTE9 não existe".
+ */
+export async function lerTela(sessao) {
+  const [brutos, titulo] = await Promise.all([
+    avaliar(sessao, JS_DESPEJO_CONTROLES),
+    avaliar(sessao, 'document.title'),
+  ]);
+  return montarTela(brutos, { titulo });
 }
 
 /**

@@ -53,16 +53,20 @@ try {
   // 1. entrar JÁ na tela certa — sem clicar caminho de menu nenhum
   await abrirTransacao(s, 'YJBV4029823', { parametros: { P_DOCNUM: 71 }, okcode: 'ONLI' });
 
-  // 2. ler o que a tela mostra
-  console.log(await campos(s));                // [{ id, title, value }]
-  console.log(await botoes(s));                // [{ okcode: 'btn[11]', title: 'Gravar (Ctrl+S)', nome: 'Gravar', tecla: 'Ctrl+S' }]
+  // 2. ler o que a tela É — o modelo que ela declara, não o innerText (§ vocabulário lsdata)
+  const tela = await lerTela(s);
+  // { titulo, janela:{sid,principal}, mensagem:{tipo,texto}, statusbar, campos, radios,
+  //   checkboxes, botoes, grids, okcode } — cada peça com o SID e o nome do campo da URL
+  console.log(tela.campos);                    // [{ campo: 'RS38M-PROGRAMM', rotulo: 'Programa', valor, maxlen, editavel }]
+  console.log(tela.botoes);                    // [{ okcode: 'btn[8]', rotulo: 'Executar', tecla: 'F8' }]
 
   // 3. dirigir
   await preencher(s, { id: 'M0:46:::2:21' }, 'T000');
   const r = await acionar(s, 'Gravar');        // 'btn[11]', 11 ou o apelido — clica e ESPERA o ABAP
   if (!r.mudou) throw new Error('a tela não respondeu — a ação não pegou');
 
-  console.log((await lerTela(s)).statusbar);
+  const depois = await lerTela(s);
+  if (depois.mensagem?.tipo === 'ERROR') throw new Error(depois.mensagem.texto);
   await print(s, 'tela.png');
 } finally {
   await s.fechar();                            // quem abre fecha (mata o Chrome e o perfil temporário)
@@ -91,12 +95,14 @@ vazia, e o que volta é o erro do programa (`"O programa  não existe"`, com o n
 Quem sabe o nome certo é a **própria tela**: o `lsdata` de cada campo carrega o SID do SAP GUI.
 
 ```js
-await avaliar(s, `[...document.querySelectorAll('input')]
-  .filter(e => e.offsetWidth || e.offsetHeight)
-  .map(e => ({ title: e.title, sid: (JSON.parse(e.getAttribute('lsdata') || '{}')['21'] || {}).SID }))`);
-// SE38 -> [{ title: 'Nome do programa ABAP', sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM' }]
-// SE16 -> [{ title: 'Nome da tabela',        sid: 'wnd[0]/usr/ctxtDATABROWSE-TABLENAME' }]
+(await lerTela(s)).campos;
+// SE38 -> [{ campo: 'RS38M-PROGRAMM', sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', rotulo: 'Programa',
+//            dica: 'Nome do programa ABAP', valor: '', maxlen: 40, editavel: true }]
 ```
+
+⚠ **Não leia o SID por índice fixo.** O snippet original desta seção usava `lsdata['21']` e só
+funcionava para campo de entrada: medido em 04/09/2026 que o índice do SID **muda por tipo de
+controle** (§ vocabulário). `lerTela` procura o SID pelo VALOR que o carrega.
 
 (Este snippet foi **rodado como está** no s4h em 2026-09-04 — é dele que saíram as duas linhas acima.)
 O nome do parâmetro é o SID sem `wnd[0]/usr/` e **sem o prefixo de tipo do controle** (`ctxt` aqui;
@@ -291,6 +297,80 @@ que fazem o clique cair no vazio, todas resolvidas dentro de `apontar`/`clique`:
 
 E **`mudou: false` é informação**: `acionar` compara o carimbo da tela antes e depois; tela idêntica
 significa que a ação não pegou, e é assim que `btn[15]`/`btn[12]` se denunciam neste canal.
+
+## O vocabulário `lsdata` — a tela é um MODELO, não pixel
+
+**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 9). Bruto, agregado e prova em
+`sap-accelerate/work/POC_webgui_lsdata/` — 7 telas (menu, SE38, SE16, SE11, SM30, tela de seleção do
+RSPARAM e a lista ALV do RSPARAM), **49 `ct` distintos, 37 com `lsdata`**.
+
+Todo controle do Unified Renderer carrega três atributos que **descrevem a dynpro**:
+
+| atributo | o que é | exemplo medido |
+|---|---|---|
+| `ct` | o tipo do controle | `CBS` campo · `B` botão · `R_standards` radio · `C_standards` checkbox · `STCS` grid ALV · `MB` barra de mensagem · `L` rótulo · `PL`/`PAGE` janela |
+| `lsdata` | JSON de índices numéricos: rótulo, tooltip, tecla, SID, flags | `{"0":"Executar","4":"Executar (F8)","17":"E","18":"F8","27":{"SID":"wnd[0]/tbar[1]/btn[8]","Type":"GuiButton"}}` |
+| `lsevents` | os eventos que ele publica | `{"Press":[{},{"1":"action/3"}]}` · no campo: `{"ActionItemActivate":[{},{"1":"vkey/0/ses[0]"}]}` — é daí que saiu o disparo do OK-code (item 13) |
+
+### ⚠ O índice do SID MUDA por tipo de controle
+
+Esta é a armadilha da leitura por `lsdata`, e ela falha **calada** (devolve `undefined`, não erro):
+
+| `ct` | `Type` do SID | índice | SID medido |
+|---|---|---|---|
+| `PL` / `PAGE` | `GuiMainWindow` | `1` | `wnd[0]` |
+| `MB` | `MESSAGEBAR` | `11` | `wnd[0]/sbar_msg` |
+| `G` | `GuiBox` | `12` | `wnd[0]/usr/boxMS38M0100_03` |
+| `R_standards` | `GuiRadioButton` | `13` | `wnd[0]/usr/radRS38M-FUNC_EDIT` |
+| `C_standards` | `GuiCheckBox` | `14` | `wnd[0]/usr/chkALSOUSUB` |
+| `L` | `GuiLabel` | `19` | `wnd[0]/usr/lblRS38M-PROGRAMM` |
+| `CBS` | `GuiCTextField` / `GuiOKCodeField` | `21` | `wnd[0]/usr/ctxtRS38M-PROGRAMM` · `wnd[0]/tbar[0]/okcd` |
+| `B` | `GuiButton` | `27` | `wnd[0]/tbar[1]/btn[8]` |
+| `STCS` | `GuiGridView` | `34` | `wnd[0]/usr/cntlGRID1/shellcont/shell` |
+
+Por isso `sidDoLsdata()` varre os **valores** atrás do que tem `.SID` — endereçar por conteúdo, não
+por posição. Vale para o resto também: a tecla do botão é o valor com forma `F8`/`CTRL_F2`, e o
+rótulo do campo é o `L` cujo `lsdata` guarda **o id do campo** (em índice que também varia).
+
+### ⚠ `lsdata` é o estado que o SERVIDOR mandou — não o que está na tela agora
+
+Medido: clicar no checkbox `chkALSOUSUB` da tela de seleção do RSPARAM **não mexeu um byte** do
+`lsdata`. O que virou foi `aria-checked` (`false` → `true`) e a classe (`lsCheckBox--unchecked` →
+`--checked`). Logo: **identidade, rótulo, tecla e SID saem do `lsdata`; marcação de radio/checkbox
+sai do ARIA.** Ler marcação pelo `lsdata` devolve o estado do último render do servidor — que numa
+tela que o script acabou de mexer é a resposta errada, e plausível.
+
+### O que cada peça entrega
+
+```js
+const t = await lerTela(s);
+t.janela      // { sid: 'wnd[0]', principal: true }   ← principal:false é POPUP (wnd[1])
+t.mensagem    // { tipo: 'ERROR', texto: 'O programa ZZNAOEXISTE9 não existe' } | null
+t.campos      // [{ id, sid, campo, rotulo, dica, valor, maxlen, editavel, visivel }]
+t.radios      // [{ campo, grupo: '%RBG0257', rotulo, selecionado }]
+t.checkboxes  // [{ campo, rotulo, marcado }]
+t.botoes      // [{ okcode: 'btn[8]', rotulo: 'Executar', tecla: 'F8', accesskey: 'E' }]
+t.grids       // [{ sid, colunas: ['NAME','USER_VALUE',…], linhas: 1617, editavel: false }]
+t.okcode      // { sid: 'wnd[0]/tbar[0]/okcd' } — sempre invisível, sempre lá
+```
+
+Três ganhos que o filtro de DOM anterior não dava, todos medidos:
+
+1. **A mensagem vem TIPADA.** Sem mensagem o `lsdata` da `MB` é `{"1":"TEXT","3":"NONE"}` e o
+   elemento está invisível; com mensagem entram o texto e a constante do tipo — `ERROR`,
+   `"O programa ZZNAOEXISTE9 não existe"`. ⚠ o `messageType` de dentro do SID vem **traduzido**
+   (`"Erro"`); a chave estável é a constante. Isso troca "achar a classe CSS da barra" por
+   `if (tela.mensagem?.tipo === 'ERROR')`.
+2. **O rótulo da TELA, não o do data element.** O `title` do campo da SE38 é
+   `"Nome do programa ABAP"` (vem do data element); o rótulo na tela é `"Programa"`, e quem o tem é
+   o `L` ao lado. `lerTela` costura os dois — `rotulo` e `dica` são campos diferentes de propósito.
+3. **A lista ALV se descreve**: `ColumnIDs` e `totalRows` (`1617` no RSPARAM) saem do `lsdata` do
+   `STCS`, sem varrer célula nenhuma.
+
+⚠ Dois detalhes do rótulo de botão, os dois produzindo lixo se ignorados: o `innerText` traz texto
+oculto do tema colado por `\n` (`btn[8]` → `"Executar\n Destacado"`), e botão da `tbar[0]` **não tem
+texto** — cair no primeiro valor string do `lsdata` devolve a constante de design
+(`btn[3]` → `"TRANSPARENT"`, não `"Voltar"`). O tooltip é quem sabe: `"Voltar (F3)"`.
 
 ## O que este canal NÃO faz
 

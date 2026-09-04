@@ -6,6 +6,7 @@ import {
   CAMINHOS_CHROME, POLYFILL_RANDOMUUID, TECLAS, JS_CARIMBO,
   expressaoTransacao, urlWebgui, jsDoAlvo, nomeDoAlvo, jsTelaPronta, autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
+  sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -124,4 +125,175 @@ test('webgui: botoes vem anotado com o apelido medido, e botão fora do mapa nã
   ]);
   expect(anotarBotoes([{ okcode: 'btn[42]', title: 'X' }])[0]).toMatchObject({ nome: null, tecla: null });
   expect(anotarBotoes()).toEqual([]);
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// Leitura ESTRUTURADA da tela (lsdata). Todo `lsdata` daqui para baixo é COPIADO do bruto medido
+// no s4h 758/250 em 04/09/2026 — `sap-accelerate/work/POC_webgui_lsdata/medicoes/raw/*.json`.
+// ---------------------------------------------------------------------------------------------
+
+// Um campo da SE38, o rótulo dele, dois botões da barra, um radio, um checkbox e a barra de
+// mensagem — cada um com o índice de SID que ele DE FATO usa.
+const CAMPO_SE38 = {
+  id: 'M0:46:::2:14', ct: 'CBS', title: 'Nome do programa ABAP', valor: 'RSPARAM', visivel: true,
+  lsdata: { 1: 'FREETEXT', 3: 'M0:46:::2:14_TALB', 7: true, 13: 'P', 14: 'SERVER',
+    21: { SID: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', Type: 'GuiCTextField', value: '', maxlen: 40 },
+    22: 'pstxt', 29: 'M0:46:::2:0' },
+};
+const ROTULO_SE38 = {
+  id: 'M0:46:::2:0', ct: 'L', texto: 'Programa', visivel: true,
+  lsdata: { 1: 'M0:46:::2:14', 3: 'Programa', 7: '100%', 12: 'P', 13: 'ENDOFLINE',
+    19: { SID: 'wnd[0]/usr/lblRS38M-PROGRAMM', Type: 'GuiLabel' } },
+};
+const BOTAO_VOLTAR = {
+  id: 'M0:56::btn[3]', ct: 'B', title: 'Voltar (F3)', texto: null, visivel: true,
+  lsdata: { 2: 'TRANSPARENT', 4: 'Voltar (F3)', 18: 'F3', 21: true, 22: 'BACK',
+    27: { SID: 'wnd[0]/tbar[0]/btn[3]', Type: 'GuiButton' } },
+};
+const BOTAO_EXECUTAR = {
+  id: 'M0:48::btn[8]', ct: 'B', title: 'Executar (F8)', texto: 'Executar\n Destacado',
+  accesskey: 'E', visivel: true,
+  lsdata: { 0: 'Executar', 4: 'Executar (F8)', 17: 'E', 18: 'F8', 21: true, 25: 'TOGGLE',
+    27: { SID: 'wnd[0]/tbar[1]/btn[8]', Type: 'GuiButton', SubType: 'toolbar' } },
+};
+const RADIO_MARCADO = {
+  id: 'M0:46:::5:1', ct: 'R_standards', title: 'Editor', texto: 'Texto fonte', aria: 'true', visivel: true,
+  lsdata: { 0: '%RBG0257', 1: true, 4: 'Texto fonte', 5: 'Editor', 10: 'T',
+    13: { SID: 'wnd[0]/usr/radRS38M-FUNC_EDIT', Type: 'GuiRadioButton', group: '%RBG0257' }, 15: true },
+};
+const CHECKBOX = {
+  id: 'M0:46:::0:3', ct: 'C_standards', texto: ':\nExibir também não substituído?', aria: 'false', visivel: true,
+  lsdata: { 0: 'CheckBox', 4: 'Exibir também não substituído?', 9: 'E', 10: 'CHECKBOXLAST',
+    14: { SID: 'wnd[0]/usr/chkALSOUSUB', Type: 'GuiCheckBox' }, 16: true, 18: true },
+};
+const BARRA_LIMPA = {
+  id: 'wnd[0]/sbar_msg', ct: 'MB', visivel: false,
+  lsdata: { 1: 'TEXT', 3: 'NONE',
+    11: { SID: 'wnd[0]/sbar_msg', Type: 'MESSAGEBAR', visibility: 2, messageType: '', applicationText: '' },
+    12: false, 13: true },
+};
+const BARRA_ERRO = {
+  id: 'wnd[0]/sbar_msg', ct: 'MB', visivel: true, texto: 'O programa ZZNAOEXISTE9 não existe',
+  lsdata: { 0: 'O programa ZZNAOEXISTE9 não existe', 1: 'ERROR', 5: 'O programa ZZNAOEXISTE9 não existe',
+    6: true, 7: 'Exibir detalhes',
+    11: { SID: 'wnd[0]/sbar_msg', Type: 'MESSAGEBAR', visibility: 0, messageType: 'Erro',
+      applicationText: 'O programa ZZNAOEXISTE9 não existe' } },
+};
+const GRID_ALV = {
+  id: 'C102', ct: 'STCS', visivel: true,
+  lsdata: { 10: 'MULTI', 13: 0,
+    34: { id: 'C102', SID: 'wnd[0]/usr/cntlGRID1/shellcont/shell', Type: 'GuiGridView', editable: false,
+      ColumnIDs: ['NAME', 'USER_VALUE', 'DEFAULT_VALUE', 'DEFAULT_USUBS_VALUE', 'DESCR'], totalRows: 1617 } },
+};
+const JANELA = {
+  id: 'webguiPageLayout0', ct: 'PL', visivel: true,
+  lsdata: { 1: { SID: 'wnd[0]', Type: 'GuiMainWindow' }, 2: 'pswnd0up' },
+};
+const OKCODE = {
+  id: 'ToolbarOkCode', ct: 'CBS', title: 'Inserir código de transação', valor: '', visivel: false,
+  lsdata: { 1: 'FREETEXT', 6: 'NONE', 13: 'o', 14: 'SERVER',
+    21: { SID: 'wnd[0]/tbar[0]/okcd', Type: 'GuiOKCodeField', display: 'X' } },
+};
+
+test('webgui: o SID sai pelo VALOR, porque o índice muda de um tipo de controle para outro', () => {
+  // é O achado do item 9: hard-codear lsdata['21'] acerta o campo e mente para todo o resto
+  expect(sidDoLsdata(CAMPO_SE38.lsdata).indice).toBe('21');
+  expect(sidDoLsdata(BOTAO_VOLTAR.lsdata).indice).toBe('27');
+  expect(sidDoLsdata(ROTULO_SE38.lsdata).indice).toBe('19');
+  expect(sidDoLsdata(RADIO_MARCADO.lsdata).indice).toBe('13');
+  expect(sidDoLsdata(CHECKBOX.lsdata).indice).toBe('14');
+  expect(sidDoLsdata(BARRA_ERRO.lsdata).indice).toBe('11');
+  expect(sidDoLsdata(GRID_ALV.lsdata).indice).toBe('34');
+  expect(sidDoLsdata(JANELA.lsdata).indice).toBe('1');
+  // e o SID em si é o mesmo em todos
+  expect(sidDoLsdata(CAMPO_SE38.lsdata).SID).toBe('wnd[0]/usr/ctxtRS38M-PROGRAMM');
+  expect(sidDoLsdata(null)).toBe(null);
+  expect(sidDoLsdata({ 0: 'Executar', 2: 'TRANSPARENT' })).toBe(null);
+});
+
+test('webgui: o nome do campo da URL ~transaction sai do SID, sem o prefixo de tipo', () => {
+  expect(campoDoSid('wnd[0]/usr/ctxtRS38M-PROGRAMM')).toBe('RS38M-PROGRAMM');
+  expect(campoDoSid('wnd[0]/usr/radRS38M-FUNC_EDIT')).toBe('RS38M-FUNC_EDIT');
+  expect(campoDoSid('wnd[0]/usr/chkALSOUSUB')).toBe('ALSOUSUB');
+  expect(campoDoSid('wnd[0]/usr/lblRS38M-PROGRAMM')).toBe('RS38M-PROGRAMM');
+  expect(campoDoSid('wnd[0]')).toBe('wnd[0]');
+  expect(campoDoSid(null)).toBe(null);
+});
+
+test('webgui: a tecla do botão é a CONSTANTE do lsdata, não o "(F8)" do tooltip', () => {
+  expect(teclaDoBotao(BOTAO_EXECUTAR.lsdata)).toBe('F8');
+  expect(teclaDoBotao({ 4: 'Verificar (Ctrl+F2)', 18: 'CTRL_F2' })).toBe('CTRL_F2');
+  expect(teclaDoBotao({ 18: 'CTRL_SHIFT_F3' })).toBe('CTRL_SHIFT_F3');
+  expect(teclaDoBotao({ 18: 'CTRL_S' })).toBe('CTRL_S');
+  expect(teclaDoBotao({ 0: 'Menu', 2: 'TRANSPARENT' })).toBe(null);  // TRANSPARENT não é tecla
+});
+
+test('webgui: o rótulo é a 1ª linha do texto; sem texto, o tooltip SEM a tecla', () => {
+  // o innerText do botão traz texto oculto do tema colado por \n
+  expect(rotuloLimpo('Executar\n Destacado', 'Executar (F8)')).toBe('Executar');
+  // botão da tbar[0] não tem texto — e o 1º valor do lsdata seria "TRANSPARENT", a constante de design
+  expect(rotuloLimpo(null, 'Voltar (F3)')).toBe('Voltar');
+  expect(rotuloLimpo('', 'Gravar (Ctrl+S)')).toBe('Gravar');
+  expect(rotuloLimpo('', 'Lista de utilizações (Ctrl+Shift+F3)')).toBe('Lista de utilizações');
+  expect(rotuloLimpo('', '')).toBe(null);
+});
+
+test('webgui: cada controle vira a peça que ele é — pelo Type que o próprio SAP põe no SID', () => {
+  const campo = interpretarControle(CAMPO_SE38);
+  expect(campo).toMatchObject({ papel: 'campo', campo: 'RS38M-PROGRAMM', valor: 'RSPARAM',
+    maxlen: 40, editavel: true, dica: 'Nome do programa ABAP' });
+
+  const botao = interpretarControle(BOTAO_EXECUTAR);
+  expect(botao).toMatchObject({ papel: 'botao', okcode: 'btn[8]', rotulo: 'Executar', tecla: 'F8', accesskey: 'E' });
+
+  // ⚠ a marcação vem do ARIA, NÃO do lsdata: medido que clicar no checkbox não mexe o lsdata
+  expect(interpretarControle(RADIO_MARCADO)).toMatchObject({ papel: 'radio', campo: 'RS38M-FUNC_EDIT',
+    grupo: '%RBG0257', selecionado: true, rotulo: 'Texto fonte' });
+  expect(interpretarControle({ ...RADIO_MARCADO, aria: 'false' }).selecionado).toBe(false);
+  expect(interpretarControle(CHECKBOX)).toMatchObject({ papel: 'checkbox', campo: 'ALSOUSUB',
+    marcado: false, rotulo: 'Exibir também não substituído?' });
+
+  expect(interpretarControle(GRID_ALV)).toMatchObject({ papel: 'grid', linhas: 1617, editavel: false,
+    colunas: ['NAME', 'USER_VALUE', 'DEFAULT_VALUE', 'DEFAULT_USUBS_VALUE', 'DESCR'] });
+  expect(interpretarControle(JANELA)).toMatchObject({ papel: 'janela', sid: 'wnd[0]', principal: true });
+  expect(interpretarControle(OKCODE)).toMatchObject({ papel: 'okcode', sid: 'wnd[0]/tbar[0]/okcd', visivel: false });
+
+  // a mensagem: o `messageType` do SID vem TRADUZIDO ("Erro") — a chave é a constante ("ERROR")
+  expect(interpretarControle(BARRA_ERRO)).toMatchObject({ papel: 'mensagem', tipo: 'ERROR',
+    texto: 'O programa ZZNAOEXISTE9 não existe' });
+  expect(interpretarControle(BARRA_LIMPA)).toMatchObject({ papel: 'mensagem', tipo: null, texto: null });
+
+  // controle sem SID (layout, container) não vira peça de tela — fica com papel null
+  expect(interpretarControle({ id: 'u3F31C', ct: 'RLI', lsdata: { 0: 16, 2: 112 } }).papel).toBe(null);
+});
+
+test('webgui: a tela montada é o MODELO — e o rótulo do campo é costurado pelo LABEL ao lado', () => {
+  const tela = montarTela(
+    [JANELA, OKCODE, CAMPO_SE38, ROTULO_SE38, RADIO_MARCADO, BOTAO_VOLTAR, BOTAO_EXECUTAR, BARRA_ERRO],
+    { titulo: 'Editor ABAP: 1ª tela' });
+
+  expect(tela.titulo).toBe('Editor ABAP: 1ª tela');
+  expect(tela.janela).toMatchObject({ sid: 'wnd[0]', principal: true });
+  expect(tela.mensagem).toEqual({ tipo: 'ERROR', texto: 'O programa ZZNAOEXISTE9 não existe' });
+  expect(tela.statusbar).toEqual(['O programa ZZNAOEXISTE9 não existe']);  // compat com o lerTela antigo
+
+  // ⚠ o `title` do campo é do DATA ELEMENT ("Nome do programa ABAP"); o rótulo DA TELA é "Programa",
+  // e quem o tem é o LABEL — que aponta o campo por um id guardado em índice qualquer do lsdata
+  expect(tela.campos).toHaveLength(1);
+  expect(tela.campos[0]).toMatchObject({ campo: 'RS38M-PROGRAMM', rotulo: 'Programa',
+    dica: 'Nome do programa ABAP' });
+
+  expect(tela.radios.map((r) => r.campo)).toEqual(['RS38M-FUNC_EDIT']);
+  expect(tela.botoes.map((b) => b.okcode)).toEqual(['btn[3]', 'btn[8]']);
+  expect(tela.okcode.sid).toBe('wnd[0]/tbar[0]/okcd');   // invisível, mas está lá
+  expect(tela.checkboxes).toEqual([]);
+});
+
+test('webgui: sem mensagem a statusbar é vazia, e controle invisível não entra na tela', () => {
+  const tela = montarTela([JANELA, OKCODE, BARRA_LIMPA, { ...CAMPO_SE38, visivel: false }]);
+  expect(tela.mensagem).toBe(null);
+  expect(tela.statusbar).toEqual([]);
+  expect(tela.campos).toEqual([]);          // o campo invisível some
+  expect(tela.okcode).not.toBe(null);       // o okcd NÃO: ele é sempre invisível e sempre serve
 });
