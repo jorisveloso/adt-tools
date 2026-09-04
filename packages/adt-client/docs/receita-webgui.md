@@ -206,6 +206,14 @@ dependência do fcode. A URL ganha por não precisar de objeto no sistema; o TST
 tela tem de estar disponível para uma pessoa, não para o canal — e aí `deployTransaction`
 (`type: 'parameter'`, [receita-tran.md](receita-tran.md)) grava `params` e `skip`.
 
+### E se o objeto NÃO tem transação? Crie uma descartável
+
+O WebGUI só entra numa tela por transação. Um report ou uma dynpro sem `TSTC` ficam fora do canal —
+até `deployTransaction` criar uma `Y*` em `$TMP`, a tela ser dirigida por aqui e
+`deleteTransaction` apagá-la no `finally`. Provado ponta a ponta no SXD 816/100 em 2026-09-03
+(a J1B1N criou a NF `0000000082`): o ciclo inteiro, com as cinco regras e o que ele não resolve,
+está em [receita-tran.md](receita-tran.md) § *O par `tran` + WebGUI*.
+
 ### Apontar um elemento
 
 Três formas, todas pelo mesmo argumento `alvo` (`jsDoAlvo` é puro e testado):
