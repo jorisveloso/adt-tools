@@ -354,8 +354,10 @@ com o piso em 3 (herdado da J1B1N) a abertura levou **64 s**; com o piso certo, 
 ## ⚠ Clicar de verdade
 
 Mouse e teclado **nativos** (`Input.dispatch*`), nunca `.value =` ou `.click()`: o Unified Renderer
-escuta o evento nativo, e um value setado na marra **não chega ao programa ABAP**. Três medições
-que fazem o clique cair no vazio, todas resolvidas dentro de `apontar`/`clique`:
+escuta o evento nativo, e um value setado na marra **não chega ao programa ABAP**. (A exceção
+medida é o campo de OK-code, que é 0×0 e por isso não recebe gesto nativo nenhum — § "A caixa de
+comando (OK-code) **pelo navegador**".)
+Três medições que fazem o clique cair no vazio, todas resolvidas dentro de `apontar`/`clique`:
 
 1. **`scrollIntoView` é assíncrono** — ler o `getBoundingClientRect` no mesmo tick devolve o rect
    ANTIGO (medido: rect em y=873, clique enviado para y=452). Rola, espera, relê.
@@ -368,6 +370,74 @@ que fazem o clique cair no vazio, todas resolvidas dentro de `apontar`/`clique`:
 
 E **`mudou: false` é informação**: `acionar` compara o carimbo da tela antes e depois; tela idêntica
 significa que a ação não pegou, e é assim que `btn[15]`/`btn[12]` se denunciam neste canal.
+
+## A caixa de comando (OK-code) **pelo navegador**
+
+**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 13). O canal do navegador também
+navega por OK-code — a mesma navegação genérica que a via HTTP pura tem (§ abaixo), sem depender de
+achar botão na tela.
+
+```js
+import { abrirNavegador, ir, urlWebgui, comandar, lerTela } from './webgui.mjs';
+
+const s = await abrirNavegador(cfg);
+await ir(s, urlWebgui(cfg));                 // SAP Easy Access
+await comandar(s, '/nSE16');                 // → Data Browser: 1ª tela   (1,8 s)
+await comandar(s, '/3');                     // → SAP Easy Access         (1,6 s)  F3
+await comandar(s, '/nSE38');                 // → Editor ABAP: 1ª tela    (1,6 s)
+await comandar(s, '/n');                     // → SAP Easy Access         (1,6 s)
+```
+
+**O gesto é a exceção da regra do clique.** O campo (`ToolbarOkCode`, SID `wnd[0]/tbar[0]/okcd`)
+existe em toda tela e é **invisível** — `rect` 0×0, `display: flex`. Por isso:
+
+* `click`/`fill` do Playwright o **recusam** por *actionability*;
+* a digitação **nativa** (`Input.insertText`) não cai nele — medido no SXD em 2026-09-03: o texto
+  foi parar no campo da tela que tinha o cursor.
+
+O que funciona é o contrário do § "Clicar de verdade": escrever o `value` **por JS** e despachar o
+`Enter` **no próprio elemento** (`dispatchEvent` não passa por actionability). Não é gambiarra de
+DOM — é o gesto que o próprio renderer declara no `lsevents` do campo:
+
+```
+"Enter":[{},{"1":"vkey/0/ses[0]","2":true}]
+```
+
+e o handler dele, no `webgui_min.js`, chama `submitOkCode`, que monta **o mesmo batch da via HTTP**:
+
+```json
+[{"post":"okcode/ses[0]","content":"/nSE16"},{"post":"vkey/0/ses[0]"},{"get":"state/ur"}]
+```
+
+*(gravado no navegador com um hook em `XMLHttpRequest.prototype.send`.)*
+
+**Contra-prova:** escrever o `value` e **não** despachar o `Enter` não navega — tela idêntica,
+zero POST. É o `Enter` que dispara, não o texto.
+
+Duas outras vias medidas na mesma bancada, ambas dispensáveis: `sap.its.enqueueEvent({sEvName:'Enter',
+oItsParams:{…code:'vkey/0/ses[0]',submit:true,type:'GuiOKCodeField'}, oUrParams:{Id:'ToolbarOkCode'}})`
+**funciona** (mesmo batch, `/nSE38` chegou no Editor ABAP) mas depende da forma interna do evento; e
+`sap.g4h.$`, onde mora o `submitOkCode`, **não está exposto** (`sap.g4h` publica só `openMenu`,
+`doWguMenuSelect`, `openWindow`…). O gesto do `Enter` é o mais estável dos três.
+
+### ⚠ O OK-code **não leva o que foi digitado na dynpro**
+
+Medido: `preencher` do campo da tabela na SE16 e em seguida `comandar(s, 'ONLI')` → a tela voltou
+**"Entrar nome de tabela"**, e o batch saiu **sem nenhum `value/<SID>`** do campo. O caminho curto
+do `submitOkCode` publica o OK-code, não o estado da tela.
+
+> Regra prática: **acionar com valores da tela é `acionar` (botão); navegar é `comandar` (OK-code).**
+
+### ⚠ OK-code que abre popup trava a `wnd[0]`
+
+`/15` (Shift+F3) no menu abre a pergunta de logoff: `sap.its.getPopupCount()` vira `1` e a partir
+daí o `okcd` de `wnd[0]` **não responde mais** — o `/nSE16` seguinte não postou nada e a tela ficou
+parada 20 s. Bisseção: a mesma sequência **sem** o `/15` (`/nSE16` → `/3` → `/nSE38` → `/n`) anda
+inteira. Dirigir popup é `wnd[1]` (fila `adt-client`, item 23).
+
+**Vocabulário** (o mesmo da via HTTP, § "A caixa de comando (OK-code)"): `/nXXXX` de qualquer tela,
+`/n` volta ao menu, `/3` e `/8` valem como F3 e F8, o `fcode` da dynpro entra cru (`ONLI`), `/o`
+abre a lista de modos em popup e `/nex` encerra a sessão.
 
 ## Playwright — instrumento de bancada, nunca dependência
 
@@ -471,11 +541,12 @@ texto** — cair no primeiro valor string do `lsdata` devolve a constante de des
 
 ## O que este canal NÃO faz
 
-1. **Não tem via de saída.** Medido no SXD: `btn[15]` (Sair, Shift+F3), `btn[12]` (Cancelar,
-   Escape) e a tecla `Shift+F3` postam, o servidor responde 200 e o programa **reabre a mesma
-   dynpro**; nenhuma NF é criada, nenhum `fcode` de saída chega. A caixa de OK-code
-   (`ToolbarOkCode`, SID `wnd[0]/tbar[0]/okcd`) é **invisível** (rect 0×0) e não recebe digitação.
-   Fluxo que precisa **sair sem gravar** ainda é GUI Scripting. (Fila `adt-client`, item 13.)
+1. **Botão de saída não sai — quem sai é o OK-code.** Medido no SXD: `btn[15]` (Sair, Shift+F3),
+   `btn[12]` (Cancelar, Escape) e a tecla `Shift+F3` postam, o servidor responde 200 e o programa
+   **reabre a mesma dynpro**; nenhum `fcode` de saída chega. Isso NÃO é mais limite do canal: a
+   caixa de comando dá a saída — `comandar(s, '/3')`, `'/n'`, `'/nex'` (§ "A caixa de comando
+   (OK-code) **pelo navegador**", s4h em 2026-09-04). Fica de fora só o popup: `/15` no menu abre
+   a pergunta de logoff e trava a `wnd[0]` (fila `adt-client`, item 23).
 2. **Statusbar e print não são assert.** A tela pode aceitar tudo e não gravar nada, calada — o
    mesmo desmentido do GUI Scripting. O assert é em **outra LUW**.
 3. **Não roda sem navegador nesta máquina** — *pela via do CDP*. É Chrome headless local. ⚠ Isto

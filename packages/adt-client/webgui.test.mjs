@@ -7,7 +7,7 @@ import {
   expressaoTransacao, urlWebgui, jsDoAlvo, nomeDoAlvo, jsTelaPronta, autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela,
-  interpretarSonda,
+  interpretarSonda, jsComando,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -338,4 +338,23 @@ test('webgui: cada recusa tem causa própria — nada de empilhar tudo em "não 
   expect(interpretarSonda({ erro: 'ENOTFOUND' }))
     .toMatchObject({ ok: false, causa: 'sem-icm', status: null });
   expect(interpretarSonda({ erro: 'TimeoutError' }).motivo).toMatch(/sem resposta do ICM/);
+});
+
+test('webgui: o OK-code do navegador escreve por JS e dispara o Enter NO PRÓPRIO campo invisível', () => {
+  // medido no s4h 758/250 em 04/09/2026: `value` + `Enter` despachado no elemento produz o batch
+  // `okcode/ses[0]` + `vkey/0/ses[0]` + `state/ur` — o mesmo da via HTTP pura. O campo é 0×0, então
+  // nada aqui pode depender de clique, foco nativo ou digitação (que caem no campo com o cursor).
+  const js = jsComando('/nSE16');
+  expect(js).toContain("document.getElementById('ToolbarOkCode')");
+  expect(js).toContain('el.value = "/nSE16"');
+  expect(js).toContain('KeyboardEvent');
+  expect(js).toContain("'keydown', 'keypress', 'keyup'");
+  expect(js).not.toContain('click');    // clique no campo 0×0 é recusado por actionability
+  expect(js).not.toContain('.focus()'); // foco por JS não move o cursor do renderer
+
+  // contra-prova de forma: fcode da dynpro e tecla entram do mesmo jeito, sem tratamento especial
+  expect(jsComando('ONLI')).toContain('el.value = "ONLI"');
+  expect(jsComando(' /3 ')).toContain('el.value = "/3"');
+  expect(() => jsComando('')).toThrow(/informe o OK-code/);
+  expect(() => jsComando(null)).toThrow(/informe o OK-code/);
 });

@@ -98,7 +98,7 @@ export const OKCODES = {
   'btn[12]': { nome: 'Cancelar', apelidos: [], tecla: 'Escape',
     medido: 'SXD 816/100 03/09/2026 — Writer: M0:50::btn[12]. ⚠️ posta e o programa REABRE a mesma dynpro' },
   'btn[15]': { nome: 'Encerrar', apelidos: ['Sair'], tecla: 'Shift+F3',
-    medido: 'SXD 816/100 03/09/2026 — SE38: M0:55::btn[15]. ⚠️ sem via de saída neste canal (fila adt-client, item 13)' },
+    medido: `SXD 816/100 03/09/2026 — SE38: M0:55::btn[15]. ⚠️ o clique posta e o programa REABRE a dynpro; a saída deste canal é o OK-code — comandar(s, "/3"), (s, "/n"), (s, "/nex"). Medido no s4h 04/09/2026: /15 no menu abre a pergunta de logoff e trava a wnd[0]` },
   'btn[71]': { nome: 'Procurar', apelidos: [], tecla: null,
     medido: 'SXD 816/100 03/09/2026 — SE38: id M0:49::btn[71]' },
   'btn[86]': { nome: 'Imprimir', apelidos: [], tecla: null,
@@ -812,4 +812,60 @@ export async function preencher(sessao, alvo, valor) {
   await tecla(sessao, 'Delete', { assentar: false });
   await digitar(sessao, valor);
   return await avaliar(sessao, `(${js} || {}).value`);
+}
+
+// ---------- a caixa de comando (OK-code) pelo navegador ----------
+//
+// O campo de comando existe em TODA tela do WebGUI (`ToolbarOkCode`, SID `wnd[0]/tbar[0]/okcd`) e
+// é INVISÍVEL: `rect` 0×0, `display: flex`. Por isso `click`/`fill` do Playwright o recusam por
+// actionability e a digitação NATIVA (`Input.insertText` do CDP) não cai nele — medido no SXD
+// 816/100 em 03/09/2026: o texto foi parar no campo da tela que tinha o cursor.
+//
+// O que resolve é NÃO usar gesto nativo: escrever no `value` por JS e despachar o `Enter` NO PRÓPRIO
+// elemento — `dispatchEvent` não passa por actionability, e quem escuta é o Unified Renderer, não o
+// navegador. O `lsevents` do campo declara o disparo: `"Enter":[{},{"1":"vkey/0/ses[0]","2":true}]`.
+//
+// Medido no s4h 758/250 em 04/09/2026 (sessões novas, com o batch do XHR gravado):
+//   • o batch que sai é `[{post:"okcode/ses[0]",content:"/nSE16"},{post:"vkey/0/ses[0]"},{get:"state/ur"}]`
+//     — o MESMO da via HTTP pura (item 8), montado pelo `submitOkCode` do próprio renderer;
+//   • navegação numa sessão: `/nSE16` → `/3` → `/nSE38` → `/n`, 1,58-1,60 s por salto;
+//   • CONTRA-PROVA: escrever o `value` e NÃO despachar o Enter não navega (fica na mesma tela, 0 POST).
+//
+// ⚠️ **Isto NÃO leva o que foi digitado na dynpro.** Medido: `preencher` + `comandar(s,'ONLI')` na
+// SE16 voltou "Entrar nome de tabela" — o batch do OK-code sai sem nenhum `value/<SID>` do campo.
+// Para acionar COM os valores da tela, o gesto é o botão (`acionar`), não o OK-code.
+//
+// ⚠️ **OK-code que abre POPUP trava a janela principal.** Medido: `/15` (Shift+F3) no menu abre a
+// pergunta de logoff (`sap.its.getPopupCount()` 1) e daí o `okcd` de `wnd[0]` não responde mais —
+// o `/nSE16` seguinte não postou nada. Dirigir popup é `wnd[1]` (fila adt-client, item 23).
+
+/** PURO: a expressão que escreve o OK-code no campo invisível e dispara o `Enter` que o renderer
+ * escuta. Devolve `false` quando a tela não tem o campo — nenhuma tela medida ficou sem ele. */
+export function jsComando(texto) {
+  const v = String(texto ?? '').trim();
+  if (!v) throw new Error('jsComando: informe o OK-code (ex. "/nSE16", "ONLI", "/3", "/n")');
+  return `(() => {
+    const el = document.getElementById('ToolbarOkCode');
+    if (!el) return false;
+    el.value = ${JSON.stringify(v)};
+    for (const tipo of ['keydown', 'keypress', 'keyup']) {
+      el.dispatchEvent(new KeyboardEvent(tipo, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    }
+    return true;
+  })()`;
+}
+
+/**
+ * Manda um OK-code pela caixa de comando e espera a resposta do ABAP.
+ * `mudou: false` é INFORMAÇÃO: a tela ficou igual, o comando não pegou (popup aberto, fcode que a
+ * dynpro não tem, ou sessão encerrada por um `/nex` anterior).
+ */
+export async function comandar(sessao, texto, { tetoMs = 25000 } = {}) {
+  const js = jsComando(texto);
+  const antes = await carimbo(sessao);
+  const t0 = Date.now();
+  const achou = await avaliar(sessao, js);
+  if (!achou) throw new Error(`webgui: comandar — a tela não tem o campo ToolbarOkCode (${texto})`);
+  const mudou = await esperarMudanca(sessao, antes, { tetoMs });
+  return { okcode: String(texto).trim(), mudou, ms: Date.now() - t0 };
 }
