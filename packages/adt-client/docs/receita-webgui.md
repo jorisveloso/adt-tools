@@ -133,11 +133,38 @@ inativo numa varredura por guid e ativo por URL — são dois nós homônimos, e
 ### ⚠ Quem sonda FECHA
 
 O GET bem-sucedido **não é leitura inócua**: ele abre uma sessão de diálogo no servidor — é
-justamente o `SAP_SESSIONID` que prova o sucesso. Medido em 04/09/2026: uma varredura de ~120 GETs
-sem logoff foi seguida de o **POST do ADT do mesmo usuário** passar a responder
-`Service nicht erreichbar`, voltando ao normal depois (a atribuição causal não foi isolada). O
+justamente o `SAP_SESSIONID` que prova o sucesso. A aritmética é exata (s4h 758/250, 04/09/2026):
+**1 GET = 1 sessão, 1 logoff = −1 sessão** (10 GETs levaram 4 → 14; 10 logoffs, 14 → 4). O
 `sondarWebgui` faz o logoff sempre que houve cookie, pelo `encerrarSessao` do transporte — a mesma
 regra do `probe`.
+
+**O que acontece quando não se fecha (item 28, causa isolada por rampa):** com ~150 sessões do mesmo
+usuário — 144 ainda passavam, 154 já não — **todo o canal stateful cai de uma vez**, com o
+`400 Service nicht erreichbar` que a varredura de ~120 GETs de 04/09/2026 tinha produzido. E o que
+cai **não é o nó do ADT**: é a sessão. Passado o teto, o logon ainda responde 200 com token CSRF,
+mas o cookie vem **sem `SAP_SESSIONID`**, e daí **qualquer** requisição que leve aquele cookie
+responde 400 — medido inclusive em `/sap/public/ping`, que na mesma janela respondia 200 chamado só
+com Basic. Ver `sessaoNasceuMorta` em `sap-connection.mjs`.
+
+| requisição, na MESMA janela | resultado |
+|---|---|
+| `/sap/public/ping` só com `Authorization: Basic` | **200** |
+| `/sap/public/ping` com o cookie da sessão | **400** Service nicht erreichbar |
+| `/sap/bc/adt/core/discovery` só com Basic | **200** |
+| `/sap/bc/adt/core/discovery` com o cookie | **400** Service nicht erreichbar |
+| Basic **+** cookie | **400** — o cookie vence |
+
+**O logoff é preventivo, não curativo.** No estado doente o próprio logoff responde 400 e a sessão
+**fica** na `TH_USER_LIST` (24/50 antes, 24/50 depois) — então cada retry soma mais uma sessão que
+não sai, e insistir aprofunda o buraco. Fechar as 150 depois de estourar **não** devolveu o canal:
+o que devolve é o tempo (`http/security_session_timeout`, 1800 s no s4h). Por isso o `deployAndRun`
+e qualquer laço de retry precisam parar quando o logon vier sem `SAP_SESSIONID`.
+
+**Como contar sessões quando o ADT é o suspeito:** por SOAP RFC, que não usa cookie —
+`callFunction(cfg, 'TH_USER_LIST', { USRLIST: [] })` e `xmlItems(xml, 'USRLIST')` devolvem a SM04
+(TID, BNAME, TCODE, TERM, ZEIT, TYPE, STAT, HOSTADDR). A tabela **tem que ir vazia no envelope**,
+senão volta com zero linhas e sem erro (ver `canal-soap-rfc.md`). Medição completa em
+`sap-accelerate/work/POC_sessoes_icf/medicoes/item28-sessoes-e-o-400-do-adt.md`.
 
 De quebra a sonda devolve `cookieSeguro`, que é o que decide a bandeira `--unsafely-treat-insecure-origin-as-secure`
 do Chrome (ver *Cookie `secure` sobre HTTP puro*): no s4h vem `true`, no SXD 816/100 vem `false`.

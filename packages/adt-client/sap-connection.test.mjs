@@ -7,9 +7,9 @@
 
 import { test, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
-import { criarConexao, newSession, call, encerrarSessao } from './sap-connection.mjs';
+import { criarConexao, newSession, call, encerrarSessao, fetchToken, sessaoNasceuMorta } from './sap-connection.mjs';
 
-let srv, base, recebidos;
+let srv, base, recebidos, noTeto = false;
 
 beforeAll(async () => {
   srv = http.createServer((req, res) => {
@@ -22,6 +22,14 @@ beforeAll(async () => {
       sessiontype: req.headers['x-sap-adt-sessiontype'] ?? null,
     });
     res.setHeader('x-csrf-token', 'TOKEN-NOVO');
+    // `noTeto` imita o servidor no teto de sessões HTTP (item 28): o logon ainda devolve token, mas
+    // o cookie vem SEM SAP_SESSIONID, e tudo o mais responde 400 `Service nicht erreichbar`.
+    if (noTeto) {
+      res.setHeader('set-cookie', ['sap-contextid=ctx1; path=/', 'sap-usercontext=sap-client=100; path=/']);
+      if (!req.url.includes('/core/discovery')) { res.statusCode = 400; res.end('<html><head><title>Service nicht erreichbar</title></head></html>'); return; }
+      res.end('<ok/>');
+      return;
+    }
     res.setHeader('set-cookie', ['SAP_SESSIONID_D01_100=novo123; path=/']);
     res.end('<ok/>');
   });
@@ -233,4 +241,35 @@ test('sem mandante configurado, nada é anexado', async () => {
   const cfg = { ...cfgSemSenha(), client: null };
   await call({ cfg, cookie: 'x=1', token: 't', status: null }, { path: '/sap/bc/adt/x' });
   expect(recebidos[0].url).toBe('/sap/bc/adt/x');
+});
+
+// ---------- item 28: a sessão que nasce morta ----------
+// Medido no s4h 758/250 em 04/09/2026: passado o teto (~150 sessões HTTP do mesmo usuário) o logon
+// responde 200 COM token e o cookie vem SEM SAP_SESSIONID — e daí todo path dá 400
+// `Service nicht erreichbar`, `/sap/public/ping` incluído. O 200 do logon é o que engana.
+
+test('sessaoNasceuMorta: token SEM SAP_SESSIONID é a assinatura — com ele, não', () => {
+  expect(sessaoNasceuMorta({ token: 'T', cookie: 'sap-contextid=1; sap-usercontext=x' })).toBe(true);
+  expect(sessaoNasceuMorta({ token: 'T', cookie: 'SAP_SESSIONID_D01_100=abc' })).toBe(false);
+  expect(sessaoNasceuMorta({ token: '', cookie: 'sap-contextid=1' })).toBe(false); // sem token não é este caso
+  expect(sessaoNasceuMorta(null)).toBe(false);
+});
+
+test('no teto de sessões o logon devolve token mas a sessão nasce morta', async () => {
+  recebidos = []; noTeto = true;
+  try {
+    const s = newSession(cfgComSenha());
+    await fetchToken(s);
+    expect(s.token).toBe('TOKEN-NOVO');       // o 200 do logon não é veredito
+    expect(sessaoNasceuMorta(s)).toBe(true);  // o cookie é
+  } finally { noTeto = false; }
+});
+
+test('encerrarSessao NÃO diz encerrada quando o logoff falha — o logoff é preventivo, não curativo', async () => {
+  recebidos = []; noTeto = true;
+  try {
+    const r = await encerrarSessao({ cfg: cfgComSenha(), cookie: 'sap-contextid=1' });
+    expect(r.status).toBe(400);
+    expect(r.encerrada).toBe(false); // antes vinha `true` sempre que havia cookie — e mentia
+  } finally { noTeto = false; }
 });

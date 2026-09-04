@@ -317,11 +317,18 @@ export function interpretarSonda({ status = null, statusText = '', cookies = [],
  * lá. Mesma função que o `verificarScriptingNoServidor` faz para o GUI Scripting, mais barata:
  * só um GET, nada de deploy.
  *
- * ⚠️ **QUEM SONDA FECHA.** O GET bem-sucedido não é leitura inócua: ele ABRE uma sessão de diálogo
- * no servidor (é o `SAP_SESSIONID` que prova o sucesso). Medido em 04/09/2026: uma varredura de
- * ~120 GETs sem logoff foi seguida de o POST do ADT do MESMO usuário passar a responder
- * `Service nicht erreichbar` — a atribuição causal não foi isolada, mas a regra da lib já era
- * "quem abre fecha" e aqui ela tem dente. O logoff sai daqui sempre que houve cookie.
+ * ⚠️ **QUEM SONDA FECHA — e agora com número (item 28).** O GET bem-sucedido não é leitura inócua:
+ * ele ABRE uma sessão de diálogo no servidor (é o `SAP_SESSIONID` que prova o sucesso), exatamente
+ * uma por GET, e o logoff derruba exatamente uma (medido no s4h 758/250 em 04/09/2026: 10 GETs
+ * levaram 4 → 14 sessões; 10 logoffs, 14 → 4). A causa foi ISOLADA por rampa: com ~150 sessões do
+ * mesmo usuário (144 ainda passavam, 154 não) o canal stateful inteiro cai — e o que cai não é o nó
+ * do ADT, é a sessão, que passa a nascer sem `SAP_SESSIONID` e faz QUALQUER requisição com aquele
+ * cookie responder `400 Service nicht erreichbar`, `/sap/public/ping` incluído
+ * (ver `sessaoNasceuMorta` em sap-connection.mjs).
+ *
+ * O logoff daqui é PREVENTIVO, não curativo: passado o teto, o próprio logoff responde 400 e a
+ * sessão fica — resta esperar `http/security_session_timeout` (1800 s no s4h). Uma varredura de 120
+ * GETs sem logoff chega perto do teto; duas chegam. O logoff sai daqui sempre que houve cookie.
  */
 export async function sondarWebgui(cfg, { tetoMs = 15000 } = {}) {
   const url = urlWebgui(cfg);

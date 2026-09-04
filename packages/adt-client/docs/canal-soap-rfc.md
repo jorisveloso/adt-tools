@@ -63,6 +63,13 @@ Resposta real do spike (`STFC_CONNECTION`): `ECHOTEXT` (eco) e `RESPTEXT` com da
   Quando o nome exato não é certeza, chamar **sem `campos`**: os nomes vêm na própria resposta.
 - ✅ `callBapi` — BAPI_COMPANYCODE_GETLIST devolveu 128 empresas + `<RETURN>` com TYPE vazio
   (= sucesso). Parse do RETURN: TYPE/CODE/MESSAGE/MESSAGE_V1..4.
+- ✅ **`TH_USER_LIST` — a SM04 sem passar pelo ADT** (s4h 758, 04/09/2026, item 28). É o instrumento
+  para medir quando o próprio ADT é o suspeito: este canal usa Basic e **não carrega cookie**, então
+  continua respondendo quando toda sessão stateful está caída.
+  `callFunction(cfg, 'TH_USER_LIST', { USRLIST: [] })` + `xmlItems(xml, 'USRLIST')` → TID, MANDT,
+  BNAME, TCODE, TERM, ZEIT, TYPE (202 = HTTP), STAT, EXTMODI, HOSTADDR. Lembrar da regra da tabela
+  vazia no envelope: **sem `USRLIST: []` volta 200 com zero linhas**. `TH_WPINFO` com `WPLIST: []`
+  idem (19 WPs). `TH_SYSTEMWIDE_USER_LIST` e `TH_USER_INFO` dão SOAP Fault neste release.
 - ⛔ **BAPI de ESCRITA por este canal NÃO persiste** (medido no S4H em 2026-08-26): BAPI numa
   chamada + BAPI_TRANSACTION_COMMIT em OUTRA = cada POST é uma LUW própria, o update task da
   1ª morre com o contexto e o commit da 2ª responde "ok" sem gravar nada — armadilha SILENCIOSA.

@@ -85,6 +85,12 @@ export async function fetchToken(session, { stateless = false, lang } = {}) {
   logHttp('GET', url, res.status, Date.now() - t, 0);
   // O que o connect precisa saber sem ver o corpo: veio token? veio cookie?
   detalhe(`token ${session.token ? `recebido (${session.token.length} chars)` : 'AUSENTE'} · cookie ${session.cookie ? `${session.cookie.split('; ').length} chave(s)` : 'nenhum'}`);
+  // Token sem SAP_SESSIONID = sessão nasceu morta (item 28). O 200 aqui engana: quem quebra é a
+  // requisição SEGUINTE, com 400 `Service nicht erreichbar` em qualquer path. Avisar no logon é o
+  // único lugar barato de pegar — depois o sintoma aponta para SICF e manda procurar no lugar errado.
+  if (!stateless && sessaoNasceuMorta(session)) {
+    detalhe('⚠ logon 200 com token mas cookie SEM SAP_SESSIONID — a sessão NASCEU MORTA (servidor no teto de sessões HTTP). Toda requisição com este cookie vai dar 400 "Service nicht erreichbar". Não insista: retry só soma sessão que não sai.');
+  }
   return session.token;
 }
 
@@ -133,6 +139,10 @@ async function abrirLogon(cfg, { stateless = false } = {}) {
  * ERRADO como regra geral — o 500 é o LOGOFF DUMPANDO (`TEXTENV_UNICODE_LANGU_INVALID` em
  * `CL_HTTP_EXT_LOGOFF`) porque a sessão logou sem `sap-language`. Com `fetchToken` sempre mandando um
  * idioma (default `'PT'`, ver ali), o logoff normal responde **200** — um 500 volta a significar erro.
+ * ⚠ **`encerrada` é o que ACONTECEU, não o que foi tentado (item 28).** Antes esta função devolvia
+ * `encerrada: true` sempre que havia cookie — e mentia no caso que mais importa: com o servidor no
+ * teto de sessões, o logoff responde **400** e a sessão **continua na `TH_USER_LIST`** (medido no s4h
+ * 758 em 04/09/2026: 24/50 antes do logoff, 24/50 depois). Quem confia no `true` acha que limpou.
  */
 export async function encerrarSessao(session) {
   if (!session?.cookie) return { status: null, encerrada: false };
@@ -142,7 +152,27 @@ export async function encerrarSessao(session) {
   await res.text();
   logHttp('GET', url, res.status, Date.now() - t, 0);
   session.cookie = ''; session.token = '';
-  return { status: res.status, encerrada: true };
+  const encerrada = res.status === 200;
+  if (!encerrada) detalhe(`logoff respondeu ${res.status} — a sessão pode ter FICADO no servidor (ver sessaoNasceuMorta)`);
+  return { status: res.status, encerrada };
+}
+
+/**
+ * PURO: esta sessão nasceu MORTA? Logon que responde 200 **com token CSRF** mas devolve cookie **sem
+ * `SAP_SESSIONID`** é o servidor no teto de sessões HTTP — o contexto stateful não foi criado.
+ *
+ * POR QUE ISTO EXISTE: a partir daí **toda** requisição que levar esse cookie responde
+ * `400 Service nicht erreichbar`, em **qualquer** path — medido no s4h 758/250 em 04/09/2026,
+ * inclusive `/sap/public/ping`, que respondia 200 na mesma janela quando chamado só com Basic.
+ * A mensagem manda procurar SICF; o problema é sessão. E o veneno é AUTOALIMENTADO: no estado
+ * doente o próprio logoff dá 400, então cada retry soma mais uma sessão que não sai.
+ *
+ * Piso medido para chegar lá: ~150 sessões do MESMO usuário (144 ainda passavam, 154 já não).
+ * Uma varredura de 120 GETs sem logoff chega perto; duas chegam. Sai sozinho em
+ * `http/security_session_timeout` (1800 s no s4h) — fechar depois não cura, o logoff é preventivo.
+ */
+export function sessaoNasceuMorta(session) {
+  return Boolean(session?.token) && !/SAP_SESSIONID/i.test(session?.cookie || '');
 }
 
 const SEM_SENHA =
