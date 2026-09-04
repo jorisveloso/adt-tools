@@ -499,6 +499,97 @@ Dois equivalentes, para traduzir receita de um lado para o outro:
 | `Page.addScriptToEvaluateOnNewDocument` | `contexto.addInitScript` |
 | `Network.setExtraHTTPHeaders` | `newContext({ extraHTTPHeaders })` — **nunca** `httpCredentials`, que não autentica no ICF (§ "O que este canal NÃO faz") |
 
+## O MENU da barra — chegar numa tela por CAMINHO, sem saber o tcode
+
+**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 26). Bruto, agregado e prova em
+`sap-accelerate/work/POC_webgui_menu/`; a leitura em `medicoes/item26-menu.md`.
+
+```js
+import { abrirMenu, navegarMenu, itensDeMenu } from './webgui.mjs';
+
+const menus = await abrirMenu(s);                         // Programa | Processar | … | Sistema | Ajuda
+const sob  = await navegarMenu(s, 'Sistema > Serviços', { acionar: false });   // só DESCOBRE
+sob.filhos.map((i) => i.rotulo);                          // Reporting | QuickViewer | Batch input | …
+
+const r = await navegarMenu(s, 'Sistema > Serviços > Reporting');
+r.mudou;   // true — partiu da SE38 e chegou na SA38, sem o script saber o tcode
+```
+
+### O menu NÃO existe no DOM antes de ser aberto
+
+Nenhum despejo de tela traz a barra de menu: quem a materializa é o botão `cua2sapmenu_btn` (SID
+`wnd[0]/tbar[0]/[0]`). ⚠ O `lsdata[14]` dele nomeia o popup (`mnu0_63`, `mnu0_494`) e **muda a cada
+render** — não serve de âncora. Estáveis são o id do botão e o SID `wnd[0]/mbar`.
+
+Aberto, o menu é o modelo mais legível deste canal: **o `id` de cada item É o caminho**, igual ao
+SID do SAP GUI.
+
+```
+wnd[0]/mbar/menu[5]                    Sistema
+wnd[0]/mbar/menu[5]/menu[3]            Sistema > Serviços
+wnd[0]/mbar/menu[5]/menu[3]/menu[0]    Sistema > Serviços > Reporting
+```
+
+### O vocabulário `lsdata` do `POMNI` — 121 itens, sete índices, nenhum sobrando
+
+| índice | o que é | cobertura |
+|---|---|---|
+| `1` | o rótulo | 121/121 |
+| `4` | `true` = há uma **linha separadora logo acima** (início de grupo) — provado por posição `y` | 14 |
+| `6` | `true` = tem submenu | 26 |
+| `7` | o id do popup filho — **volátil** | 26 |
+| `15` | o atalho (`F5`, `CTRL_F3`, `ESCAPE`) | 29 |
+| `18` | `{ SID, Type: 'GuiMenu' }`; o SID é **igual** ao `id` do DOM | 121/121 |
+| `19` | o rótulo de novo — igual ao `1` | 121/121 |
+
+`lsdata[6] === true` ⟺ existe `lsdata[7]` ⟺ `aria-haspopup="true"`, 1:1 nos 121.
+
+### ⚠ Cinco armadilhas, todas silenciosas
+
+Nenhuma dá erro — cada uma devolve "não tem esse item" ou "zero filhos", que é indistinguível de
+"esse caminho não existe".
+
+1. **Há DOIS menus `POMNI` na tela, com um rótulo em comum.** O da barra (`wnd[0]/mbar/…`) e o de
+   informação do sistema (`sysInfoAreaMenuItem*`), que tem um item chamado **"Sistema"** — igual ao
+   `wnd[0]/mbar/menu[5]`. Casar por rótulo solto pega o errado, clica, e reporta `mudou: false`.
+   O escopo é o **id** (`daBarraDeMenu` + `filhoDiretoDeMenu`), nunca o rótulo.
+2. **O botão Menu é TOGGLE** (`lsdata[25]`): com o menu já aberto, o clique **fecha**. Abrir é
+   fechar antes, sabendo o estado — é o que `abrirMenu` faz.
+3. **`Escape` NÃO fecha o menu: cancela a TRANSAÇÃO.** O próprio menu denuncia — o item "Cancelar"
+   carrega `lsdata[15] = "ESCAPE"`. Usar Escape para "limpar o menu" tira a sessão da transação e
+   o passo seguinte falha com "não está na tela".
+4. **A abertura do submenu não é síncrona.** Com espera fixa de 900 ms, "Serviços" devolvia 0
+   filhos ora sim ora não. Esperar o **filho aparecer**, nunca um tempo.
+5. **O percurso é CASCATA.** Abrir um irmão fecha o submenu anterior — não dá para varrer um nível
+   inteiro e só depois descer.
+
+### ⚠ O índice `menu[n]` muda por tela — só o rótulo é estável
+
+Medido: "Sistema" é `wnd[0]/mbar/menu[5]` na SE38 e `wnd[0]/mbar/menu[4]` na SA38. Guardar o id de
+um item para reusar em outra tela é errado; endereçar por rótulo (o que `navegarMenu` faz) é o
+certo. Caminho que não existe **lança** com a lista do que existe naquele nó — não falha calado.
+
+### Quando usar isto, e quando não
+
+`navegarMenu` **não substitui** `comandar(s, '/nSE16')` — o OK-code é mais barato e mais direto
+quando o tcode é conhecido (§ "A caixa de comando"). O menu dá três coisas que nada mais dá neste
+canal:
+
+1. **descobrir** o que uma tela oferece, sem saber nada dela (`{ acionar: false }`);
+2. chegar a uma função que **não tem transação própria** — só existe como item de menu;
+3. reproduzir o caminho **como o usuário funcional o descreve** ("Sistema > Serviços > Reporting").
+
+### O que **ainda não** está medido
+
+- **Item de menu desabilitado nunca apareceu.** `aria-disabled` veio `"false"` em 20 dos 121 e
+  **ausente** nos outros 101 — nenhum `"true"`. Por isso `interpretarItemDeMenu` devolve
+  `habilitado: null` para "a tela não disse": `null` **não** é "habilitado" (fila item 48).
+- **O menu não tem comando derivado para a via HTTP pura** (§ "O protocolo do ITS"). O `POMNI` não
+  publica `lsevents` (null em 121/121); quem publica o `Select` é o `POMN` pai —
+  `{"1":"action/4","2":true}`, e `action/4` está na lista dos ainda não postados (fila item 49).
+- **A árvore do SAP Easy Access (`TV` + `MG`)** — o menu de *usuário*, com `DoubleClick: action/74`
+  — não foi tocada (fila item 50).
+
 ## O vocabulário `lsdata` — a tela é um MODELO, não pixel
 
 **Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 9). Bruto, agregado e prova em

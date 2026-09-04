@@ -9,6 +9,7 @@ import {
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
   interpretarSonda, jsComando,
+  filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -379,4 +380,90 @@ test('webgui: o OK-code do navegador escreve por JS e dispara o Enter NO PRÓPRI
   expect(jsComando(' /3 ')).toContain('el.value = "/3"');
   expect(() => jsComando('')).toThrow(/informe o OK-code/);
   expect(() => jsComando(null)).toThrow(/informe o OK-code/);
+});
+
+// ── O MENU DA BARRA (item 26) ────────────────────────────────────────────────
+// Todo `lsdata` daqui é BRUTO da medição do s4h 758/250 em 2026-09-04
+// (`sap-accelerate/work/POC_webgui_menu/medicoes/raw/se38-varredura.json`), não inventado.
+
+test('menu: o id do item É o caminho — filho DIRETO, e só ele', () => {
+  const raiz = 'wnd[0]/mbar';
+  expect(filhoDiretoDeMenu(raiz, 'wnd[0]/mbar/menu[5]')).toBe(true);
+  // neto NÃO é filho direto — é isto que impede a cascata de pular um nível
+  expect(filhoDiretoDeMenu(raiz, 'wnd[0]/mbar/menu[5]/menu[3]')).toBe(false);
+  expect(filhoDiretoDeMenu('wnd[0]/mbar/menu[5]', 'wnd[0]/mbar/menu[5]/menu[3]')).toBe(true);
+  // o item do ITS (`wnd[0]/mbar/[1]`, "Browser de arquivo") não é `menu[n]` e fica de fora
+  expect(filhoDiretoDeMenu(raiz, 'wnd[0]/mbar/[1]')).toBe(false);
+  expect(filhoDiretoDeMenu(raiz, null)).toBe(false);
+});
+
+test('menu: o menu de INFORMAÇÃO DO SISTEMA também tem um "Sistema" — separar pelo id', () => {
+  // medido: os dois existem na MESMA tela, com o MESMO rótulo. Casar por rótulo pega o errado.
+  expect(daBarraDeMenu('wnd[0]/mbar/menu[5]')).toBe(true);
+  expect(daBarraDeMenu('sysInfoAreaMenuItemSAPITS_MBAR_SYSTEM')).toBe(false);
+  expect(daBarraDeMenu('wnd[0]/mbar/[2]')).toBe(false); // "Configurações..." é do ITS
+  expect(daBarraDeMenu(undefined)).toBe(false);
+});
+
+test('menu: o vocabulário lsdata do POMNI — rótulo, atalho, submenu e início de grupo', () => {
+  // "Sistema": tem submenu (índice 6) e o id do popup filho (7)
+  const sistema = interpretarItemDeMenu({
+    id: 'wnd[0]/mbar/menu[5]',
+    lsdata: { 1: 'Sistema', 6: true, 7: 'mnu0_61', 18: { SID: 'wnd[0]/mbar/menu[5]', Type: 'GuiMenu' }, 19: 'Sistema', x: 0 },
+    desabilitado: null,
+  });
+  expect(sistema).toMatchObject({ rotulo: 'Sistema', submenu: true, nivel: 0, sid: 'wnd[0]/mbar/menu[5]' });
+  expect(sistema.atalho).toBe(null);
+
+  // "Criar": FOLHA com atalho — sem 6, sem 7
+  const criar = interpretarItemDeMenu({
+    id: 'wnd[0]/mbar/menu[0]/menu[0]',
+    lsdata: { 1: 'Criar', 15: 'F5', 18: { SID: 'wnd[0]/mbar/menu[0]/menu[0]', Type: 'GuiMenu' }, 19: 'Criar', x: 0 },
+    desabilitado: 'false',
+  });
+  expect(criar).toMatchObject({ rotulo: 'Criar', atalho: 'F5', submenu: false, nivel: 1, habilitado: true });
+
+  // "Cancelar": índice 4 = há SEPARADOR logo acima (medido pela posição y no DOM)
+  const cancelar = interpretarItemDeMenu({
+    id: 'wnd[0]/mbar/menu[1]/menu[2]',
+    lsdata: { 1: 'Cancelar', 4: true, 15: 'ESCAPE', 18: { SID: 'wnd[0]/mbar/menu[1]/menu[2]', Type: 'GuiMenu' }, 19: 'Cancelar', x: 0 },
+    desabilitado: null,
+  });
+  expect(cancelar.inicioDeGrupo).toBe(true);
+  // ⚠️ e é este `ESCAPE` que explica por que Escape NÃO fecha o menu: ele CANCELA a transação
+  expect(cancelar.atalho).toBe('ESCAPE');
+  expect(criar.inicioDeGrupo).toBe(false);
+});
+
+test('menu: habilitação sai do ARIA, e "a tela não disse" NÃO é "habilitado"', () => {
+  // medido: aria-disabled="false" em 20 dos 121 itens, AUSENTE nos outros 101. Ausente é null.
+  const semAria = interpretarItemDeMenu({ id: 'wnd[0]/mbar/menu[0]', lsdata: { 1: 'Programa' }, desabilitado: null });
+  expect(semAria.habilitado).toBe(null);
+  expect(interpretarItemDeMenu({ id: 'x', lsdata: {}, desabilitado: 'false' }).habilitado).toBe(true);
+  expect(interpretarItemDeMenu({ id: 'x', lsdata: {}, desabilitado: 'true' }).habilitado).toBe(false);
+});
+
+test('menu: o caminho aceita string com ">" ou lista, e recusa vazio', () => {
+  expect(partirCaminhoDeMenu('Sistema > Serviços > Reporting')).toEqual(['Sistema', 'Serviços', 'Reporting']);
+  expect(partirCaminhoDeMenu(['Sistema', ' Serviços '])).toEqual(['Sistema', 'Serviços']);
+  expect(() => partirCaminhoDeMenu('   ')).toThrow(/informe o caminho/);
+  expect(() => partirCaminhoDeMenu(null)).toThrow(/informe o caminho/);
+});
+
+test('menu: achar o item ignora acento e caixa, e o exato ganha do prefixo', () => {
+  const irmaos = [
+    { id: 'wnd[0]/mbar/menu[5]/menu[3]', rotulo: 'Serviços' },
+    { id: 'wnd[0]/mbar/menu[5]/menu[4]', rotulo: 'Utilitários' },
+    { id: 'wnd[0]/mbar/menu[5]/menu[6]', rotulo: 'Meus objetos' },
+  ];
+  expect(acharItemDeMenu(irmaos, 'servicos').rotulo).toBe('Serviços');
+  expect(acharItemDeMenu(irmaos, 'SERVIÇOS').rotulo).toBe('Serviços');
+  expect(acharItemDeMenu(irmaos, 'Meus').rotulo).toBe('Meus objetos'); // por prefixo
+  expect(acharItemDeMenu(irmaos, 'Reporting')).toBe(null);
+  expect(acharItemDeMenu([], 'x')).toBe(null);
+});
+
+test('menu: o exato ganha do prefixo mesmo quando um rótulo é prefixo do outro', () => {
+  const irmaos = [{ id: 'a/menu[0]', rotulo: 'Teste unitário' }, { id: 'a/menu[1]', rotulo: 'Teste' }];
+  expect(acharItemDeMenu(irmaos, 'Teste').rotulo).toBe('Teste');
 });

@@ -906,3 +906,179 @@ export async function comandar(sessao, texto, { tetoMs = 25000 } = {}) {
   const mudou = await esperarMudanca(sessao, antes, { tetoMs });
   return { okcode: String(texto).trim(), mudou, ms: Date.now() - t0 };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// O MENU DA BARRA — chegar numa tela por CAMINHO, sem saber o tcode
+//
+// Medido no s4h 758/250 em 2026-09-04 (fila `adt-client`, item 26; bruto e leitura em
+// `sap-accelerate/work/POC_webgui_menu/`). O menu da barra NÃO existe no DOM antes de ser aberto:
+// o botão `cua2sapmenu_btn` (SID `wnd[0]/tbar[0]/[0]`) é quem o materializa. Aberto, ele é o
+// modelo mais legível deste canal — 121 itens varridos numa tela, e **o `id` de cada item É o
+// caminho** (`wnd[0]/mbar/menu[5]/menu[3]/menu[0]`), igual ao SID do SAP GUI.
+//
+// ⚠️ TRÊS armadilhas, todas medidas, todas silenciosas:
+//  1. **Há DOIS menus `POMNI` na tela.** O da barra (`wnd[0]/mbar/…`) e o de informação do sistema
+//     (`sysInfoAreaMenuItem*`), que tem um item chamado **"Sistema"** — o mesmo rótulo do menu
+//     `wnd[0]/mbar/menu[5]`. Casar por rótulo solto pega o errado e "aciona" nada.
+//  2. **O botão Menu é TOGGLE** (`lsdata[25] === 'TOGGLE'`): com o menu já aberto, clicar FECHA.
+//     Numa varredura, isso faz nós que abrem perfeitamente devolverem zero filho.
+//  3. **`Escape` NÃO fecha o menu** — é o `ESCAPE` do SAP (o item "Cancelar" carrega
+//     `lsdata[15] === 'ESCAPE'`) e CANCELA A TRANSAÇÃO: a tela sai da SE38 e o passo seguinte
+//     falha com "não está na tela". Fechar o menu é usar o toggle sabendo o estado.
+
+/** O botão que MATERIALIZA o menu — id fixo em toda tela medida (SID `wnd[0]/tbar[0]/[0]`). */
+export const BOTAO_DE_MENU = 'cua2sapmenu_btn';
+
+/** PURO: o `id` de um item de menu É o caminho — `id` é filho DIRETO de `prefixo`? */
+export const filhoDiretoDeMenu = (prefixo, id) =>
+  typeof id === 'string' && typeof prefixo === 'string'
+  && id.startsWith(`${prefixo}/menu[`) && !id.slice(prefixo.length + 1).includes('/');
+
+/** PURO: este `POMNI` é da BARRA (e não do menu de informação do sistema)? */
+export const daBarraDeMenu = (id) => /^wnd\[\d+\]\/mbar\/menu\[\d+\]/.test(String(id ?? ''));
+
+/**
+ * PURO: o vocabulário `lsdata` do `POMNI`, medido em 121 itens (s4h 758/250, 04/09/2026) — sete
+ * índices, e nenhum sobrando:
+ *
+ * | índice | o que é | cobertura |
+ * |---|---|---|
+ * | `1`  | o rótulo | 121/121 |
+ * | `4`  | `true` = há uma linha SEPARADORA logo acima (início de grupo) | 14 |
+ * | `6`  | `true` = tem submenu — bate 1:1 com `aria-haspopup` e com o índice `7` | 26 |
+ * | `7`  | o id do popup FILHO (`mnu0_494`) — **volátil**, muda a cada render | 26 |
+ * | `15` | o atalho (`F5`, `CTRL_F3`, `ESCAPE`) | 29 |
+ * | `18` | `{ SID, Type: 'GuiMenu' }` — o SID é IGUAL ao `id` do DOM (121/121) | 121/121 |
+ * | `19` | o rótulo de novo — igual ao `1` em 121/121 | 121/121 |
+ *
+ * ⚠️ O `POMNI` **não publica `lsevents`** (null em 121/121): quem publica o `Select` é o `POMN`
+ * pai. Por isso o acionamento aqui é CLIQUE — a via HTTP pura (`its.mjs`) ainda não tem o comando
+ * do menu derivado.
+ */
+export function interpretarItemDeMenu(bruto) {
+  const l = bruto?.lsdata ?? {};
+  const sid = sidDoLsdata(l);
+  return {
+    id: bruto?.id ?? null,
+    sid: sid?.SID ?? null,
+    rotulo: typeof l['1'] === 'string' ? l['1'] : null,
+    atalho: typeof l['15'] === 'string' ? l['15'] : null,
+    submenu: l['6'] === true,
+    inicioDeGrupo: l['4'] === true,
+    // ⚠️ habilitação sai do ARIA, não do `lsdata` — a mesma regra do checkbox (§ "`lsdata` é o
+    // estado que o SERVIDOR mandou"). `null` é "a tela não disse", NÃO é "habilitado".
+    habilitado: bruto?.desabilitado == null ? null : bruto.desabilitado !== 'true',
+    nivel: String(bruto?.id ?? '').split('/menu[').length - 2,
+  };
+}
+
+/** PURO: `'Sistema > Serviços > Reporting'` → `['Sistema', 'Serviços', 'Reporting']`. */
+export function partirCaminhoDeMenu(caminho) {
+  const partes = (Array.isArray(caminho) ? caminho : String(caminho ?? '').split('>'))
+    .map((x) => String(x).trim()).filter(Boolean);
+  if (!partes.length) throw new Error('menu: informe o caminho (ex. "Sistema > Serviços > Reporting")');
+  return partes;
+}
+
+/** PURO: qual dos `irmaos` é o `rotulo` — exato primeiro, prefixo depois, sem acento nem caixa. */
+export function acharItemDeMenu(irmaos, rotulo) {
+  const norma = (x) => String(x ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  const alvo = norma(rotulo);
+  return (irmaos ?? []).find((i) => norma(i.rotulo) === alvo)
+    ?? (irmaos ?? []).find((i) => norma(i.rotulo).startsWith(alvo))
+    ?? null;
+}
+
+/** O despejo dos `POMNI` VISÍVEIS — a filtragem por barra é do `itensDeMenu`. */
+export const JS_ITENS_DE_MENU = `[...document.querySelectorAll('[ct="POMNI"]')]
+  .filter((el) => el.offsetWidth || el.offsetHeight)
+  .map((el) => { let d = null; try { d = JSON.parse(el.getAttribute('lsdata')); } catch { d = null; }
+    return { id: el.id || null, lsdata: d, desabilitado: el.getAttribute('aria-disabled') }; })`;
+
+/** Os itens de menu da BARRA visíveis agora, já interpretados. */
+export async function itensDeMenu(sessao) {
+  const brutos = await avaliar(sessao, JS_ITENS_DE_MENU);
+  return (brutos ?? []).filter((b) => daBarraDeMenu(b.id)).map(interpretarItemDeMenu);
+}
+
+/** Fecha o menu da barra usando o TOGGLE. ⚠️ Nunca com `Escape` — ele cancela a TRANSAÇÃO. */
+export async function fecharMenu(sessao, { tentativas = 3 } = {}) {
+  for (let t = 0; t < tentativas; t += 1) {
+    if (!(await itensDeMenu(sessao)).length) return true;
+    await clicar(sessao, BOTAO_DE_MENU);
+    const ate = Date.now() + 4000;
+    while (Date.now() < ate && (await itensDeMenu(sessao)).length) await espera(300);
+  }
+  return !(await itensDeMenu(sessao)).length;
+}
+
+/**
+ * Abre o menu da barra e devolve os itens de nível 0. Fecha antes (o botão é toggle) e espera o
+ * item APARECER — a abertura não é síncrona, e um clique não pega sempre de primeira.
+ */
+export async function abrirMenu(sessao, { tetoMs = 6000, tentativas = 4 } = {}) {
+  await fecharMenu(sessao);
+  for (let t = 0; t < tentativas; t += 1) {
+    await clicar(sessao, BOTAO_DE_MENU);
+    const ate = Date.now() + tetoMs;
+    while (Date.now() < ate) {
+      const itens = await itensDeMenu(sessao);
+      if (itens.length) return itens;
+      await espera(300);
+    }
+  }
+  throw new Error(`webgui: abrirMenu — o menu não abriu (${BOTAO_DE_MENU}, ${tentativas} tentativas)`);
+}
+
+/**
+ * Desce o menu por CAMINHO e ACIONA a folha — a via que dispensa saber o tcode.
+ *
+ * ```js
+ * await navegarMenu(s, 'Sistema > Serviços > Reporting');   // da SE38 chega na SA38
+ * ```
+ *
+ * ⚠️ O percurso é CASCATA, e tem de ser: abrir um irmão FECHA o submenu anterior, então não dá
+ * para varrer o nível inteiro e só depois descer. A cada passo os candidatos são só os filhos
+ * DIRETOS do nó atual (`filhoDiretoDeMenu`) — nunca "todo item com este rótulo".
+ *
+ * Devolve `{ caminho, passos, folha, mudou }`. `mudou: false` é INFORMAÇÃO, a mesma de `acionar`:
+ * a folha foi clicada e a tela ficou igual.
+ *
+ * Com `{ acionar: false }` para no último nó e devolve os `filhos` dele — é assim que se DESCOBRE
+ * o menu de uma tela sem acionar nada.
+ */
+export async function navegarMenu(sessao, caminho, { acionar: aciona = true, tetoMs = 8000, tetoAcaoMs = 40000 } = {}) {
+  const partes = partirCaminhoDeMenu(caminho);
+  await abrirMenu(sessao);
+  let prefixo = 'wnd[0]/mbar';
+  const passos = [];
+  for (let n = 0; n < partes.length; n += 1) {
+    const rotulo = partes[n];
+    const irmaos = (await itensDeMenu(sessao)).filter((i) => filhoDiretoDeMenu(prefixo, i.id));
+    const alvo = acharItemDeMenu(irmaos, rotulo);
+    if (!alvo) {
+      throw new Error(`webgui: navegarMenu — "${rotulo}" não está sob ${prefixo}. Tenho: ${irmaos.map((i) => i.rotulo).join(' | ')}`);
+    }
+    const ultimo = n === partes.length - 1;
+    if (ultimo && !alvo.submenu && aciona) {
+      const antes = await carimbo(sessao);
+      await clicar(sessao, alvo.id);
+      const mudou = await esperarMudanca(sessao, antes, { tetoMs: tetoAcaoMs });
+      passos.push({ ...alvo, acionado: true });
+      return { caminho: partes, passos, folha: alvo, mudou };
+    }
+    await clicar(sessao, alvo.id);
+    // ⚠️ a abertura do submenu NÃO é síncrona: esperar o FILHO, nunca um tempo fixo. Com espera
+    // fixa de 900 ms, "Serviços" devolvia 0 filhos ora sim ora não.
+    const ate = Date.now() + tetoMs;
+    let filhos = [];
+    do {
+      await espera(300);
+      filhos = (await itensDeMenu(sessao)).filter((i) => filhoDiretoDeMenu(alvo.id, i.id));
+    } while (Date.now() < ate && !filhos.length);
+    passos.push({ ...alvo, filhos });
+    prefixo = alvo.id;
+    if (ultimo) return { caminho: partes, passos, folha: null, filhos, mudou: false };
+  }
+  return { caminho: partes, passos, folha: null, mudou: false };
+}
