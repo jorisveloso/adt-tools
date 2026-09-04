@@ -75,9 +75,67 @@ try {
 ### Entrar na tela já preenchida
 
 `abrirTransacao(s, tcode, { parametros, okcode })` monta a expressão `~transaction` do ITS:
-`*TCODE campo=valor;campo=valor;DYNP_OKCODE=ONLI`. É o que pula a tela de entrada e a de seleção
+`*TCODE campo=valor;campo=valor;DYNP_OKCODE=FCODE`. É o que pula a tela de entrada e a de seleção
 de uma vez — medido: `*YJBV4029823 P_DOCNUM=71;DYNP_OKCODE=ONLI` abriu a J1B1N **com os dois itens
-já montados**. Sem parâmetros, é a transação crua (e o `*` não entra).
+já montados** (SXD 816/100, 2026-09-03). Sem parâmetros, é a transação crua (e o `*` não entra).
+
+**Duas regras, as duas medidas no s4h 758/250 em 2026-09-04, e as duas falham CALADAS quando erradas.**
+
+**1. O nome do campo é o SID da dynpro — não o que a documentação de shortcut sugere.**
+`*SE38 RS38M-PROGRAMMA=RSPARAM` — o nome clássico, **com** `A` — **não preenche nada**: o ITS ignora o par
+em silêncio, sem erro, sem aviso. O campo real desta tela é `RS38M-PROGRAMM`, **sem o `A`** — e com
+ele o campo entra. Pior: com `DYNP_OKCODE` junto, o fcode **dispara mesmo assim**, com a dynpro
+vazia, e o que volta é o erro do programa (`"O programa  não existe"`, com o nome em branco no meio)
+— uma mensagem que parece do sistema e é, na verdade, o parâmetro errado.
+
+Quem sabe o nome certo é a **própria tela**: o `lsdata` de cada campo carrega o SID do SAP GUI.
+
+```js
+await avaliar(s, `[...document.querySelectorAll('input')]
+  .filter(e => e.offsetWidth || e.offsetHeight)
+  .map(e => ({ title: e.title, sid: (JSON.parse(e.getAttribute('lsdata') || '{}')['21'] || {}).SID }))`);
+// SE38 -> [{ title: 'Nome do programa ABAP', sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM' }]
+// SE16 -> [{ title: 'Nome da tabela',        sid: 'wnd[0]/usr/ctxtDATABROWSE-TABLENAME' }]
+```
+
+(Este snippet foi **rodado como está** no s4h em 2026-09-04 — é dele que saíram as duas linhas acima.)
+O nome do parâmetro é o SID sem `wnd[0]/usr/` e **sem o prefixo de tipo do controle** (`ctxt` aqui;
+`txt`, `cmb`, `chk`… nos outros) — o mesmo prefixo que o GUI Scripting usa no id.
+Segunda fonte, independente e de graça: a `TSTCP` do próprio sistema — a transação standard
+`SA38PARAMETER` grava `/*SA38 RS38M-PROGRAMM=PFCG_TIME_DEPENDENCY;`, com o mesmo nome sem `A`.
+
+**2. `DYNP_OKCODE` é o FCODE daquela dynpro, não um "executar" genérico.** Fcode errado não é
+ignorado: ele **substitui** o Enter implícito e a tela **fica onde está**, preenchida e parada.
+
+| expressão | onde chegou |
+|---|---|
+| `*SE16 DATABROWSE-TABLENAME=T000` | **tela de seleção da T000** (34 campos) — sem okcode, o default avança |
+| `*SE16 DATABROWSE-TABLENAME=T000;DYNP_OKCODE=ONLI` | 1ª tela, campo preenchido — `ONLI` não é fcode desta dynpro |
+| `*SE16 DATABROWSE-TABLENAME=T000;DYNP_OKCODE=XXXX` | idem: fcode inexistente **segura** a tela |
+| `*SE38 RS38M-PROGRAMMA=RSPARAM;DYNP_OKCODE=SHOW` | 1ª tela **vazia** + "O programa não existe" — nome do campo errado |
+| `*SE38 RS38M-PROGRAMM=RSPARAM` | 1ª tela, campo preenchido (na SE38 o Enter só valida) |
+| `*SE38 RS38M-PROGRAMM=RSPARAM;DYNP_OKCODE=STRT` | **executou** — "Exibir parâmetro de perfil SAP" |
+| `*SA38 RS38M-PROGRAMM=RSPARAM;DYNP_OKCODE=ONLI` | 1ª tela, campo preenchido — `ONLI` é da tela de SELEÇÃO, não da 1ª |
+| `*SA38 RS38M-PROGRAMM=RSPARAM;DYNP_OKCODE=STRT` | **executou** — mesma tela de seleção do report |
+
+Daí o `ONLI` da J1B1N ter funcionado no SXD e não funcionar aqui: lá a transação é **de report**, e
+`ONLI` é o fcode da tela de **seleção**, que é a primeira que aparece. Regra prática: **transação de
+report → `ONLI`; primeira tela da SE38/SA38 → `STRT`; SE16 → nenhum** (o default já avança).
+
+### A transação de PARÂMETRO é a via equivalente — e obedece às mesmas regras
+
+O `TSTCP` (`/*<chamada> CAMPO=valor;`) é a forma persistida da mesma coisa, e o WebGUI a executa
+igual. Medido no s4h 758/250 em 2026-09-04, com transações **standard** (nada foi criado):
+
+| transação | TSTCP | onde chegou pelo WebGUI |
+|---|---|---|
+| `SE16T000` | `/*SE16 DATABROWSE-TABLENAME=T000;` | tela de seleção da T000 — **igual à URL** |
+| `SA38PARAMETER` | `/*SA38 RS38M-PROGRAMM=PFCG_TIME_DEPENDENCY;` | 1ª tela preenchida — o TSTCP **não traz** `DYNP_OKCODE` |
+
+Ou seja: a URL e o TSTCP são a **mesma via**, com a mesma regra de nome de campo e a mesma
+dependência do fcode. A URL ganha por não precisar de objeto no sistema; o TSTCP ganha quando a
+tela tem de estar disponível para uma pessoa, não para o canal — e aí `deployTransaction`
+(`type: 'parameter'`, [receita-tran.md](receita-tran.md)) grava `params` e `skip`.
 
 ### Apontar um elemento
 
