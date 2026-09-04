@@ -157,8 +157,15 @@ com Basic. Ver `sessaoNasceuMorta` em `sap-connection.mjs`.
 **O logoff é preventivo, não curativo.** No estado doente o próprio logoff responde 400 e a sessão
 **fica** na `TH_USER_LIST` (24/50 antes, 24/50 depois) — então cada retry soma mais uma sessão que
 não sai, e insistir aprofunda o buraco. Fechar as 150 depois de estourar **não** devolveu o canal:
-o que devolve é o tempo (`http/security_session_timeout`, 1800 s no s4h). Por isso o `deployAndRun`
-e qualquer laço de retry precisam parar quando o logon vier sem `SAP_SESSIONID`.
+os logoffs saíram 11 s após a quebra e o stateful só voltou **26 min depois** (19:52:30 quebrou,
+19:52:41 as 150 fecharam, 20:18:07 o cookie voltou com `SAP_SESSIONID`). Quem devolve é o tempo
+(`http/security_session_timeout`, 1800 s no s4h). Por isso o `deployAndRun` e qualquer laço de
+retry precisam parar quando o logon vier sem `SAP_SESSIONID`.
+
+⚠ **A contagem de sessões não é o medidor de "já passou".** O canal voltou com **30** sessões minhas
+na `TH_USER_LIST` — mais do que durante os 15 min em que esteve quebrado. A lista explica *como* se
+chega lá (1 GET = 1 sessão); o que diz se já passou é o cookie (`sessaoNasceuMorta`). Que recurso
+esgota de fato, e se o teto é por usuário ou global, é a fila `adt-client`, item 53.
 
 **Como contar sessões quando o ADT é o suspeito:** por SOAP RFC, que não usa cookie —
 `callFunction(cfg, 'TH_USER_LIST', { USRLIST: [] })` e `xmlItems(xml, 'USRLIST')` devolvem a SM04
