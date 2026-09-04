@@ -9,6 +9,7 @@ import {
   decodificarEntidades, cabecalhoDoShell, paramDe, passosDoMultipart, sidsDaResposta, lerResposta,
   sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla,
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, telaDoDelta, lerTela, parametrosDaTela,
+  batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
 } from './its.mjs';
 
 const SHELL = `<html><head><script>var moin = "FF671392BF705DEF";</script></head><body>
@@ -334,4 +335,81 @@ test('its: lerTela lê o ÚLTIMO delta da sessão (multipart não o substitui) e
   expect(parametrosDaTela(sessao)).toEqual([{ id: 'M0:46:::2:14', title: 'Nome do programa ABAP', sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', campo: 'RS38M-PROGRAMM', rotulo: 'Programa' }]);
   // o okcd não é parâmetro de dynpro — fica de fora
   expect(parametrosDaTela(sessao).some((p) => p.sid.includes('okcd'))).toBe(false);
+});
+
+// ---- o ALV: o fragmento de linhas e a matriz (item 25) ----
+// Trecho COPIADO da resposta do s4h 758/250 em 04/09/2026 ao POST
+// `action/710/wnd[0]/usr/cntlGRID1/shellcont/shell` com `position=0&fragments=0,2;` na lista do
+// RSPARAM (sap-accelerate/work/POC_webgui_grid/medicoes/raw/g-amostra-3-linhas.xml). Estão aqui a
+// linha 1 inteira (5 colunas), a coluna de seleção que a precede, o `<span>` wrapper `#if-r` (que
+// não tem `lsdata` e não pode virar célula) e duas colunas da linha 2. Os `lsevents` de cada
+// célula, idênticos em todas, foram cortados; o `lsdata` está como veio.
+const FRAGMENTO = `<?xml version="1.0" encoding="utf-8" ?>
+<updates><delta-update><control-update id="C102" updateMethod="PARTIAL"><content><![CDATA[<table role="presentation" iFirstVisibleContentRowIndex="0" iContentRowCount="1617" iVisibleContentRowCount="25"><tbody iRowIndexOffset="0" iRowsFragmentLength="26" hpm="none">
+<tr iIdx="0" rr="1" id="C102-mrss-cont-none-Row-0" sst="0" rt="1">
+<td id="grid#C102#1,0" subct="SC" lsdata='{"x":0,"7":{"SID":"wnd[0]/usr/cntlGRID1/shellcont/shell/rowcol/row[1]/","Type":"SAPTABLECSSELECTIONCELL"}}' role="presentation" lsMatrixRowIndex="1" lsMatrixColIndex="0"></td>
+<td id="grid#C102#1,1" subct="STC" lsdata='{"x":0,"1":true,"7":{"SID":"wnd[0]/usr/cntlGRID1/shellcont/shell/rowcol/row[1]/cell[0]","Type":"GuiGridViewCell"}}' role="gridcell" lsMatrixRowIndex="1" lsMatrixColIndex="1"><span id="grid#C102#1,1#if-r" class="lsField lsField--table"><span role="textbox" readonly id="grid#C102#1,1#if" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","3":"x_TALB","5":"Autostart","7":true,"14":"SERVER","17":false,"20":false,"21":{"value":"Autostart","maxlen":10,"focusable":"X"},"25":"FILL_FIXED_LAYOUT"}' name="InputField" maxlength="10" class="lsField__input">Autostart</span></span></td>
+<td id="grid#C102#1,2" subct="STC" role="gridcell" lsMatrixRowIndex="1" lsMatrixColIndex="2"><span role="textbox" readonly id="grid#C102#1,2#if" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","3":"x_TALB","7":true,"14":"SERVER","17":false,"20":false,"21":{"value":"","maxlen":10,"focusable":"X"},"25":"FILL_FIXED_LAYOUT"}' name="InputField" maxlength="10" class="lsField__input"></span></td>
+<td id="grid#C102#1,3" subct="STC" role="gridcell" lsMatrixRowIndex="1" lsMatrixColIndex="3"><span role="textbox" readonly id="grid#C102#1,3#if" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","5":"0","21":{"value":"0","maxlen":10,"focusable":"X"}}' name="InputField" maxlength="10" class="lsField__input">0</span></td>
+<td id="grid#C102#1,4" subct="STC" role="gridcell" lsMatrixRowIndex="1" lsMatrixColIndex="4"><span role="textbox" readonly id="grid#C102#1,4#if" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","5":"0","21":{"value":"0","maxlen":10,"focusable":"X"}}' name="InputField" maxlength="10" class="lsField__input">0</span></td>
+<td id="grid#C102#1,5" subct="STC" role="gridcell" lsMatrixRowIndex="1" lsMatrixColIndex="5"><span role="textbox" readonly id="grid#C102#1,5#if" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","5":"Automatic instance start on start service startup","21":{"value":"Automatic instance start on start service startup","maxlen":80,"focusable":"X"}}' name="InputField" maxlength="80" class="lsField__input">Automatic instance start on start service startup</span></td></tr>
+<tr iIdx="1" rr="2" id="C102-mrss-cont-none-Row-1" sst="0" rt="1">
+<td id="grid#C102#2,1" subct="STC" role="gridcell" lsMatrixRowIndex="2" lsMatrixColIndex="1"><span role="textbox" readonly id="grid#C102#2,1#if" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","5":"CPU_CORES","21":{"value":"CPU_CORES","maxlen":10,"focusable":"X"}}' name="InputField" maxlength="10" class="lsField__input">CPU_CORES</span></td>
+<td id="grid#C102#2,5" subct="STC" role="gridcell" lsMatrixRowIndex="2" lsMatrixColIndex="5"><span role="textbox" readonly id="grid#C102#2,5#if" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","5":"N&#xba; de cores","21":{"value":"N&#xba; de cores","maxlen":80,"focusable":"X"}}' name="InputField" maxlength="80" class="lsField__input">N&#xba; de cores</span></td></tr></tbody></table>]]></content></control-update></delta-update></updates>`;
+
+const COLUNAS = ['NAME', 'USER_VALUE', 'DEFAULT_VALUE', 'DEFAULT_USUBS_VALUE', 'DESCR'];
+
+test('its: batchFragmento é o RequestData do renderer — 710 + state/ur, com position obrigatório', () => {
+  const SID = 'wnd[0]/usr/cntlGRID1/shellcont/shell';
+  expect(batchFragmento(SID, 0, 29)).toEqual([
+    { post: `action/710/${SID}`, content: 'position=0&fragments=0,29;' },
+    { get: `state/ur/${SID}` },
+  ]);
+  // a faixa é 0-based aqui e volta 1-based nas células: pedir 0,29 traz as linhas 1..30
+  expect(batchFragmento(SID, 1580, 1616)[0].content).toBe('position=1580&fragments=1580,1616;');
+});
+
+test('its: celulasDoGrid indexa pela linha ABSOLUTA e deixa de fora a coluna de seleção e o wrapper', () => {
+  const c = celulasDoGrid(FRAGMENTO, 'C102');
+  expect([...c.keys()]).toEqual([1, 2]);
+  expect(c.get(1)).toEqual({ 1: 'Autostart', 2: '', 3: '0', 4: '0', 5: 'Automatic instance start on start service startup' });
+  // a coluna 0 é a de seleção da linha (`SAPTABLECSSELECTIONCELL`): não é dado
+  expect(c.get(1)[0]).toBeUndefined();
+  // o `#if-r` é só o wrapper do campo — não tem lsdata e não pode virar célula
+  expect(Object.keys(c.get(2))).toEqual(['1', '5']);
+  // entidade do atributo decodificada, como no resto da via
+  expect(c.get(2)[5]).toBe('Nº de cores');
+  // grid que não está na resposta devolve matriz vazia — não estoura
+  expect(celulasDoGrid(FRAGMENTO, 'C999').size).toBe(0);
+  expect(celulasDoGrid(null, 'C102').size).toBe(0);
+});
+
+test('its: linhasDoGrid casa as células com os ColumnIDs; coluna sem célula sai vazia', () => {
+  const linhas = linhasDoGrid(celulasDoGrid(FRAGMENTO, 'C102'), COLUNAS);
+  expect(linhas[0]).toEqual({ _linha: 1, NAME: 'Autostart', USER_VALUE: '', DEFAULT_VALUE: '0',
+    DEFAULT_USUBS_VALUE: '0', DESCR: 'Automatic instance start on start service startup' });
+  expect(linhas[1]).toEqual({ _linha: 2, NAME: 'CPU_CORES', USER_VALUE: '', DEFAULT_VALUE: '',
+    DEFAULT_USUBS_VALUE: '', DESCR: 'Nº de cores' });
+  // sem ColumnIDs sobra o índice absoluto — a linha continua endereçável
+  expect(linhasDoGrid(celulasDoGrid(FRAGMENTO, 'C102'), [])).toEqual([{ _linha: 1 }, { _linha: 2 }]);
+});
+
+test('its: faltaNaFaixa aponta a próxima linha a pedir, e null quando a faixa está inteira', () => {
+  const c = celulasDoGrid(FRAGMENTO, 'C102');
+  expect(faltaNaFaixa(c, 1, 2)).toBe(null);
+  expect(faltaNaFaixa(c, 1, 5)).toBe(3);
+  expect(faltaNaFaixa(c, 10, 12)).toBe(10);
+  expect(faltaNaFaixa(new Map(), 1, 1)).toBe(1);
+});
+
+test('its: delta PARCIAL (o fragmento do ALV) não é a tela — lerResposta o marca', () => {
+  // o corpo do `action/710` não traz `sap.its.aParams`: sem a marca, `postar` o tomaria pela tela e
+  // zeraria `sids`/`titulo`/`grids` para o resto da sessão (medido no s4h em 04/09/2026)
+  const r = lerResposta({ status: 200, tipo: 'text/xml', corpo: FRAGMENTO });
+  expect(r.forma).toBe('delta');
+  expect(r.parcial).toBe(true);
+  expect(r.titulo).toBe(null);
+  // a tela inteira traz os aParams — e não é parcial
+  expect(lerResposta({ status: 200, tipo: 'text/xml', corpo: DELTA }).parcial).toBe(false);
+  expect(lerResposta({ status: 400, tipo: 'text/html', corpo: 'Session Timed Out' }).parcial).toBe(false);
 });

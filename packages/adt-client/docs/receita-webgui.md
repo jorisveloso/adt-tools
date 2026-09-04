@@ -29,7 +29,7 @@ usa** — se o ADT responde, o caminho de rede para este canal já está aberto.
 | rodar ABAP arbitrário | classrun |
 | dirigir dynpro clássica sem tela, em lote | BDC por classrun |
 | **ver e dirigir a dynpro DE VERDADE, sem SAP GUI e sem ninguém na tela** | **WebGUI** |
-| popup modal, ALV Grid/table control **como objeto**, e a **saída** de uma transação | GUI Scripting |
+| popup modal, ALV Grid **como objeto** (ordenar, filtrar, selecionar), e a **saída** de uma transação | GUI Scripting |
 
 Por que o WebGUI fica **acima do BDC**: o BDC é cego — preenche campo e devolve a BDCMSGCOLL, não
 vê o que a tela mostra. Por que fica **antes do GUI Scripting**: custa menos (nada instalado, nada
@@ -551,7 +551,7 @@ t.campos      // [{ id, sid, campo, rotulo, dica, valor, maxlen, editavel, visiv
 t.radios      // [{ campo, grupo: '%RBG0257', rotulo, selecionado }]
 t.checkboxes  // [{ campo, rotulo, marcado }]
 t.botoes      // [{ okcode: 'btn[8]', rotulo: 'Executar', tecla: 'F8', accesskey: 'E' }]
-t.grids       // [{ sid, colunas: ['NAME','USER_VALUE',…], linhas: 1617, editavel: false }]
+t.grids       // [{ sid, colunas: ['NAME','USER_VALUE',…], linhas: 1617, editavel: false }] — as LINHAS saem do `lerGrid` (§ "O ALV")
 t.okcode      // { sid: 'wnd[0]/tbar[0]/okcd' } — sempre invisível, sempre lá
 ```
 
@@ -919,9 +919,10 @@ item 8 mediu para o mesmo `/n` numa sessão nascida no menu. A causa não foi is
 
 * ~~Porte para a lib~~ **feito** (item 20): `its.mjs`. ~~`lerTela` completo~~ **feito** (item 21):
   `lerTela`/`telaDoDelta` — o mesmo modelo do navegador, lido do XML (§ "Ler a tela do
-  `delta-update`"). O que fica em aberto na leitura: **checkbox** por esta via não foi cruzado
-  (nenhum bruto HTTP tem um — o `chkALSOUSUB` só existe no despejo DOM), e o **grid** sai só como
-  cabeçalho (`ColumnIDs`, `totalRows`) — as linhas do ALV não estão no `lsdata`.
+  `delta-update`"). ~~O grid sai só como cabeçalho~~ **feito** (item 25): `lerGrid` traz as LINHAS
+  do ALV pelo `RequestData` (§ "O ALV: ler as LINHAS do grid"). O que fica em aberto na leitura:
+  **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB` só existe
+  no despejo DOM), e no grid faltam **célula editável**, **ordenar/filtrar** e **selecionar linha**.
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -929,5 +930,79 @@ item 8 mediu para o mesmo `/n` numa sessão nascida no menu. A causa não foi is
   Shift+F3 — `vkey(s, n)` continua no módulo para MEDIR, não para afirmar.
 * Popup (`wnd[1]`) — `/o` e `/nend` abrem um, e ele **vem no mesmo `delta-update`**
   (`lerResposta` sinaliza `popup: true`; `lerTela` devolve `popup` com textos e botões por SID —
-  e avisa que a `wnd[0]/usr` foi esvaziada); falta medir como responder (item 23). ALV/table
-  control e upload/download por esta via também não.
+  e avisa que a `wnd[0]/usr` foi esvaziada); falta medir como responder (item 23). Table control
+  (o steploop, que não é o ALV) e upload/download por esta via também não.
+
+## O ALV: ler as LINHAS do grid, sem varrer célula
+
+**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 25; evidência em
+`sap-accelerate/work/POC_webgui_grid/medicoes/item25-grid.md`). O `lsdata` do `STCS` já dava, de
+graça, o CABEÇALHO do ALV — `ColumnIDs` e `totalRows` (§ "O vocabulário `lsdata`"). As LINHAS não
+estão lá, e **não se leem varrendo a tela**: pede-se ao servidor, com o mesmo `RequestData` que o
+Unified Renderer posta sozinho quando a rolagem passa do fim do bloco carregado.
+
+```js
+import { abrir, acionar, lerGrid, fechar } from './its.mjs';
+
+const s = await abrir(cfg, { transacao: 'SA38', parametros: { 'RS38M-PROGRAMM': 'RSPARAM' }, okcode: 'STRT' });
+await acionar(s, 'btn[8]');                       // executa: a lista ALV
+
+const g = await lerGrid(s);                       // a tabela INTEIRA
+// { id: 'C102', sid: 'wnd[0]/usr/cntlGRID1/shellcont/shell',
+//   colunas: ['NAME','USER_VALUE','DEFAULT_VALUE','DEFAULT_USUBS_VALUE','DESCR'],
+//   total: 1617, de: 1, ate: 1617, linhas: [ { _linha: 1, NAME: 'Autostart', … }, … ],
+//   pedidos: 4, bytes: 12429053, ms: 2310, truncado: false }
+
+await lerGrid(s, null, { de: 900, ate: 910 });    // só uma faixa (1-based, inclusiva)
+await lerGrid(s, { id: 'C102' }, { lote: 1000 }); // a tela com mais de um grid: por id, sid ou índice
+await fechar(s);
+```
+
+O que vai no fio é sempre o mesmo par:
+
+```
+POST …/batch/json   [{ "post": "action/710/<SID do grid>",
+                       "content": "position=<n>&fragments=<de>,<ate>;" },
+                     { "get": "state/ur/<SID do grid>" }]
+```
+
+### Cinco regras medidas
+
+1. **`position` é obrigatório.** Sem ele (`fragments=900,929;` sozinho) a resposta vem
+   `multipart` de 185 B e **nenhuma linha**. O `action/61` (VerticalScroll) que o renderer manda
+   junto, esse é dispensável: a mesma faixa volta igual sem ele.
+2. **`fragments` é 0-based; o que volta é 1-based.** Pedir `0,29` devolve as linhas 1..30 — o
+   índice de cada célula é o `lsMatrixRowIndex` do `<td>`, ABSOLUTO no ALV inteiro. `lerGrid`
+   recebe e devolve 1-based; o 0-based fica dentro do `batchFragmento`.
+3. **O `;` não entrega faixas disjuntas.** `fragments=10,19;100,109;` devolveu 26 linhas
+   CONTÍGUAS (11..36) e ignorou a segunda faixa. Uma faixa por pedido.
+4. **O servidor devolve no MÍNIMO uma janela.** Pedir 3 linhas trouxe 26 e 202 KB. Por isso o
+   avanço da paginação é pelo que FALTA (`faltaNaFaixa`), nunca por aritmética sobre o pedido.
+   Faixa além do total é segura: `0,5000` num grid de 1617 devolveu 1617, sem erro.
+5. **O custo é linear e caro: ~7,7 KB por linha** de 5 colunas (a resposta carrega `lsdata` e
+   `lsevents` de cada célula). 1617 linhas = 12,4 MB em 1,7 s de rede e 42 ms de parse. O `lote`
+   (default 500, ~3,8 MB por pedido) é o que segura a memória: 50→450 linhas/s, 500→661, 1617→939.
+   Este canal lê lista de tela; **não é via de extração em massa** — 100 mil linhas seriam ~770 MB.
+
+### ⚠ Delta PARCIAL não é a tela
+
+A resposta do fragmento é um `<delta-update>` com `<control-update updateMethod="PARTIAL">` e **sem
+`sap.its.aParams`** — logo sem `cuatitle`, `ScreenId`, `dynpro`. Tomá-lo pela tela zera `sids`,
+`titulo` e `grids` da sessão inteira, e o `lerGrid` seguinte estoura com *"a tela não tem esse grid
+(tem 0: nenhum)"*. `lerResposta` marca isso em `parcial`, e o `postar` guarda o corpo em
+`sessao.parcial` sem mexer no `delta` — vale para qualquer delta parcial, não só o do ALV.
+
+### ⚠ Pelo NAVEGADOR o gesto é a roda do mouse, não o clique
+
+Medido na mesma lista: o DOM traz **166 linhas** (não as 27 da janela) — só 27 `<tr>` têm altura,
+as outras estão lá com o texto e altura zero (`scrolling: "client"`, `clientCellThreshold: 10000`).
+Rolar dentro desse bloco não toca a rede. E o que move o grid é a **roda do mouse**
+(`Input.dispatchMouseEvent` `type: 'mouseWheel'`): clique sintético na célula e `PageDown` não
+mexeram na janela nem geraram uma requisição. Ler célula por DOM, portanto, só alcança o bloco —
+a faixa arbitrária é a via HTTP acima.
+
+### Exportar
+
+Não é preciso: `fragments=0,<total-1>` **é** a exportação — a tabela inteira, estruturada, num
+POST. O grid publica `CopyToClipboardRequest` no `lsevents` e o ALV tem *Exportar → arquivo local*,
+mas os dois desembocam numa via de SAÍDA que este canal não tem, e nenhum foi medido.

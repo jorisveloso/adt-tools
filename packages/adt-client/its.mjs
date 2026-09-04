@@ -217,6 +217,11 @@ export function lerResposta({ status = null, tipo = '', corpo = '' } = {}) {
   return {
     forma, pegou: forma === 'delta' && erros.length === 0, status, tipo: t.split(';')[0] || null, bytes: s.length,
     passos, erros,
+    // ⚠️ delta PARCIAL: só um controle mudou, e o corpo NÃO traz `sap.its.aParams` (nem `cuatitle`,
+    // `ScreenId`, `dynpro`). É o que a resposta do `batchFragmento` do ALV é. Medido no s4h em
+    // 04/09/2026: tomá-lo pela tela zera `sids`, `titulo` e `grids` para o resto da sessão —
+    // o `postar` guarda esse corpo em `sessao.parcial` e não mexe na tela.
+    parcial: forma === 'delta' && !/sap\.its\.aParams/.test(s),
     titulo: paramDe(s, 'cuatitle'), screenId: paramDe(s, 'ScreenId'), dynpro: paramDe(s, 'dynpro'),
     tcode: paramDe(s, 't-code'), dnum: paramDe(s, 'd-num'), moin: paramDe(s, 'moin'),
     popup: /"SID":"wnd\[[1-9]\d*\]"/.test(s),   // wnd[1] no mesmo delta-update (medido: /o, /nend)
@@ -464,6 +469,75 @@ export function telaDoDelta(corpo) {
   };
 }
 
+// ---------- o ALV (grid) ----------
+
+/**
+ * PURO: o batch que pede uma FAIXA de linhas de um grid ALV — o `RequestData` que o Unified
+ * Renderer posta sozinho quando a rolagem passa do fim do bloco carregado.
+ *
+ * Medido no s4h 758/250 em 04/09/2026 (RSPARAM, 1617 linhas), capturando a rede do navegador ao
+ * rolar com a roda do mouse. O batch que o renderer manda é:
+ *   `action/53/<SID>`  `row_index=1&column_index=1`          (célula corrente — dispensável)
+ *   `action/61/<SID>`  `position=<n>` `logic:'ignore'`       (VerticalScroll — dispensável)
+ *   `action/710/<SID>` `position=<n>&fragments=<de>,<ate>;`  (RequestData — É ELE)
+ *   `get state/ur/<SID>`
+ * Medido que só o `710` + o `state/ur` bastam (sem o `61` a mesma faixa volta igual), e que
+ * `position` é OBRIGATÓRIO: sem ele a resposta vem `multipart` de 185 B e nenhuma linha.
+ *
+ * ⚠️ `de`/`ate` aqui são 0-BASED (é o que o protocolo usa); o `lsMatrixRowIndex` que volta nas
+ * células é 1-BASED. Pedir `0,29` devolve as linhas 1..30.
+ * ⚠️ O `;` NÃO entrega faixas disjuntas: medido que `fragments=10,19;100,109;` devolveu 26 linhas
+ * CONTÍGUAS (11..36) e ignorou a segunda faixa. Uma faixa por pedido.
+ * ⚠️ Faixa além do total é segura: `0,5000` num grid de 1617 devolveu as 1617 linhas, sem erro.
+ */
+export const batchFragmento = (sid, de, ate) => [
+  { post: `action/710/${sid}`, content: `position=${de}&fragments=${de},${ate};` },
+  { get: `state/ur/${sid}` },
+];
+
+/**
+ * PURO: as CÉLULAS de um grid no XML de `delta-update` — `Map<linha, { coluna: valor }>`, ambas
+ * 1-based (a coluna 0 é a de seleção da linha, não é dado).
+ *
+ * Cada célula de dado é um `<span id="grid#<CID>#<linha>,<coluna>#if" ct="CBS" lsdata='…'>`, e o
+ * valor mora no objeto do `lsdata` que tem `value` — o mesmo índice móvel de sempre, daí casar por
+ * CONTEÚDO e não por posição. A linha do id é o `lsMatrixRowIndex` do `<td>` pai: o índice
+ * ABSOLUTO no ALV inteiro, não a posição dentro do fragmento.
+ */
+export function celulasDoGrid(corpo, cid) {
+  const linhas = new Map();
+  const re = new RegExp(`id="grid#${cid}#([0-9]+),([0-9]+)#if"[^>]*lsdata='([^']*)'`, 'g');
+  let m;
+  while ((m = re.exec(String(corpo ?? '')))) {
+    const linha = Number(m[1]);
+    const coluna = Number(m[2]);
+    if (coluna < 1) continue;
+    const d = lsdataDe(m[3]) ?? {};
+    const cel = Object.values(d).find((x) => x && typeof x === 'object' && 'value' in x);
+    if (!linhas.has(linha)) linhas.set(linha, {});
+    linhas.get(linha)[coluna] = cel ? String(cel.value ?? '') : '';
+  }
+  return linhas;
+}
+
+/**
+ * PURO: as células viram LINHAS, com os `ColumnIDs` do `lsdata` do grid como chave e `_linha` com o
+ * índice absoluto. Coluna sem célula na resposta sai `''`.
+ */
+export function linhasDoGrid(celulas, colunas = []) {
+  return [...celulas.entries()].sort((a, b) => a[0] - b[0]).map(([n, cels]) => {
+    const linha = { _linha: n };
+    colunas.forEach((c, i) => { linha[c] = cels[i + 1] ?? ''; });
+    return linha;
+  });
+}
+
+/** PURO: o próximo `de` (1-based) que falta cobrir na faixa, ou `null` quando ela está inteira. */
+export function faltaNaFaixa(celulas, de, ate) {
+  for (let i = de; i <= ate; i++) if (!celulas.has(i)) return i;
+  return null;
+}
+
 // ---------- a sessão ----------
 
 const cookieDoJar = (jar) => [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
@@ -518,7 +592,7 @@ export async function abrir(cfg, { transacao = null, parametros = {}, okcode = n
   }
   const sessao = {
     via: 'http', cfg, url, jar, action, moin, sysid: sonda.sid, mandante: sonda.mandante,
-    sids: [], delta: null, ultimo: null, titulo: null, fila: [], aberta: true, tempos: { get: ms, boot: null },
+    sids: [], delta: null, parcial: null, ultimo: null, titulo: null, fila: [], aberta: true, tempos: { get: ms, boot: null },
   };
   detalhe(`its: sessão ${sonda.sid}/${sonda.mandante} aberta em ${ms} ms (moin ${moin ?? '—'})`);
   if (boot) {
@@ -564,10 +638,13 @@ export async function postar(sessao, batch, { tetoMs = 30000 } = {}) {
   guardarCookies(sessao.jar, setCookieDe(res));
   const lida = { ...lerResposta({ status: res.status, tipo: res.headers.get('content-type'), corpo }), ms, corpo };
   if (lida.moin) sessao.moin = lida.moin;
-  if (lida.forma === 'delta') {
+  if (lida.forma === 'delta' && !lida.parcial) {
     sessao.sids = sidsDaResposta(corpo);
     sessao.titulo = lida.titulo;
     sessao.delta = corpo;   // a última tela — é dela que `lerTela` lê (multipart não a substitui)
+    sessao.parcial = null;
+  } else if (lida.parcial) {
+    sessao.parcial = corpo; // um controle só (o fragmento do ALV): NÃO é a tela, não substitui o delta
   }
   if (lida.forma === 'logoff' || lida.forma === 'sem-sessao') sessao.aberta = false;
   sessao.ultimo = lida;
@@ -616,6 +693,58 @@ export const campos = (sessao) => sessao.sids.filter((x) => TIPOS_DE_ENTRADA.has
 /** Só os botões (`btn[n]`) da tela atual, com o apelido medido quando há. */
 export const botoes = (sessao) => sessao.sids.filter((x) => x.tipo === 'GuiButton' && x.okcode)
   .map((b) => ({ ...b, nome: OKCODES[b.okcode]?.nome ?? null }));
+
+/**
+ * Lê o ALV da tela — as LINHAS, não só o cabeçalho que o `lsdata` já dava. É o par WebGUI do
+ * `lerGrid` do GUI Scripting, e não varre célula na tela: pede o fragmento de linhas ao servidor
+ * (`batchFragmento`) e extrai a matriz do XML de resposta.
+ *
+ * `alvo` escolhe o grid quando a tela tem mais de um: índice (`0`), `{ id: 'C102' }` ou
+ * `{ sid: 'wnd[0]/usr/cntlGRID1/shellcont/shell' }`. Sem alvo, o primeiro grid da tela.
+ * `de`/`ate` são 1-based e inclusivos, como o `_linha` que volta (o 0-based do protocolo fica aqui
+ * dentro). Sem `ate`, vai até o `totalRows` que o grid declara.
+ *
+ * Devolve `{ id, sid, colunas, total, de, ate, linhas, pedidos, bytes, ms, truncado }`, com cada
+ * linha `{ _linha, <ColumnID>: valor, … }`.
+ *
+ * Medido no s4h 758/250 em 04/09/2026 (RSPARAM, 1617 × 5): 1617/1617 linhas num pedido só, 12,4 MB
+ * em 1,7 s de rede e 42 ms de parse; nenhuma linha faltando, nenhuma vazia. O custo é LINEAR e
+ * caro — ~7,7 KB por linha (a resposta traz `lsdata` e `lsevents` de cada célula) — e por isso o
+ * `lote` existe: 50→450 linhas/s, 500→661, 1617→939. O default de 500 (~3,8 MB por pedido) é o
+ * meio-termo entre memória e viagens.
+ *
+ * ⚠️ O servidor devolve NO MÍNIMO uma janela: pedir 3 linhas trouxe 26 e 202 KB. Por isso a faixa
+ * pedida é recortada no fim, e o avanço é pelo que FALTA (`faltaNaFaixa`), não por aritmética.
+ * ⚠️ `truncado: true` = um pedido não trouxe nenhuma linha nova e o laço parou — a faixa devolvida
+ * está incompleta, e é informação, não erro.
+ */
+export async function lerGrid(sessao, alvo = null, { de = 1, ate = null, lote = 500, tetoMs = 180000 } = {}) {
+  const grids = lerTela(sessao)?.grids ?? [];
+  const g = typeof alvo === 'number' ? grids[alvo]
+    : alvo?.sid ? grids.find((x) => x.sid === alvo.sid)
+    : alvo?.id ? grids.find((x) => x.id === alvo.id)
+    : grids[0];
+  if (!g) throw new Error(`its: lerGrid — a tela não tem esse grid (tem ${grids.length}: ${grids.map((x) => x.id).join(', ') || 'nenhum'})`);
+  const total = Number(g.linhas ?? 0);
+  const fim = Math.min(Number(ate ?? total) || 0, total);
+  const ini = Math.max(1, Number(de) || 1);
+  const celulas = new Map();
+  let pedidos = 0, bytes = 0, truncado = false;
+  const t0 = Date.now();
+  for (let proximo = ini; proximo !== null && proximo <= fim;) {
+    const antes = celulas.size;
+    const ultima = Math.min(proximo + lote - 1, fim);
+    const r = await postar(sessao, batchFragmento(g.sid, proximo - 1, ultima - 1), { tetoMs });
+    pedidos++; bytes += r.corpo.length;
+    for (const [linha, cels] of celulasDoGrid(r.corpo, g.id)) if (!celulas.has(linha)) celulas.set(linha, cels);
+    if (celulas.size === antes) { truncado = true; break; }
+    proximo = faltaNaFaixa(celulas, ini, fim);
+  }
+  const dentro = new Map([...celulas].filter(([n]) => n >= ini && n <= fim));
+  detalhe(`its: lerGrid ${g.id} — ${dentro.size} linha(s) de ${total} em ${pedidos} pedido(s), ${bytes} B`);
+  return { id: g.id, sid: g.sid, colunas: g.colunas ?? [], total, de: ini, ate: fim,
+    linhas: linhasDoGrid(dentro, g.colunas ?? []), pedidos, bytes, ms: Date.now() - t0, truncado };
+}
 
 // ---------- dirigir ----------
 
