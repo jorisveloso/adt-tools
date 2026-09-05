@@ -907,16 +907,91 @@ export async function print(sessao, arquivo) {
 // Mouse e teclado DE VERDADE (`Input.dispatch*`), nunca `.value =` ou `.click()`: o Unified
 // Renderer escuta o evento NATIVO, e um value setado na marra não chega ao programa ABAP.
 
+// ---------- descer até quem ACIONA ----------
+//
+// ⚠️ **O contêiner que se seleciona não é, necessariamente, o nó que aciona.** Medido no SXD
+// 816/100 em 04/09/2026 (fila `adt-client`, item 40), no FLP Designer: clicar no `<li>` do template
+// estático (`X-SAP-UI2-CHIP:/UI2/STATIC_APPLAUNCHER`) NÃO adicionou o tile; o clique no ícone de
+// dentro (`AdminPage--universalCatalogView--X-SAP-UI2-CHIP:__UI2__STATIC_APPLAUNCHER-img`)
+// adicionou. O `<li>` é só a caixa — quem tem o handler é o descendente.
+//
+// Daí o `apontar` DESCER quando o alvo não declara ação nenhuma: entre os descendentes visíveis com
+// marca de ação, ele mira o de MENOR caixa e conta no retorno (`desceu`, `recebeu`, `porQue`,
+// `candidatos`) qual nó recebeu o gesto — "não pegou" sem saber onde o mouse caiu não diz o que
+// fazer em seguida.
+
 /**
- * Onde clicar, de verdade. Duas coisas medidas que fazem o clique cair no vazio:
+ * PURO: as marcas de ação que se LEEM no DOM, sem perguntar ao framework. As três primeiras linhas
+ * são HTML/ARIA; `[lsevents]`/`[lsdata]`/`[ct]` são o Unified Renderer declarando o controle — é o
+ * que mantém o canal WebGUI intacto (lá quase todo elemento endereçável já tem `ct`, então não há
+ * o que descer).
+ */
+export const SELETOR_ACIONAVEL = [
+  'a[href]', 'button', 'input', 'select', 'textarea', 'summary', '[onclick]', '[href]',
+  '[role=button]', '[role=link]', '[role=menuitem]', '[role=menuitemcheckbox]', '[role=menuitemradio]',
+  '[role=option]', '[role=tab]', '[role=checkbox]', '[role=radio]', '[role=switch]',
+  '[lsevents]', '[lsdata]', '[ct]',
+].join(',');
+
+/** PURO: as funções que o navegador usa para julgar um nó — visibilidade, marca de ação, caixa e
+ * como chamá-lo numa mensagem. `cursor: pointer` é a última via porque é a mais frouxa (e HERDADA:
+ * o recheio de um ícone clicável também "parece" clicável). */
+export const JS_ACIONAVEL = `(() => {
+  const SEL = ${JSON.stringify(SELETOR_ACIONAVEL)};
+  const visivel = (e) => !!(e && e.nodeType === 1 && (e.offsetWidth || e.offsetHeight));
+  const motivo = (e) => {
+    if (!visivel(e)) return null;
+    if (e.matches && e.matches(SEL)) return 'marcador';
+    if (typeof e.onclick === 'function') return 'onclick';
+    let cursor = null; try { cursor = getComputedStyle(e).cursor; } catch (x) { /* nó fora do documento */ }
+    return cursor === 'pointer' ? 'cursor' : null;
+  };
+  const area = (e) => { const b = e.getBoundingClientRect(); return b.width * b.height; };
+  const desc = (e) => !e ? null : (e.id || (e.tagName.toLowerCase() +
+    (typeof e.className === 'string' && e.className.trim()
+      ? '.' + e.className.trim().split(' ').filter(Boolean).slice(0, 2).join('.') : '')));
+  return { SEL, visivel, motivo, area, desc };
+})()`;
+
+/**
+ * PURO: a expressão que resolve o nó que VAI receber o gesto. Alvo com marca de ação é o próprio
+ * alvo — só quem não tem nenhuma desce. `{ descer: false }` devolve o alvo cru (é o que se usa para
+ * medir o contrafactual: clicar no contêiner e ver que nada acontece).
+ */
+export function jsAlvoEfetivo(js, { descer = true } = {}) {
+  if (!descer) return `(${js})`;
+  return `(() => {
+    const raiz = ${js};
+    if (!raiz) return null;
+    const H = ${JS_ACIONAVEL};
+    if (H.motivo(raiz)) return raiz;
+    const cand = [...raiz.querySelectorAll('*')].filter((e) => H.motivo(e) && H.area(e) > 0);
+    if (!cand.length) return raiz;
+    let no = cand.reduce((a, b) => (H.area(b) < H.area(a) ? b : a));
+    // \`cursor: pointer\` é HERDADO — o menor por área costuma ser o RECHEIO do nó clicável (o span
+    // de dentro do ícone). Sobe enquanto o pai ocupa a MESMA caixa: o gesto sai no ícone inteiro.
+    while (no.parentElement && no.parentElement !== raiz && H.motivo(no.parentElement) &&
+           H.area(no.parentElement) <= H.area(no) * 1.02) no = no.parentElement;
+    return no;
+  })()`;
+}
+
+/**
+ * Onde clicar, de verdade. Três coisas medidas que fazem o clique cair no vazio:
  *  1. `scrollIntoView` é ASSÍNCRONO — ler o `getBoundingClientRect` no mesmo tick devolve o rect
  *     ANTIGO (medido: rect em y=873 e clique enviado para y=452);
- *  2. o alvo pode estar COBERTO — daí conferir com `elementFromPoint` quem está no ponto.
+ *  2. o alvo pode estar COBERTO — daí conferir com `elementFromPoint` quem está no ponto;
+ *  3. o alvo pode ser um CONTÊINER SEM AÇÃO, com o handler num descendente (o `<li>` do FLP
+ *     Designer, item 40) — daí o rebaixamento, que o retorno sempre conta.
+ *
+ * Devolve, além do ponto: `recebeu` (quem leva o gesto), `de` (o que foi pedido), `desceu`,
+ * `porQue` (a marca de ação que valeu) e `candidatos` (os descendentes acionáveis que havia).
  */
-export async function apontar(sessao, alvo) {
+export async function apontar(sessao, alvo, { descer = true } = {}) {
   const js = jsDoAlvo(alvo);
+  const efetivo = jsAlvoEfetivo(js, { descer });
   const rolou = await avaliar(sessao, `(() => {
-    const e = ${js};
+    const e = ${efetivo};
     if (!e) return false;
     const b = e.getBoundingClientRect();
     if (b.bottom < 0 || b.top > innerHeight) { e.scrollIntoView({ block: 'center' }); return true; }
@@ -924,13 +999,20 @@ export async function apontar(sessao, alvo) {
   })()`);
   if (rolou) await espera(300);
   return await avaliar(sessao, `(() => {
-    const e = ${js};
+    const raiz = ${js};
+    const e = ${efetivo};
     if (!e) return null;
+    const H = ${JS_ACIONAVEL};
     const b = e.getBoundingClientRect();
     const x = b.x + b.width / 2, y = b.y + b.height / 2;
     const no = document.elementFromPoint(x, y);
+    const desceu = e !== raiz;
     return { id: e.id, title: e.title, x, y, noPonto: no ? (no.id || no.tagName) : null,
-             coberto: !(no === e || e.contains(no) || (no && no.contains(e))) };
+             coberto: !(no === e || e.contains(no) || (no && no.contains(e))),
+             recebeu: H.desc(e), de: H.desc(raiz), desceu, porQue: H.motivo(e),
+             candidatos: desceu ? [...raiz.querySelectorAll('*')]
+               .filter((z) => H.motivo(z) && H.area(z) > 0)
+               .sort((a, c) => H.area(a) - H.area(c)).slice(0, 8).map(H.desc) : [] };
   })()`);
 }
 
@@ -953,14 +1035,15 @@ export async function clique(sessao, p) {
  * suspenso, `document.title` vazio); com `acionar`, o `mudou: false` teria denunciado em 30 s.
  * Quem precisa SABER que a ação pegou usa `acionar` e lê o `mudou`.
  */
-export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false } = {}) {
+export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false, descer = true } = {}) {
   const ate = Date.now() + tetoMs;
   let p = null;
   while (Date.now() < ate && !p) {
-    p = await apontar(sessao, alvo);
+    p = await apontar(sessao, alvo, { descer });
     if (!p) await espera(400);
   }
   if (!p) throw new Error(`webgui: clicar — ${nomeDoAlvo(alvo)} não está na tela (${tetoMs} ms)`);
+  if (p.desceu) detalhe(`webgui: ${nomeDoAlvo(alvo)} não aciona nada — o gesto foi no descendente ${p.recebeu} (${p.porQue})`);
   const antes = esperarResposta ? await carimbo(sessao) : null;
   await clique(sessao, p);
   if (esperarResposta) p.mudou = await esperarMudanca(sessao, antes);

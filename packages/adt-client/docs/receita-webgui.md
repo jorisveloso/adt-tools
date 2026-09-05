@@ -480,6 +480,45 @@ Três medições que fazem o clique cair no vazio, todas resolvidas dentro de `a
 E **`mudou: false` é informação**: `acionar` compara o carimbo da tela antes e depois; tela idêntica
 significa que a ação não pegou, e é assim que `btn[15]`/`btn[12]` se denunciam neste canal.
 
+### ⚠ O contêiner que você aponta pode não ser o nó que ACIONA
+
+**Medido no SXD 816/100 em 04/09/2026** (fila `adt-client`, item 40), no FLP Designer: o gesto no
+`<li>` do template estático (`X-SAP-UI2-CHIP:/UI2/STATIC_APPLAUNCHER`) **não adicionou o tile**; o
+mesmo gesto no ícone de dentro (`AdminPage--universalCatalogView--X-SAP-UI2-CHIP:__UI2__STATIC_APPLAUNCHER-img`)
+adicionou. O `<li>` é a caixa; o handler está no descendente.
+
+**Reproduzido no s4h 758/250 em 05/09/2026**, UI5 1.114.0
+(`sap-accelerate/work/POC_ui5_clicar_descendente/medicoes/item40-descida.md`), num
+`CustomListItem` inerte com um `sap.ui.core.Icon` dentro:
+
+| rodada | `desceu` | `recebeu` | `porQue` | efeito |
+|---|---|---|---|---|
+| `<li>` inerte com `{ descer: false }` | false | `liInerte` | `null` | **nada** — o sintoma do SXD |
+| `<li>` inerte (padrão) | **true** | **`iconeAdd`** | `cursor` | acionou |
+| ícone direto (controle positivo) | false | `iconeAdd` | `cursor` | acionou |
+| `<li>` **ativo** (`sapMLIBActionable`) | false | `liAtivo` | `cursor` | acionou — **não** foi rebaixado |
+| `<li>` sem nada acionável dentro | false | `liMudo` | `null` | nada — não inventa alvo |
+| item de ComboBox (`role=option`) | false | `__item15` | `marcador` | `selectionChange`+`change` |
+
+Por isso `apontar`/`clicar` **descem** quando o alvo não declara ação nenhuma, e **sempre contam
+para onde o gesto foi**: `{ desceu, recebeu, de, porQue, candidatos }`.
+
+- **A marca de ação se lê no DOM**, sem perguntar ao framework: tag/atributo de comando
+  (`button`, `a[href]`, `input`, `[onclick]`), `role` de comando (`button`, `link`, `option`,
+  `menuitem`, `tab`, `checkbox`, `radio`, `switch`), os atributos do Unified Renderer
+  (`[ct]`, `[lsdata]`, `[lsevents]`) e, por último, `cursor: pointer` computado. Os dois `<li>`
+  medidos têm o **mesmo `role`** e nenhum tem `onclick`: quem os separa é o `cursor`.
+- **Isso deixa o canal WebGUI intacto**: lá quase todo elemento endereçável já tem `ct`/`lsdata`,
+  então nunca há o que descer.
+- **Escolhe o menor descendente por caixa e depois SOBE enquanto o pai ocupa a mesma caixa** —
+  `cursor: pointer` é HERDADO, e sem essa subida o gesto sairia no `<span>` de recheio do ícone
+  (medido: mesmo id vazio, mesma área de 199 px²).
+- **`{ descer: false }`** volta ao gesto cru — é o contrafactual que reproduz o bug.
+- **Armadilha:** o critério de `cursor` depende do **CSS do tema já ter carregado**. Medido: um
+  `<li>` ativo lido logo após o `placeAt` disse `cursor: auto`. O efeito é benigno (sem CSS ninguém
+  é acionável, então o alvo fica onde está), mas `desceu: false` num contêiner que se sabe inerte
+  quer dizer **tela ainda se pintando**, não "não havia o que descer".
+
 ## A caixa de comando (OK-code) **pelo navegador**
 
 **Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 13). O canal do navegador também

@@ -11,6 +11,7 @@ import {
   interpretarSonda, jsComando, JS_PUBLICAR_FOCO,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
   criarPilhaDeDesfazer, transacional,
+  SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -610,4 +611,90 @@ test('transacional: sem { descartar } recusa ANTES de criar nada', async () => {
   await expect(transacional(s, { abrir: () => {}, descartar: () => {} })).rejects.toThrow(/informe \{ corpo \}/);
   await expect(transacional({}, { abrir: () => {}, descartar: () => {}, corpo: () => {} }))
     .rejects.toThrow(/não tem pilha de desfazer/);
+});
+
+// ─── descer até quem ACIONA (item 40) ──────────────────────────────────────
+// O DOM de mentira abaixo é o que o laboratório do s4h 758/250 mediu em 05/09/2026 (UI5 1.114.0,
+// `sap-accelerate/work/POC_ui5_clicar_descendente/medicoes/item40-descida.md`): o `<li>` inerte do
+// CustomListItem (`cursor: auto`, sem marcador) com o handler num ícone de 199 px², e o span de
+// recheio do ícone HERDANDO o `cursor: pointer` com a MESMA caixa.
+
+const criarNo = (spec, pai = null) => {
+  const e = {
+    id: spec.id ?? '', tagName: spec.tag ?? 'DIV', className: spec.classe ?? '', nodeType: 1,
+    onclick: spec.onclick ?? null, cursor: spec.cursor ?? 'auto',
+    offsetWidth: spec.invisivel ? 0 : 10, offsetHeight: spec.invisivel ? 0 : 10,
+    matches: () => !!spec.marcador,
+    getBoundingClientRect: () => ({ width: spec.area ?? 0, height: 1, x: 0, y: 0 }),
+    parentElement: pai,
+    querySelectorAll: () => descendentes(e),
+  };
+  e.filhos = (spec.filhos ?? []).map((f) => criarNo(f, e));
+  return e;
+};
+const descendentes = (e) => e.filhos.flatMap((f) => [f, ...descendentes(f)]);
+const acharNo = (raiz, id) => (raiz.id === id ? raiz : descendentes(raiz).find((e) => e.id === id));
+const resolver = (raiz, opts) =>
+  new Function('getComputedStyle', 'ALVO', `return ${jsAlvoEfetivo('ALVO', opts)}`)((e) => ({ cursor: e.cursor }), raiz);
+
+const LI_INERTE = criarNo({
+  id: 'liInerte', tag: 'LI', classe: 'sapMLIB sapMLIBTypeInactive', cursor: 'auto', area: 9500,
+  filhos: [{ id: 'liInerte-content', area: 9000, filhos: [
+    { id: '__text0', tag: 'SPAN', cursor: 'text', area: 2005 },
+    { id: 'iconeAdd', tag: 'SPAN', classe: 'sapUiIcon sapUiIconTitle', cursor: 'pointer', area: 199,
+      filhos: [{ tag: 'SPAN', classe: 'sapUiIconTitle', cursor: 'pointer', area: 199 }] },
+  ] }],
+});
+
+test('webgui: o clique desce do contêiner inerte para o MENOR descendente que aciona', () => {
+  // medido: o <li> do template estático não reagiu; o ícone de dentro adicionou o tile
+  expect(resolver(LI_INERTE).id).toBe('iconeAdd');
+  // `cursor: pointer` é HERDADO — o recheio do ícone tem a MESMA caixa e NÃO é o alvo
+  expect(resolver(LI_INERTE).className).toBe('sapUiIcon sapUiIconTitle');
+  // `{ descer: false }` é o contrafactual medido: fica no <li> e o gesto cai no vazio
+  expect(resolver(LI_INERTE, { descer: false }).id).toBe('liInerte');
+});
+
+test('webgui: quem JÁ aciona não é rebaixado — nem o li ativo, nem o item de ComboBox', () => {
+  // sapMLIBActionable: `cursor: pointer` no próprio <li> (medido no laboratório)
+  const ativo = criarNo({ id: 'liAtivo', tag: 'LI', cursor: 'pointer', area: 24000,
+    filhos: [{ id: 'liAtivo-titleText', tag: 'SPAN', cursor: 'pointer', area: 2000 }] });
+  expect(resolver(ativo).id).toBe('liAtivo');
+  // o item do popover do ComboBox tem role=option — é marcador, e foi ele que fechou o item 39
+  const opcao = criarNo({ id: '__item13', tag: 'LI', marcador: true, area: 3000,
+    filhos: [{ id: '__item13-content', tag: 'SPAN', area: 2800 }] });
+  expect(resolver(opcao).id).toBe('__item13');
+});
+
+test('webgui: caixa sem nada acionável dentro NÃO inventa alvo — devolve o próprio nó', () => {
+  const mudo = criarNo({ id: 'liMudo', tag: 'LI', cursor: 'auto', area: 9500,
+    filhos: [{ id: '__text9', tag: 'SPAN', cursor: 'text', area: 2000 }] });
+  expect(resolver(mudo).id).toBe('liMudo');
+  // descendente que aciona mas está INVISÍVEL (ou com caixa zerada) não é candidato
+  const escondido = criarNo({ id: 'liOculto', tag: 'LI', cursor: 'auto', area: 9500, filhos: [
+    { id: 'botaoOculto', marcador: true, area: 200, invisivel: true },
+    { id: 'botaoSemCaixa', marcador: true, area: 0 },
+  ] });
+  expect(resolver(escondido).id).toBe('liOculto');
+  expect(resolver(null)).toBe(null);
+});
+
+test('webgui: a marca de ação se LÊ no DOM — e o Unified Renderer declara a dele', () => {
+  // HTML/ARIA de comando
+  for (const s of ['a[href]', 'button', 'input', '[onclick]', '[role=button]', '[role=option]']) {
+    expect(SELETOR_ACIONAVEL).toContain(s);
+  }
+  // `ct`/`lsdata`/`lsevents` são o WebGUI declarando o controle: lá não há o que descer
+  for (const s of ['[lsevents]', '[lsdata]', '[ct]']) expect(SELETOR_ACIONAVEL).toContain(s);
+  const H = new Function('getComputedStyle', `return ${JS_ACIONAVEL}`)((e) => ({ cursor: e.cursor }));
+  expect(H.motivo(acharNo(LI_INERTE, 'iconeAdd'))).toBe('cursor');
+  expect(H.motivo(LI_INERTE)).toBe(null);
+  expect(H.motivo(criarNo({ id: 'b', marcador: true, area: 10 }))).toBe('marcador');
+  expect(H.motivo(criarNo({ id: 'c', onclick: () => {}, area: 10 }))).toBe('onclick');
+  expect(H.motivo(criarNo({ id: 'd', marcador: true, area: 10, invisivel: true }))).toBe(null);
+  // o relato precisa de um nome mesmo quando o nó não tem id — senão "desceu" não diz para onde
+  expect(H.desc(acharNo(LI_INERTE, 'iconeAdd'))).toBe('iconeAdd');
+  expect(H.desc(criarNo({ tag: 'SPAN', classe: 'sapUiIcon sapUiIconTitle x', area: 10 })))
+    .toBe('span.sapUiIcon.sapUiIconTitle');
+  expect(H.desc(null)).toBe(null);
 });

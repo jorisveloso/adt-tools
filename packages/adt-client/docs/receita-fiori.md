@@ -79,6 +79,12 @@ do controle ainda é chute.
   vira um `<li id="__item16">` no popover — daí o helper clicar pelo id que o UI5 já deu, sem casar
   texto no DOM (que quebra com acento, truncamento e ícone). O casamento por texto continua como
   segunda via, para lista que não reusa o id.
+- **O item de lista pode ser uma CAIXA INERTE.** Medido no SXD 816/100 em 04/09/2026 (item 40):
+  clicar no `<li>` do template estático do FLP Designer não adicionou o tile — quem tem o handler é
+  o ícone de dentro. O `clicar` do canal navegador hoje DESCE sozinho para o menor descendente
+  acionável e conta no retorno quem recebeu o gesto (`desceu`, `recebeu`, `porQue`, `candidatos`);
+  ver [a receita do WebGUI](receita-webgui.md#-o-contêiner-que-você-aponta-pode-não-ser-o-nó-que-aciona).
+  O item de ComboBox NÃO é afetado: ele tem `role=option`, é acionável por si.
 - **`sap.ui.getCore()` morreu no UI5 2.x**; `Element.getElementById` não existe antes do 1.119. O
   `jsControle` tenta as duas vias, nessa ordem — é o que faz o mesmo código servir 1.114 e 2.x.
 - **O `sap-ui-core.js` vem VAZIO na segunda vez.** Medido no s4h 758/250 em 05/09/2026: o primeiro
