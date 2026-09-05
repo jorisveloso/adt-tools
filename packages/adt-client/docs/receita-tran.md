@@ -139,10 +139,11 @@ confirmada em outra LUW por `dataPreview`
    **calado** e, com `DYNP_OKCODE` junto, o fcode dispara com a tela vazia. Quem sabe o nome certo é
    `lerTela(s).campos[].campo`.
 3. **`html_enabled` é o default da lib** (`gui = {}` → `html: true` → `TSTCC S_WEBGUI = 1`) e o
-   driver imprime o que gravou (`t.gui.webgui`). ✅ **A contraprova foi feita — e o flag NÃO é
-   pré-requisito** (s4h 758/250, 04/09/2026, § abaixo): a transação com `S_WEBGUI` **vazio** abriu
-   pelo `~transaction` exatamente como a com `1`. Mantenha o default (é o que a SE93 gravaria), mas
-   não conte com ele como explicação quando uma tela não abrir — a causa é outra.
+   driver imprime o que gravou (`t.gui.webgui`). ✅ **A contraprova está fechada — o flag NÃO é
+   pré-requisito por caminho nenhum** (s4h 758/250, itens 29 e 54, § abaixo): a transação com
+   `S_WEBGUI` **vazio** abriu igual pelos TRÊS caminhos de entrada (URL `~transaction`, `/n<TCODE>`
+   numa sessão aberta, favorito do SAP Easy Access). Mantenha o default (é o que a SE93 gravaria),
+   mas não conte com ele como explicação quando uma tela não abrir — a causa é outra.
 4. **Não há via de saída pelo WebGUI** (`btn[15]`, `btn[12]`, `Shift+F3` postam e reabrem a mesma
    dynpro). A transação fica **aberta na sessão de diálogo** até o `s.fechar()`. Fluxo que precisa
    sair *sem gravar* é GUI Scripting.
@@ -152,9 +153,11 @@ confirmada em outra LUW por `dataPreview`
    é o default). No sistema do cliente isto **não é opcional** — a transação é um objeto de repositório
    e fica visível na SE93 de todo mundo.
 
-### A contraprova do `TSTCC S_WEBGUI` — o ITS **não** olha o flag
+### A contraprova do `TSTCC S_WEBGUI` — o WebGUI **não** olha o flag, por nenhum dos TRÊS caminhos
 
-**Medido no s4h 758, mandante 250, em 04/09/2026** (item 29 da fila `adt-client`). Duas transações
+**Medido no s4h 758, mandante 250, em 04/09/2026** (item 29 da fila `adt-client`) e completado nos
+outros dois caminhos de entrada em **05/09/2026** (item 54,
+`sap-accelerate/work/POC_webgui_tstcc/medicoes/item54-tstcc-caminhos.md`). Duas transações
 Y* IGUAIS sobre o mesmo report (`RSPARAM`), `$TMP`, criadas no mesmo minuto pela mesma
 `deployTransaction`, diferindo **só** no `gui.html`:
 
@@ -179,9 +182,26 @@ Duas coisas a mais, medidas no mesmo ciclo:
 Ambas as transações foram apagadas ao final (`deleteTransaction`, subrc 0, `readTransaction` →
 `exists: false`).
 
-**Fica aberto** (não medido): se o flag pesa em OUTRO caminho de entrada — `/n<TCODE>` dentro de uma
-sessão de WebGUI já aberta, ou o menu SAP Easy Access. O medido aqui é o `~transaction` na URL, que
-é o que esta receita usa.
+#### Os outros dois caminhos de entrada — mesmo resultado (item 54)
+
+Refeito o par do zero, mediram-se os dois caminhos que faltavam. Cada braço numa sessão própria,
+nascida **sem** `~transaction` (o berço é o próprio SAP Easy Access), para que o caminho testado
+seja o único caminho de entrada:
+
+| caminho | `S_WEBGUI '1'` | `S_WEBGUI ''` | o controle (transação inexistente) |
+|---|---|---|---|
+| **1.** URL `~transaction` (item 29) | abriu | **abriu igual** | HTTP 500 `Invalid transaction code` |
+| **2.** `/n<TCODE>` por `comandar()` numa sessão já aberta | `delta` 119 ms → `RSPARAM` | **igual**, 103 ms | fica no `SMEN`, statusbar `Transaction … does not exist` |
+| **3.** menu SAP Easy Access, pelo **favorito** | `delta` 92 ms → `RSPARAM` | **igual**, 108 ms | recusado **na inserção** do favorito: statusbar `… does not exist`, árvore 15 → 15 |
+
+O caminho 3 precisa do favorito porque uma transação `$TMP` não está em menu de área nenhum — a
+árvore do SMEN não a mostra, nem com o flag ligado (é igual nos dois, logo não distingue). O ciclo
+inteiro é HTTP: `navegarMenu(s, 'Favorites > Insert Transaction')` → popup `wnd[1]` "Manual Entry of
+Transaction" (um campo) → `preencher` + `enter` → o nó novo → `acionarNo`.
+
+**Veredito:** nenhum dos três caminhos olha o `TSTCC S_WEBGUI`, e os três sabem recusar — cada um
+com sua mensagem, em momento diferente. O `gui.html` do `deployTransaction` é **fidelidade à SE93**,
+não pré-requisito do canal. Mantenha o default; não o use como explicação quando uma tela não abrir.
 
 ### O que este par NÃO resolve
 

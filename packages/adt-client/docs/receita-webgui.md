@@ -996,8 +996,34 @@ gasta um POST inócuo para se revelar folha (fila 84).
 
 O que **ainda não** está medido: a `categoria` do `nodeindexes` (`0`/`1`/`2`/`3` — o padrão é claro,
 o significado não); **colapsar** um nó (`CellCollapse → action/9`, candidato pelo mesmo molde —
-fila 85); a árvore pela via do **navegador** (os ids são os mesmos, o gesto não foi portado —
-fila 86); e o `action/41` **isolado** (selecionar sem acionar).
+fila 85); e a árvore pela via do **navegador** (os ids são os mesmos, o gesto não foi portado —
+fila 86).
+
+### `action/41` — a seleção isolada, e os FAVORITOS pela via HTTP (item 54)
+
+**Medido no s4h 758/250 em 05/09/2026** (`sap-accelerate/work/POC_webgui_tstcc/`). O `action/41` que
+o item 50 dispensou (o duplo clique sozinho navega) **tem função própria**: ele é quem torna o nó o
+CORRENTE, e é disso que os comandos de menu que agem sobre o nó dependem.
+
+```js
+// selecionar sem acionar — delta, 75 ms
+await postar(s, [{ post: `action/41/${arvore(s).sid}`, content: `type=node&node_key=F00004` }, ESTADO]);
+await navegarMenu(s, 'Favorites > Delete');    // statusbar "Node deleted from favorites list"
+```
+
+Sem o `action/41` antes, o mesmo `Favorites > Delete` recusa. E o ciclo inteiro dos favoritos é HTTP:
+
+| gesto | POST | resultado |
+|---|---|---|
+| inserir | `navegarMenu(s, 'Favorites > Insert Transaction')` → popup `wnd[1]` "Manual Entry of Transaction" (1 campo, `txtSVALD-VALUE[0,21]`) + `preencher` + `enter` | statusbar `Node added to favorites list`; a árvore vai de 15 a 16 nós, o novo é `F0000<n>` "Transaction \<TCODE\>" sob `Favo` |
+| tcode que não existe | idem | **recusa na inserção**: `Transaction … does not exist`, nenhum nó novo |
+| acionar | `acionarNo(s, { chave })` | a transação abre (92–108 ms) |
+| apagar | `action/41` + `Favorites > Delete` | `Node deleted from favorites list` |
+
+⚠ **O SID do container não sobrevive ao `/nSMEN` na mesma sessão.** Voltando ao menu depois de ter
+entrado na transação pelo favorito, o `action/41` responde `multipart` e o `Favorites > Delete` dá
+**`-103 failed to fire action: not available`**. Em sessão NOVA os mesmos dois POSTs apagam em
+165 ms. Quem gerencia favorito depois de navegar: abra outra sessão.
 
 ## O vocabulário `lsdata` — a tela é um MODELO, não pixel
 
@@ -1559,6 +1585,7 @@ na mesma função faria cada uma virar um `if` de duas pernas. O que é comum ve
 | OK-code = `value/okcd` + `vkey/0` | `comandar` | item 8 |
 | o menu inteiro já vem no boot; a folha é `action/4/<SID>` | `itensDeMenu`, `navegarMenu` — sem abrir nada | item 49 (146 itens na SE38; SE38 → SA38 em 91 ms) |
 | a árvore do SMEN se endereça por CHAVE, no container | `arvore`, `expandirNo`, `acionarNo`, `navegarArvore` | item 50 (SMEN → SSC1 em 2,5 s; favorito → CO01 em 386 ms) |
+| o nó CORRENTE da árvore é `action/41`; sem ele o menu que age sobre o nó recusa | `postar` cru (`action/41/<SID>` + `node_key`) | item 54 (favorito inserido, acionado e apagado só por HTTP) |
 | `/nex` encerra; depois é 400 | `fechar`; `postar` recusa sessão encerrada | item 8; item 20 E |
 
 **Medição nova do item 20: o valor mandado em POST separado PERSISTE.** `preencher` + `enviar()`
