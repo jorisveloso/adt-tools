@@ -89,6 +89,10 @@ export async function fetchToken(session, { stateless = false, lang } = {}) {
   // requisição SEGUINTE, com 400 `Service nicht erreichbar` em qualquer path. Avisar no logon é o
   // único lugar barato de pegar — depois o sintoma aponta para SICF e manda procurar no lugar errado.
   if (!stateless && sessaoNasceuMorta(session)) {
+    // O veredito fica GRAVADO na sessão (item 52): quem só avisa deixa o laço de retry seguir
+    // insistindo, e no estado doente cada tentativa soma mais uma sessão que o logoff não remove.
+    // Daqui em diante `call` recusa a requisição, e todo laço da lib aborta com o erro nomeado.
+    session.nasceuMorta = true;
     detalhe('⚠ logon 200 com token mas cookie SEM SAP_SESSIONID — a sessão NASCEU MORTA (servidor no teto de sessões HTTP). Toda requisição com este cookie vai dar 400 "Service nicht erreichbar". Não insista: retry só soma sessão que não sai.');
   }
   return session.token;
@@ -97,6 +101,11 @@ export async function fetchToken(session, { stateless = false, lang } = {}) {
 // `stateless: true` OMITE o header de sessão stateful. Necessário no create de MSAG: com stateful, o
 // próprio POST deixa o objeto "em edição" e o lock seguinte falha com 403 (ver SPIKE MSAG).
 export async function call(session, { method = 'GET', path: p, accept = 'application/*', contentType, body, stateless = false } = {}) {
+  // Sessão que NASCEU MORTA não tem requisição que dê certo — nem stateless, nem `/sap/public/ping`
+  // (medido 04/09/2026). Recusar ANTES do fetch é o ponto: a requisição que não sai é uma sessão a
+  // menos somada ao teto. O veredito é o do LOGON (`session.nasceuMorta`), nunca um palpite sobre um
+  // cookie qualquer — sessão montada à mão ou vinda do cache do `connect` passa direto.
+  if (session?.nasceuMorta) throw erroSessaoMorta(session);
   const headers = comAuth(session.cfg, { Accept: accept });
   if (!stateless && !session.stateless) headers['X-sap-adt-sessiontype'] = 'stateful';
   if (session.token) headers['X-CSRF-Token'] = session.token;
@@ -126,6 +135,10 @@ async function abrirLogon(cfg, { stateless = false } = {}) {
   const s = newSession(cfg);
   await fetchToken(s, { stateless });
   if (!s.token) throw new Error(`logon em ${cfg.base} não devolveu token CSRF (HTTP ${s.status ?? 'sem resposta'}).`);
+  // Logon que responde 200 mas nasce morto é PIOR que um logon que falha: ele deixa uma sessão presa
+  // no servidor e devolve um objeto que parece bom. Quem chama isso em laço (deployAndRun, sessaoNova
+  // por tentativa) precisa parar na PRIMEIRA — daí o erro, e não mais um aviso no log.
+  if (s.nasceuMorta) throw erroSessaoMorta(s);
   return s;
 }
 
@@ -173,6 +186,39 @@ export async function encerrarSessao(session) {
  */
 export function sessaoNasceuMorta(session) {
   return Boolean(session?.token) && !/SAP_SESSIONID/i.test(session?.cookie || '');
+}
+
+/**
+ * O código do erro que PARA os laços (item 52). Antes, `sessaoNasceuMorta` só escrevia um aviso no
+ * log — e quem faz laço não lê log: `deployAndRun` gastava as 5 tentativas com 3s, e no estado
+ * doente CADA tentativa somava uma sessão que o logoff não remove (medido 04/09/2026 no s4h 758:
+ * logoff responde 400 e a contagem da `TH_USER_LIST` não cai). Um erro nomeado atravessa qualquer
+ * laço; um aviso, nenhum.
+ */
+export const CODIGO_SESSAO_MORTA = 'SESSAO_NASCEU_MORTA';
+
+/** Este erro é "a sessão nasceu morta"? Para quem quiser tratar em vez de propagar. PURO. */
+export const ehSessaoMorta = (e) => e?.code === CODIGO_SESSAO_MORTA;
+
+/**
+ * O erro nomeado. A mensagem diz o que NÃO adianta fazer: insistir soma sessão, e o logoff não
+ * devolve nenhuma. O que resta é esperar o `http/security_session_timeout` (1800 s no s4h) ou
+ * derrubar as sessões do usuário à mão (SM04 / `TH_USER_LIST`).
+ */
+export function erroSessaoMorta(session) {
+  const e = new Error([
+    `a sessão HTTP em ${session?.cfg?.base ?? '(sem base)'} NASCEU MORTA: o logon respondeu 200 com token CSRF, mas ` +
+    'o cookie veio SEM SAP_SESSIONID — o servidor está no teto de sessões HTTP deste usuário (~150, medido no s4h 758).',
+    'Toda requisição com este cookie responde 400 "Service nicht erreichbar", em QUALQUER path — a mensagem fala de ' +
+    'SICF e manda procurar no lugar errado.',
+    'NÃO adianta repetir: cada tentativa abre mais uma sessão, e no estado doente o próprio logoff dá 400 e não ' +
+    'remove nenhuma.',
+    'Saídas: esperar o `http/security_session_timeout` (1800 s no s4h) esvaziar sozinho, ou derrubar as sessões do ' +
+    'usuário à mão (SM04 / TH_USER_LIST).',
+  ].join('\n'));
+  e.name = 'SessaoNasceuMorta';
+  e.code = CODIGO_SESSAO_MORTA;
+  return e;
 }
 
 const SEM_SENHA =

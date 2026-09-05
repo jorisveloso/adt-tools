@@ -75,6 +75,10 @@ export async function deployAndRun(conexao, { name, source, pkg = '$TMP', descri
     return { ...r, created: dep.created, tentativa: 1 };
   }
   let r;
+  // Este laço existe para o LOAD ANTIGO da classe, e para mais nada. Ele não é "insista até dar
+  // certo": quando a sessão nasceu morta (servidor no teto de sessões HTTP), `call` recusa a
+  // requisição e o erro nomeado ATRAVESSA daqui sem ser capturado — de propósito. Gastar as 5
+  // tentativas com 3s ali somaria 5 sessões que o logoff não remove (item 52; medido 04/09/2026).
   for (let i = 1; i <= tentativas; i++) {
     r = await runClass(conexao, name);
     if (r.ok) return { ...r, created: dep.created, tentativa: i };

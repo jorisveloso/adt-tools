@@ -7,7 +7,7 @@
 
 import { test, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
-import { criarConexao, newSession, call, encerrarSessao, fetchToken, sessaoNasceuMorta } from './sap-connection.mjs';
+import { criarConexao, newSession, call, encerrarSessao, fetchToken, sessaoNasceuMorta, ehSessaoMorta } from './sap-connection.mjs';
 
 let srv, base, recebidos, noTeto = false;
 
@@ -263,6 +263,42 @@ test('no teto de sessões o logon devolve token mas a sessão nasce morta', asyn
     expect(s.token).toBe('TOKEN-NOVO');       // o 200 do logon não é veredito
     expect(sessaoNasceuMorta(s)).toBe(true);  // o cookie é
   } finally { noTeto = false; }
+});
+
+// ---------- item 52: o aviso vira ERRO, para o laço parar ----------
+// O aviso do item 28 só ia para o log, e quem faz laço não lê log. Agora o veredito do LOGON fica
+// gravado na sessão (`nasceuMorta`) e `call` recusa a requisição ANTES do fetch — porque no estado
+// doente cada requisição soma uma sessão que o logoff (400) não remove.
+
+test('logon no teto LANÇA erro nomeado — não devolve uma sessão que parece boa', async () => {
+  recebidos = []; noTeto = true;
+  try {
+    const conexao = criarConexao(cfgComSenha());
+    const e = await conexao.sessao().then(() => null, (x) => x);
+    expect(ehSessaoMorta(e)).toBe(true);
+    expect(e.name).toBe('SessaoNasceuMorta');
+    expect(e.message).toMatch(/NASCEU MORTA/);
+    expect(recebidos.length).toBe(1); // o logon que já tinha saído — e nada além dele
+  } finally { noTeto = false; }
+});
+
+test('call numa sessão que nasceu morta não chega à rede — é uma sessão a menos somada ao teto', async () => {
+  recebidos = []; noTeto = true;
+  try {
+    const s = newSession(cfgComSenha());
+    await fetchToken(s);
+    expect(s.nasceuMorta).toBe(true);
+    const antes = recebidos.length;
+    await expect(call(s, { path: '/sap/bc/adt/ddic/tables/x' })).rejects.toThrow(/NASCEU MORTA/);
+    await expect(call(s, { path: '/sap/public/ping', stateless: true })).rejects.toThrow(/NASCEU MORTA/);
+    expect(recebidos.length).toBe(antes); // nenhuma das duas saiu
+  } finally { noTeto = false; }
+});
+
+test('regressão: quem decide é o veredito do LOGON, não o formato do cookie — sessão de fora passa', async () => {
+  recebidos = []; // cookie sem SAP_SESSIONID montado à mão (teste, SSO): `call` não pode recusar
+  await call({ cfg: cfgSemSenha(), cookie: 'sap-contextid=1', token: 't', status: null }, { path: '/sap/bc/adt/x' });
+  expect(recebidos.length).toBe(1);
 });
 
 test('encerrarSessao NÃO diz encerrada quando o logoff falha — o logoff é preventivo, não curativo', async () => {

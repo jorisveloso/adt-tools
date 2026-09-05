@@ -45,6 +45,10 @@ import { dicaDeErro, semPrefixo } from './tipos/_registro.mjs';
 // Reexportados por conveniência: quem já tem um `adt-client` na mão raramente quer um segundo import
 // só para abrir a sessão. A implementação é a de `sap-connection.mjs`, sempre.
 export { call, newSession, fetchToken, criarConexao } from './sap-connection.mjs';
+// O veredito de sessão morta sai pelo barrel porque é o que os LAÇOS precisam olhar: `call` e o
+// logon lançam `SessaoNasceuMorta` quando o servidor está no teto de sessões HTTP, e insistir ali
+// só soma sessão que o logoff não remove (item 52).
+export { sessaoNasceuMorta, ehSessaoMorta, erroSessaoMorta, CODIGO_SESSAO_MORTA } from './sap-connection.mjs';
 
 // O registro de tipos, derivado de tipos/*.mjs. `TYPES[libKey]` = { coll, ct, accept?, source } —
 // a mesma projeção de sempre; `MODULOS[libKey]` é o módulo inteiro (descrição, spike, guard-rails…).
