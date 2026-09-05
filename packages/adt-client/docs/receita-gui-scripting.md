@@ -201,7 +201,27 @@ Gotchas medidos no caminho:
   `usu�rio` (byte `A0`). Medido 04/09/2026: `cmd /U` não muda programa externo, o `TextDecoder`
   do Node não tem cp850, WMI `Win32_Process` não tem título de janela — só `chcp 65001>nul &&
   tasklist …` resolve (`linhaTasklist`, via `cmd /c` com `windowsVerbatimArguments`). O PowerShell
-  tem o mesmo mal sem `[Console]::OutputEncoding=UTF8` — o `janelasSapGui()` ainda sofre disso (fila).
+  tem o mesmo mal sem `[Console]::OutputEncoding=UTF8`.
+- **O `janelasSapGui()` tinha DOIS eixos de perda, não um** — medido 05/09/2026 (item 35; script
+  `POC_rot_sapgui/scripts/item35-mojibake.mjs`, bruto `medicoes/raw/item35-mojibake.json`) contra uma
+  janela de título conhecido `Entrada do nome do usuário — ĄŻ テスト`, num 2x2:
+
+  | `[Console]::OutputEncoding=UTF8` | `CharSet=CharSet.Unicode` | o que chegou ao Node |
+  |---|---|---|
+  | não | não | `Entrada do nome do usu�rio - AZ ???` |
+  | não | sim | `Entrada do nome do usu�rio - AZ ???` (idêntico — a saída em 850 já achatou tudo) |
+  | sim | não | `Entrada do nome do usuário — AZ ???` |
+  | sim | sim | `Entrada do nome do usuário — ĄŻ テスト` **inteiro** |
+
+  O primeiro eixo é a codepage da SAÍDA (OEM 850 → `�`); o segundo é a codepage da LEITURA: sem
+  `CharSet`, o `DllImport` liga em `GetWindowTextA` e o ANSI 1252 faz *best-fit* silencioso (`ĄŻ`→`AZ`,
+  `—`→`-`) e `?` no que não tem mapa — perda que nenhuma codepage de saída recupera. Os dois estão em
+  `psJanelas()` (`gui.mjs`), coberto em `gui.test.mjs`.
+- **Para medir janela, o alvo NÃO pode ser um console**: a janela de um console pertence ao
+  conhost.exe/terminal, não a quem escreve nele — `GetWindowThreadProcessId` devolve o pid do host e
+  o filtro por processo não acha nada. E `spawn(…, { detached: true })` no Windows vira
+  `DETACHED_PROCESS`, que roda sem console nenhum. O alvo que serve é um Form WinForms hospedado num
+  `powershell.exe` (`Start-Process`), com o título posto por codepoints.
 - **A "anomalia" dos ~40 s (E) foi reproduzida em 05/09/2026 e não é do ROT:** é o pedágio do
   cliente — o § seguinte.
 

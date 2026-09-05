@@ -464,14 +464,32 @@ export function lerJanelas(janelas = []) {
   return { estado: 'nenhuma', janelas: [] };
 }
 
-const PS_JANELAS = `
+/**
+ * O PowerShell que lista as janelas VISÍVEIS com título dos processos dados (uma por linha, campos
+ * separados por TAB, no formato que `interpretarJanelas` lê).
+ *
+ * ⚠ Duas defesas de encoding, ambas NECESSÁRIAS — medidas em 05/09/2026 (item 35 da fila, bruto em
+ * `sap-accelerate/work/POC_rot_sapgui/medicoes/raw/item35-mojibake.json`) contra uma janela de
+ * título conhecido `Entrada do nome do usuário — ĄŻ テスト`:
+ *   • `[Console]::OutputEncoding = UTF8` ANTES da primeira escrita: sem ele o PowerShell escreve o
+ *     stdout na codepage OEM do console (850 aqui) e o Node, que decodifica UTF-8, recebe
+ *     `usu�rio` — o mesmo mal do `tasklist` (§ item 17, resolvido lá com `chcp 65001`).
+ *   • `CharSet=CharSet.Unicode` nos `DllImport` de `GetWindowText`/`GetClassName`: sem ele o
+ *     P/Invoke liga em `GetWindowTextA` e a perda acontece ANTES de qualquer stdout — o ANSI 1252
+ *     faz *best-fit* silencioso (`ĄŻ` → `AZ`, `—` → `-`) e troca por `?` o que não tem mapa
+ *     (`テスト` → `???`). É perda que nenhuma codepage de saída recupera.
+ * Sem o `OutputEncoding` o eixo do `CharSet` nem se observa: a codepage 850 da escrita já achata
+ * tudo (as duas variantes `utf8=false` deram byte a byte o mesmo texto corrompido).
+ */
+export const psJanelas = (processos = ['SAPgui', 'saplogon']) => `
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 Add-Type -TypeDefinition @'
 using System; using System.Text; using System.Runtime.InteropServices; using System.Collections.Generic;
 public class JSap { public delegate bool EnumProc(IntPtr h, IntPtr l);
  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc p, IntPtr l);
  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, EnumProc p, IntPtr l);
- [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
- [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
  static string Txt(IntPtr h){ var t=new StringBuilder(512); GetWindowText(h,t,512); return t.ToString(); }
@@ -482,7 +500,7 @@ public class JSap { public delegate bool EnumProc(IntPtr h, IntPtr l);
      r.Add(pids[pid]+"\\t"+pid+"\\t"+c+"\\t"+t+"\\t"+string.Join(" | ",st)); } return true; }, IntPtr.Zero); return r; } }
 '@
 $pids = New-Object 'System.Collections.Generic.Dictionary[uint32,string]'
-Get-Process -Name SAPgui,saplogon -ErrorAction SilentlyContinue | % { $pids[[uint32]$_.Id] = "$($_.ProcessName).exe" }
+Get-Process -Name ${processos.join(',')} -ErrorAction SilentlyContinue | % { $pids[[uint32]$_.Id] = "$($_.ProcessName).exe" }
 [JSap]::List($pids)`;
 
 /**
@@ -491,7 +509,7 @@ Get-Process -Name SAPgui,saplogon -ErrorAction SilentlyContinue | % { $pids[[uin
  * Custa ~0,8 s (PowerShell + Add-Type; medido 04/09/2026: 753 ms).
  */
 export async function janelasSapGui() {
-  const r = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', PS_JANELAS],
+  const r = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psJanelas()],
     { windowsHide: true, timeout: 20000 }).catch((e) => ({ stdout: e.stdout || '' }));
   return interpretarJanelas(r.stdout);
 }

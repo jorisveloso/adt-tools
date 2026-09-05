@@ -4,7 +4,7 @@ import { test, expect } from 'vitest';
 import {
   ACOES, PARAMETROS_SCRIPTING, escVbs, validarPasso, vbsDoPasso, montarVbs,
   interpretarSaidaGui, resultadoDoPasso, interpretarTasklist, linhaTasklist, diagnosticarRot,
-  interpretarJanelas, lerJanelas, sessaoLogada, CLASSE_SESSAO,
+  interpretarJanelas, lerJanelas, sessaoLogada, CLASSE_SESSAO, psJanelas,
 } from './gui.mjs';
 
 const SEP = '\u0001';
@@ -173,6 +173,24 @@ test('gui: linhaTasklist força UTF-8 — sem chcp 65001 o título acentuado che
   expect(linha).toContain('/FO CSV /NH /V');
   // dois /FI no mesmo tasklist são E, não OU — uma linha por imagem
   expect(linhaTasklist('saplogon.exe')).not.toContain('SAPgui.exe');
+});
+
+test('gui: psJanelas blinda o encoding nos DOIS eixos — stdout UTF-8 e P/Invoke Unicode (medido 05/09/2026)', () => {
+  const ps = psJanelas();
+  // 1) a codepage da SAÍDA: sem isto o PowerShell escreve em OEM 850 e 'usuário' chega 'usu�rio'
+  //    (mesmo mal do tasklist, item 17) — e tem de vir ANTES da primeira escrita
+  expect(ps.trimStart().startsWith('[Console]::OutputEncoding = [Text.Encoding]::UTF8')).toBe(true);
+  expect(ps.indexOf('OutputEncoding')).toBeLessThan(ps.indexOf('Add-Type'));
+  // 2) a codepage da LEITURA: sem CharSet.Unicode o P/Invoke liga em GetWindowTextA, que faz
+  //    best-fit silencioso (ĄŻ → AZ, — → -) e troca por '?' o que não tem mapa em 1252 (テスト → ???)
+  for (const api of ['GetWindowText', 'GetClassName']) {
+    expect(ps.split('\n').find((l) => l.includes(`extern int ${api}(`))).toContain('CharSet=CharSet.Unicode');
+  }
+  // o alvo default continua o par de processos do SAP GUI (o pad vive no saplogon.exe)
+  expect(ps).toContain('Get-Process -Name SAPgui,saplogon');
+  expect(psJanelas(['powershell'])).toContain('Get-Process -Name powershell');
+  // e o formato que interpretarJanelas lê: campos por TAB
+  expect(ps).toContain('+"\\t"+pid+"\\t"');
 });
 
 // Janelas medidas em 04/09/2026 (SAP GUI 8.00 PT, S4H 758/250), no formato que o PowerShell emite.
