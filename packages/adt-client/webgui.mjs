@@ -30,9 +30,11 @@
 //     `montarTela` daqui roda sobre o DOM aqui e sobre o XML do delta-update lá (fila 21).
 
 import { spawn } from 'node:child_process';
+import { X509Certificate, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import tls from 'node:tls';
 import { passo, detalhe, aviso } from './log.mjs';
 import { encerrarSessao } from './sap-connection.mjs';
 
@@ -278,7 +280,20 @@ export function autorizacao(cfg) {
  * sonda não pode fazer é empilhar tudo em "não deu".
  */
 export function interpretarSonda({ status = null, statusText = '', cookies = [], corpo = '', erro = null } = {}) {
-  if (erro) return { ok: false, causa: 'sem-icm', motivo: `sem resposta do ICM: ${erro}`, status: null };
+  if (erro) {
+    // ⚠ certificado recusado NÃO é "sem resposta do ICM" — o ICM está de pé, quem recusou foi o
+    // Node. Empilhar isso em `sem-icm` manda procurar rede/host, que é o lugar errado.
+    // Os três códigos medidos em laboratório local em 05/09/2026 (POC_https_cert):
+    //   `DEPTH_ZERO_SELF_SIGNED_CERT`    — o certificado do host é a própria raiz;
+    //   `UNABLE_TO_VERIFY_LEAF_SIGNATURE`— assinado por CA interna que esta máquina não conhece;
+    //   `ERR_TLS_CERT_ALTNAME_INVALID`   — a CA confia, mas o nome do certificado não é o do host.
+    if (/CERT|SELF_SIGNED|LEAF_SIGNATURE/i.test(String(erro))) {
+      return { ok: false, causa: 'certificado', status: null, bytes: 0, cookies: [],
+        motivo: `o ICM respondeu, mas o Node recusou o certificado (${erro}) — CA interna que esta máquina não conhece. ` +
+          'A opção `certificado` do `abrirNavegador` é do CHROME e NÃO cobre este `fetch`; ver receita-webgui.md § HTTPS com certificado interno.' };
+    }
+    return { ok: false, causa: 'sem-icm', motivo: `sem resposta do ICM: ${erro}`, status: null };
+  }
   const nomes = cookies.map((c) => c.split('=')[0].trim());
   const sessao = cookies.find((c) => /^SAP_SESSIONID_/i.test(c));
   const base = { status, bytes: corpo.length, cookies: nomes };
@@ -384,6 +399,119 @@ export function bandeirasDeOrigemSegura(base) {
     `--unsafely-treat-insecure-origin-as-secure=${origem}`,
     '--test-type', // sem isto o Chrome ignora a bandeira acima e ainda avisa na barra
   ];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTPS com certificado que ESTA máquina não confia — o ICM interno
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// O outro lado do gotcha da origem segura: onde o ICM só atende por HTTPS e o certificado vem de
+// uma CA INTERNA do cliente, o Chrome barra a navegação ANTES de qualquer byte de SAP chegar.
+// Medido no SXD 816/100 em 04/09/2026: `/UI2/FLPD_CUST` redireciona para
+// `https://awskartsxd01.acclab.com:44300/` e a tela só abre depois de mandar
+// `Security.setIgnoreCertificateErrors`.
+//
+// Reproduzido em laboratório LOCAL em 05/09/2026 (sem VPN — servidor HTTPS na 44399 com
+// certificado auto-assinado, `sap-accelerate/work/POC_https_cert/medicoes/item41-cert.md`), que é
+// onde os números abaixo saíram. Os cinco cenários, mesmo Chrome, mesmo minuto:
+//
+// | como se sobe o Chrome                                     | `Page.navigate` devolve       | tela      |
+// |-----------------------------------------------------------|-------------------------------|-----------|
+// | nada (o default)                                          | `net::ERR_CERT_AUTHORITY_INVALID` | "Erro de privacidade", `chrome-error://chromewebdata/` |
+// | `Security.setIgnoreCertificateErrors` (SEM `Security.enable`) | —                          | abriu     |
+// | `Security.enable` + `setIgnoreCertificateErrors`           | —                             | abriu     |
+// | `--ignore-certificate-errors`                              | —                             | abriu     |
+// | `--ignore-certificate-errors-spki-list=<pino DESTE cert>`  | —                             | abriu     |
+// | `--ignore-certificate-errors-spki-list=<pino de OUTRO>`    | `net::ERR_CERT_AUTHORITY_INVALID` | barrou |
+//
+// Três coisas que a medição decide, e por isso são o desenho daqui:
+//
+//   • **`Security.enable` NÃO é pré-requisito** — `setIgnoreCertificateErrors` sozinho já vale.
+//   • **`Page.navigate` DEVOLVE `errorText`.** Sem olhar para ele, o erro de certificado vira
+//     silêncio caro: o `ir` fica esperando `jsTelaPronta` numa `chrome-error://` até estourar os
+//     60 s do teto e só então diz "não achei campo". Daí o `ir` passar a ler o `errorText`.
+//   • **o pino RESTRINGE de verdade** — com o hash de outro certificado o Chrome barrou. É a
+//     diferença entre "aceito o certificado daquele ICM" e "aceito qualquer certificado quebrado
+//     desta sessão", e é o que faz o modo pinado ser o recomendado, não uma formalidade.
+//
+// Por isso o default é `certificado: null` — **não ignorar nada**. Quem tem ICM interno declara,
+// de preferência com o pino (`sistemas.json`: `"certificado": "sha256/…"`), que se lê uma vez com
+// `spkiDoHost(base)`. `certificado: true` continua existindo para quem não quer pinar, e AVISA
+// alto — é a sessão inteira sem validação de certificado.
+
+/** PURO: normaliza o pino — o SHA-256 do SubjectPublicKeyInfo em base64. Aceita o `sha256/…` do
+ * HPKP (que é como as ferramentas cospem), o base64 nu, e vários (o Chrome aceita lista). */
+export const RE_PINO_SPKI = /^[A-Za-z0-9+/]{43}=$/;
+export function pinosDeCertificado(certificado) {
+  const lista = Array.isArray(certificado) ? certificado : [certificado];
+  return lista.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim().replace(/^sha256\//i, ''));
+}
+
+/**
+ * PURO: as bandeiras que dizem ao Chrome QUAL certificado inválido ele aceita.
+ *
+ * Só o modo pinado vira bandeira: `certificado: true` (ignorar tudo) não tem bandeira de linha de
+ * comando aqui de propósito — é mandado pelo CDP, no `abrirNavegador`, junto do aviso.
+ */
+export function bandeirasDeCertificado(certificado) {
+  if (!certificado || certificado === true) return [];
+  const pinos = pinosDeCertificado(certificado);
+  if (!pinos.length) return [];
+  const torto = pinos.find((p) => !RE_PINO_SPKI.test(p));
+  if (torto) {
+    throw new Error(
+      `webgui: "${torto}" não é um pino de certificado — espera-se o SHA-256 do SubjectPublicKeyInfo ` +
+      'em base64 (44 caracteres terminados em "="), com ou sem o prefixo "sha256/".\n' +
+      'Leia o do seu ICM com:  node -e "import(\'adt-client/webgui\').then(m => m.spkiDoHost(\'https://host:44300\').then(r => console.log(r.pino, r.subject)))"',
+    );
+  }
+  return [`--ignore-certificate-errors-spki-list=${pinos.join(',')}`];
+}
+
+/**
+ * O pino do certificado que ESTE host apresenta — para colar no `sistemas.json` uma vez e nunca
+ * mais ignorar certificado às cegas.
+ *
+ * ⚠️ Isto é **trust on first use**: pinar o que o host mostrou AGORA não prova que ele é quem diz
+ * ser. O que o pino compra é o resto — a partir dele o Chrome volta a barrar QUALQUER outro
+ * certificado inválido da sessão (medido: pino de outro cert → `ERR_CERT_AUTHORITY_INVALID`).
+ * Quem quiser a garantia inteira confere o `subject`/`issuer`/`validade` devolvidos aqui contra o
+ * que a área de infra do cliente diz — é justamente para isso que eles saem junto.
+ */
+export async function spkiDoHost(base, { tetoMs = 10000 } = {}) {
+  const url = new URL(String(base));
+  if (url.protocol !== 'https:') throw new Error(`webgui: spkiDoHost só faz sentido em https — "${base}" é ${url.protocol}`);
+  const porta = Number(url.port) || 443;
+  passo(`webgui: lendo o certificado de ${url.hostname}:${porta}`);
+  const bruto = await new Promise((ok, err) => {
+    const s = tls.connect(
+      { host: url.hostname, port: porta, servername: url.hostname, rejectUnauthorized: false, timeout: tetoMs },
+      () => { const c = s.getPeerCertificate(false); s.destroy(); ok(c); },
+    );
+    s.on('timeout', () => { s.destroy(); err(new Error(`webgui: ${url.hostname}:${porta} não respondeu ao TLS em ${tetoMs} ms`)); });
+    s.on('error', (e) => err(new Error(`webgui: TLS com ${url.hostname}:${porta} falhou — ${e.message}`)));
+  });
+  if (!bruto?.raw) throw new Error(`webgui: ${url.hostname}:${porta} não apresentou certificado`);
+  const x = new X509Certificate(bruto.raw);
+  const pino = createHash('sha256').update(x.publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+  detalhe(`webgui: ${x.subject} (emitido por ${x.issuer}) → sha256/${pino}`);
+  return { pino, sha256: `sha256/${pino}`, subject: x.subject, issuer: x.issuer, validoDe: x.validFrom, validoAte: x.validTo, autoAssinado: x.subject === x.issuer };
+}
+
+/** PURO: o `errorText` do `Page.navigate` que é problema de CERTIFICADO, virado em instrução.
+ * Devolve `null` para o que não é — quem chama decide se avisa ou deixa passar. */
+export function explicarErroDeNavegacao(errorText, { base = '', certificado = null } = {}) {
+  const texto = String(errorText || '');
+  if (!/^net::ERR_(CERT|SSL)_/.test(texto)) return null;
+  const jaTentou = certificado
+    ? `\nO cfg já pede ${certificado === true ? 'ignorar erros de certificado' : `o pino ${pinosDeCertificado(certificado).join(', ')}`} e MESMO ASSIM barrou — ` +
+      (certificado === true ? 'o erro não é de confiança na CA (veja o código acima).' : 'o certificado do host provavelmente mudou; releia o pino com spkiDoHost.')
+    : '\nO Chrome não confia na CA que assinou o certificado deste host — típico de ICM com certificado interno.\n' +
+      'Não se ignora certificado por default. Para liberar ESTE sistema, em sistemas.json:\n' +
+      `  1. leia o pino:  spkiDoHost(${JSON.stringify(base || 'https://host:44300')})  → confira subject/issuer com a infra do cliente\n` +
+      '  2. grave:        { "<alias>": { "certificado": "sha256/<pino>" } }\n' +
+      'Alternativa larga (a sessão inteira sem validar certificado, e ela avisa): "certificado": true';
+  return `webgui: a navegação para ${base || 'a URL'} falhou com ${texto}.${jaTentou}`;
 }
 
 const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -512,15 +640,17 @@ export async function transacional(sessao, { rotulo = 'rascunho', abrir, corpo, 
  * autenticada no `cfg` e com o polyfill armado. Quem abre FECHA (o `fechar` desfaz o que ficou
  * pendente, mata o processo e some com o perfil).
  */
-export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura = 1000, tetoMs = 30000, navegador, origemSegura = true } = {}) {
+export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura = 1000, tetoMs = 30000, navegador, origemSegura = true, certificado = cfg?.certificado ?? null } = {}) {
   const chrome = acharNavegador({ navegador });
   const cabecalho = autorizacao(cfg); // recusa ANTES de subir navegador nenhum
+  const bandeirasCert = bandeirasDeCertificado(certificado); // recusa pino torto aqui, não na navegação
   const perfil = fs.mkdtempSync(path.join(os.tmpdir(), 'jbv-webgui-'));
   passo(`webgui: subindo ${path.basename(chrome)} headless na porta ${porta}`);
   const proc = spawn(chrome, [
     '--headless=new', `--remote-debugging-port=${porta}`, `--user-data-dir=${perfil}`,
     '--no-first-run', '--no-default-browser-check', '--disable-gpu',
     ...(origemSegura ? bandeirasDeOrigemSegura(cfg.base) : []),
+    ...bandeirasCert,
     `--window-size=${largura},${altura}`, 'about:blank',
   ], { detached: true, stdio: 'ignore' });
   proc.unref();
@@ -563,6 +693,14 @@ export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura
   await cmd('Page.enable');
   await cmd('Network.enable');
   await cmd('Runtime.enable');
+  if (certificado === true) {
+    // medido: vale sem `Security.enable`. E é a sessão INTEIRA sem validar certificado — o modo
+    // pinado (`certificado: 'sha256/…'`) não passa por aqui, ele é bandeira e continua barrando o resto.
+    aviso(`webgui: certificado: true — esta sessão do Chrome NÃO valida certificado nenhum. Prefira o pino (spkiDoHost("${cfg.base}")).`);
+    await cmd('Security.setIgnoreCertificateErrors', { ignore: true });
+  } else if (bandeirasCert.length) {
+    detalhe(`webgui: aceitando só o certificado pinado (${pinosDeCertificado(certificado).join(', ')})`);
+  }
   await cmd('Network.setExtraHTTPHeaders', { headers: { Authorization: cabecalho } });
   await cmd('Page.addScriptToEvaluateOnNewDocument', { source: POLYFILL_RANDOMUUID });
   // headless não tem janela em foco, e o Unified Renderer só reage a evento em página focada
@@ -645,7 +783,16 @@ export async function esperarMudanca(sessao, antes, { tetoMs = 30000, quietoMs =
  */
 export async function ir(sessao, url, { tetoMs = 60000, ...pronta } = {}) {
   detalhe(`webgui: ir ${url}`);
-  await sessao.cmd('Page.navigate', { url });
+  const nav = await sessao.cmd('Page.navigate', { url });
+  // ⚠ o `Page.navigate` DEVOLVE `errorText` (medido: `net::ERR_CERT_AUTHORITY_INVALID` em HTTPS com
+  // CA interna). Sem olhar aqui, a espera abaixo roda os 60 s inteiros contra uma `chrome-error://`
+  // e o erro sai como "tela sem campo" — a causa errada. Só se LANÇA no que foi medido (certificado
+  // e SSL); o resto vira aviso, porque `ERR_ABORTED` também aparece em navegação substituída.
+  if (nav?.errorText) {
+    const explicado = explicarErroDeNavegacao(nav.errorText, { base: url, certificado: sessao.cfg?.certificado ?? null });
+    if (explicado) throw new Error(explicado);
+    aviso(`webgui: Page.navigate para ${url} devolveu ${nav.errorText} — seguindo, mas a tela pode não vir`);
+  }
   const expressao = jsTelaPronta(pronta);
   const ate = Date.now() + tetoMs;
   while (Date.now() < ate) {

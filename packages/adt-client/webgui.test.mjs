@@ -12,6 +12,7 @@ import {
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
   criarPilhaDeDesfazer, transacional,
   SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo,
+  pinosDeCertificado, bandeirasDeCertificado, explicarErroDeNavegacao,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -365,6 +366,57 @@ test('webgui: cada recusa tem causa própria — nada de empilhar tudo em "não 
   expect(interpretarSonda({ erro: 'ENOTFOUND' }))
     .toMatchObject({ ok: false, causa: 'sem-icm', status: null });
   expect(interpretarSonda({ erro: 'TimeoutError' }).motivo).toMatch(/sem resposta do ICM/);
+});
+
+test('webgui: o pino de certificado aceita as duas notações, e recusa o que não é pino', () => {
+  const pino = 'MPQ1+wn6fdYV6CpNLlZhgnm1B4TVgBA5PwL1iIEfKpI=';
+  // `sha256/…` é como openssl e navegador cospem; o base64 nu é o que a bandeira do Chrome quer
+  expect(pinosDeCertificado(`sha256/${pino}`)).toEqual([pino]);
+  expect(pinosDeCertificado(pino)).toEqual([pino]);
+  expect(pinosDeCertificado([`sha256/${pino}`, pino])).toEqual([pino, pino]);
+  expect(pinosDeCertificado(null)).toEqual([]);
+  expect(pinosDeCertificado(true)).toEqual([]);
+
+  expect(bandeirasDeCertificado(`sha256/${pino}`)).toEqual([`--ignore-certificate-errors-spki-list=${pino}`]);
+  // `true` NÃO vira bandeira: ignorar tudo é comando de CDP, para passar pelo aviso do abrirNavegador
+  expect(bandeirasDeCertificado(true)).toEqual([]);
+  expect(bandeirasDeCertificado(null)).toEqual([]);
+  // e o pino torto morre ANTES de subir Chrome nenhum, dizendo como ler o certo
+  expect(() => bandeirasDeCertificado('sha256/nao-e-um-hash')).toThrow(/spkiDoHost/);
+  expect(() => bandeirasDeCertificado('MPQ1+wn6fdYV6CpNLlZhgnm1B4TVgBA5PwL1iIEfKpI')).toThrow(/44 caracteres/);
+});
+
+test('webgui: erro de certificado na navegação vira instrução, e o resto não é sequestrado', () => {
+  // medido em laboratório local (05/09/2026): Page.navigate devolve errorText e a tela vira
+  // chrome-error:// — sem ler isso, o `ir` espera os 60 s do teto e culpa a tela
+  const semOpcao = explicarErroDeNavegacao('net::ERR_CERT_AUTHORITY_INVALID', { base: 'https://icm:44300/' });
+  expect(semOpcao).toMatch(/ERR_CERT_AUTHORITY_INVALID/);
+  expect(semOpcao).toMatch(/spkiDoHost\("https:\/\/icm:44300\/"\)/);
+  expect(semOpcao).toMatch(/Não se ignora certificado por default/);
+
+  // já pinado e ainda barrou: a causa provável é OUTRA — o certificado do host mudou
+  expect(explicarErroDeNavegacao('net::ERR_CERT_AUTHORITY_INVALID', { base: 'https://icm:44300/', certificado: 'sha256/MPQ1+wn6fdYV6CpNLlZhgnm1B4TVgBA5PwL1iIEfKpI=' }))
+    .toMatch(/provavelmente mudou/);
+  expect(explicarErroDeNavegacao('net::ERR_SSL_PROTOCOL_ERROR', { base: 'https://icm:44300/', certificado: true }))
+    .toMatch(/não é de confiança na CA/);
+
+  // o que NÃO é certificado sai daqui como null — quem chama avisa, não lança (ERR_ABORTED também
+  // aparece em navegação simplesmente substituída)
+  expect(explicarErroDeNavegacao('net::ERR_ABORTED', { base: 'http://host:8000' })).toBeNull();
+  expect(explicarErroDeNavegacao(null, {})).toBeNull();
+});
+
+test('webgui: certificado recusado pelo Node não é "sem resposta do ICM"', () => {
+  // medido em 05/09/2026 contra HTTPS com certificado auto-assinado: o fetch estoura
+  // DEPTH_ZERO_SELF_SIGNED_CERT. O ICM está de pé — mandar procurar rede/host é a pista errada.
+  const r = interpretarSonda({ erro: 'DEPTH_ZERO_SELF_SIGNED_CERT' });
+  expect(r).toMatchObject({ ok: false, causa: 'certificado', status: null });
+  expect(r.motivo).toMatch(/o ICM respondeu/);
+  expect(r.motivo).toMatch(/NÃO cobre este `fetch`/);
+  expect(interpretarSonda({ erro: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }).causa).toBe('certificado');
+  expect(interpretarSonda({ erro: 'ERR_TLS_CERT_ALTNAME_INVALID' }).causa).toBe('certificado');
+  // e o que continua sendo ICM fora do ar não mudou de causa
+  expect(interpretarSonda({ erro: 'ENOTFOUND' }).causa).toBe('sem-icm');
 });
 
 test('webgui: o OK-code do navegador escreve por JS e dispara o Enter NO PRÓPRIO campo invisível', () => {

@@ -131,6 +131,10 @@ export function resolverAlvo(spec) {
     lang: (idioma || s.idioma || 'PT').toUpperCase(),
     user: null,
     pass: null,
+    // ICM que só atende HTTPS com certificado de CA INTERNA: o pino `sha256/…` que o Chrome aceita
+    // (leia-o uma vez com `spkiDoHost(base)`), ou `true` para não validar nada na sessão do
+    // navegador. Ausente = validação normal — não se ignora certificado por default.
+    certificado: s.certificado ?? null,
   };
   detalhe(`alvo: ${cfg.alias} → ${cfg.base} mandante ${cfg.client} idioma ${cfg.lang} cliente "${cfg.cliente}" (origem: ${s.origem})`);
   return cfg;

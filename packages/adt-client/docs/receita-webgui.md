@@ -400,6 +400,86 @@ No SXD 816/100 o canal rodou **sem** essa bandeira, porque lá o cookie **não**
 seja, a necessidade é por sistema, e a bandeira é aditiva (`--test-type` é obrigatório: sem ele o
 Chrome ignora a outra).
 
+## ⚠ HTTPS com certificado interno — o outro lado do mesmo problema
+
+O gotcha do cookie `secure` é do ICM em **HTTP puro**. O espelho dele aparece onde o ICM só atende
+**HTTPS** e o certificado vem de uma **CA interna do cliente**: o Chrome barra a navegação antes de
+um byte de SAP chegar.
+
+**Medido no SXD 816/100 em 2026-09-04:** `/UI2/FLPD_CUST` redireciona para
+`https://awskartsxd01.acclab.com:44300/` e a tela só abriu depois de mandar
+`Security.setIgnoreCertificateErrors`. **Reproduzido em laboratório local em 2026-09-05** (sem VPN,
+servidor HTTPS com certificado auto-assinado — `sap-accelerate/work/POC_https_cert/medicoes/item41-cert.md`),
+que é de onde saem os números:
+
+| como se sobe o Chrome | `Page.navigate` devolve | tela |
+|---|---|---|
+| nada (o default) | `net::ERR_CERT_AUTHORITY_INVALID` | "Erro de privacidade", `chrome-error://chromewebdata/` |
+| `Security.setIgnoreCertificateErrors` (**sem** `Security.enable`) | — | abriu |
+| `Security.enable` + `setIgnoreCertificateErrors` | — | abriu |
+| `--ignore-certificate-errors` | — | abriu |
+| `--ignore-certificate-errors-spki-list=<pino DESTE cert>` | — | abriu |
+| `--ignore-certificate-errors-spki-list=<pino de OUTRO cert>` | `net::ERR_CERT_AUTHORITY_INVALID` | **barrou** |
+
+A última linha é a que importa: o **pino restringe de verdade**. Não é `--ignore-certificate-errors`
+com enfeite — é "aceito o certificado daquele ICM", e qualquer outro certificado quebrado da sessão
+continua barrado.
+
+### A receita: pinar o certificado do sistema, uma vez
+
+**1. leia o pino do host** (e confira `subject`/`issuer`/validade com quem cuida da infra do
+cliente — pinar o que o host mostrou agora é *trust on first use*, não prova de identidade):
+
+```js
+import { spkiDoHost } from 'adt-client/webgui';
+console.log(await spkiDoHost('https://awskartsxd01.acclab.com:44300'));
+// { pino: 'MPQ1+…', sha256: 'sha256/MPQ1+…', subject: 'CN=…', issuer: 'CN=…',
+//   validoDe: '…', validoAte: '…', autoAssinado: false }
+```
+
+**2. grave no `sistemas.json`**, no alias daquele sistema:
+
+```json
+{ "sxd": { "url": "https://awskartsxd01.acclab.com:44300", "certificado": "sha256/MPQ1+…" } }
+```
+
+Pronto: `abrirNavegador(cfg)` já sobe com a bandeira. Nenhum script chama `s.cmd` à mão.
+
+**O default é não ignorar nada.** Sem `certificado`, o `ir` **lança na hora** — porque o
+`Page.navigate` devolve `errorText`, e o módulo passou a lê-lo:
+
+```
+webgui: a navegação para https://icm:44300/ falhou com net::ERR_CERT_AUTHORITY_INVALID.
+O Chrome não confia na CA que assinou o certificado deste host — típico de ICM com certificado interno.
+Não se ignora certificado por default. Para liberar ESTE sistema, em sistemas.json:
+  1. leia o pino:  spkiDoHost("https://icm:44300/")  → confira subject/issuer com a infra do cliente
+  2. grave:        { "<alias>": { "certificado": "sha256/<pino>" } }
+Alternativa larga (a sessão inteira sem validar certificado, e ela avisa): "certificado": true
+```
+
+Antes disso o erro era **silêncio caro**: a espera do `ir` rodava os 60 s do teto contra uma
+`chrome-error://` e o script culpava a tela ("nenhum campo"). Só se lança no que foi medido
+(`net::ERR_CERT_*` e `net::ERR_SSL_*`); qualquer outro `errorText` sai como **aviso** e a espera
+segue, porque `ERR_ABORTED` também aparece em navegação simplesmente substituída.
+
+`certificado: true` continua existindo para quem não quer pinar — manda o
+`Security.setIgnoreCertificateErrors` e **avisa alto** em stderr: é a sessão inteira sem validação.
+
+### ⚠ A opção é do Chrome — o `fetch` valida por conta própria
+
+`sondarWebgui`, o ADT e todo o resto da lib saem por `fetch`, que tem o **seu** validador e recusa
+antes de qualquer HTTP. Medidos os três casos:
+
+| certificado do host | código do `fetch` |
+|---|---|
+| auto-assinado | `DEPTH_ZERO_SELF_SIGNED_CERT` |
+| assinado por CA interna desconhecida | `UNABLE_TO_VERIFY_LEAF_SIGNATURE` |
+| CA confiável, nome que não bate | `ERR_TLS_CERT_ALTNAME_INVALID` |
+
+O que existe hoje é o **veredito honesto**: `interpretarSonda` devolve causa `certificado` (antes
+dizia `sem-icm`, que manda procurar rede e host — o lugar errado, porque o ICM está de pé). Fazer o
+`fetch` aceitar CA interna é outro item (fila `adt-client` 69).
+
 ## ⚠ `crypto.randomUUID` — o cadáver bonito
 
 **Medido no SXD 816/100 em 2026-09-03.** Servida por HTTP puro e **sem** a bandeira de origem

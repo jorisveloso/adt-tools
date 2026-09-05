@@ -6,6 +6,9 @@
     "  url     — endereço do ADT (ICM). O landscape só tem o dispatcher do SAP GUI, e o host pode diferir.",
     "  cliente — em qual pasta de destinos.json os objetos caem.",
     "  mandante / idioma — defaults, se você não quiser digitar no connect.",
+    "  certificado — SÓ para ICM em HTTPS com certificado de CA interna: o pino \"sha256/<base64>\" que",
+    "                o Chrome do canal webgui aceita (leia-o uma vez com spkiDoHost(url)), ou true para não",
+    "                validar certificado nenhum naquela sessão. Ausente = validação normal, que é o default.",
     "Alias que não existe no SAP GUI também pode ser cadastrado aqui, com todos os campos.",
     "É gitignored porque host e mandante de cliente não entram num repositório.",
     "Rode `node abapgit.mjs sistemas` para ver o que já está resolvido e o que falta."
@@ -16,5 +19,12 @@
     "url": "http://sapdev01.exemplo.local:8000",
     "mandante": "100",
     "idioma": "PT"
+  },
+
+  "sxd": {
+    "cliente": "acme",
+    "url": "https://icm-interno.exemplo.local:44300",
+    "mandante": "100",
+    "certificado": "sha256/COLE_AQUI_O_PINO_QUE_O_spkiDoHost_LEU_DESTE_HOST="
   }
 }
