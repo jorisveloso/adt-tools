@@ -983,7 +983,8 @@ export function montarTela(brutos, { titulo = null } = {}) {
 /** PURO: o despejo bruto de TODO controle com `ct` — o insumo do `montarTela`. */
 export const JS_DESPEJO_CONTROLES = `[...document.querySelectorAll('[ct]')].map((el) => {
   let lsdata = null; try { lsdata = JSON.parse(el.getAttribute('lsdata') || 'null'); } catch (x) {}
-  return { id: el.id || null, ct: el.getAttribute('ct'), lsdata,
+  let lsevents = null; try { lsevents = JSON.parse(el.getAttribute('lsevents') || 'null'); } catch (x) {}
+  return { id: el.id || null, ct: el.getAttribute('ct'), lsdata, lsevents,
     title: el.title || null, aria: el.getAttribute('aria-checked'),
     accesskey: el.getAttribute('data-sap-ls-accesskey'),
     valor: 'value' in el ? el.value : null, desabilitado: !!el.disabled, somenteLeitura: !!el.readOnly,

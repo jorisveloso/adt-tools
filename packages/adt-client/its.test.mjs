@@ -4,6 +4,7 @@
 // Todo trecho bruto é COPIADO das respostas do s4h 758/250 de 04/09/2026
 // (sap-accelerate/work/POC_webgui_okcode/medicoes/raw/*).
 import { test, expect } from 'vitest';
+import { sidDoLsdata } from './webgui.mjs';
 import {
   OKCD, ESTADO, BOOT, ENTER, batchPreencher, batchAcionar, batchComandar, batchVkey,
   decodificarEntidades, cabecalhoDoShell, paramDe, passosDoMultipart, sidsDaResposta, lerResposta,
@@ -238,6 +239,7 @@ test('its: controlesDoHtml despeja o MESMO formato do JS_DESPEJO_CONTROLES — e
   const [rotulo] = controlesDoHtml(LABEL_SE38);
   expect(rotulo).toEqual({
     id: 'M0:46:::2:0', ct: 'L', lsdata: expect.objectContaining({ 1: 'M0:46:::2:14', 3: 'Programa' }),
+    lsevents: null,       // este rótulo não publica evento — e o fixture está sem o atributo
     title: null, aria: null, accesskey: null, valor: null, desabilitado: false, somenteLeitura: false,
     texto: 'Programa',     // <span class="urAccessKey">P</span>rograma — inline cola; "P\nrograma" seria o bug
     visivel: true,
@@ -283,6 +285,43 @@ test('its: controlesDoDelta varre só os CDATA dos control-update, na ordem do d
   ]);
   expect(controlesDoDelta(MULTIPART)).toEqual([]);
   expect(controlesDoDelta('')).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// O `lsevents` — o mapa de DISPARO (fila 44). Os dois trechos abaixo são COPIADOS INTEIROS do bruto
+// do s4h 758/250 (POC_webgui_its_lib/medicoes/raw/a-boot.xml), COM o atributo que os fixtures acima
+// tiveram cortado: o `lsdata` diz o que o controle é, o `lsevents` diz que comando do protocolo o
+// aciona. Medido nos 4 raws daquela POC: 334 de 1532 controles publicam `lsevents`, e a contagem
+// bate 1:1 com o `grep` do atributo no bruto (119/119, 48/48, 119/119, 48/48).
+// ---------------------------------------------------------------------------------------------
+
+const BTN3_COM_EVENTOS = `<div draggable="false" id="M0:56::btn[3]" ct="B" lsdata='{"x":0,"2":"TRANSPARENT","4":"Voltar","18":"F3","21":true,"22":"BACK","27":{"SID":"wnd[0]/tbar[0]/btn[3]","Type":"GuiButton"}}' lsevents='{"Press":[{},{"1":"action/3","2":true,"3":true}]}' role="button" title="Voltar" tabindex="0" ti="0" class="lsButton lsButton--base urNoUserSelect urBtnRadius  lsButton--active  lsButton--focusable  lsButton--up lsButton--type lsButton--typeBack lsButton--design-transparent ">`;
+const OKCD_COM_EVENTOS = `<input id="ToolbarOkCode" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","3":"ToolbarOkCode_TALB","6":"NONE","13":"o","14":"SERVER","21":{"SID":"wnd[0]/tbar[0]/okcd","Type":"GuiOKCodeField","display":"X"}}' lsevents='{"Enter":[{},{"1":"vkey/0/ses[0]","2":true}],"Change":[{},{"1":"okcode/ses[0]"}],"Select":[{},{"1":"value","3":true}],"DeleteItem":[{},{"3":true}],"ListAccess":[{},{"3":true,"8":"typeahead"}],"FieldHelpPress":[{},{"1":"value","3":true}],"ActionItemActivate":[{},{"1":"vkey/0/ses[0]","2":true}]}' type="text" data-sap-ls-accesskey="o" accesskey="o" autocomplete="off" maxlength="200" tabindex="0" ti="0" title="Inserir&#x20;c&#xf3;digo&#x20;de&#x20;transa&#xe7;&#xe3;o" class="lsField__input" role="combobox" aria-haspopup="true" aria-controls="ToolbarOkCode_TALB" aria-expanded="false"/>`;
+
+test('its: controlesDoHtml expõe o lsevents — o COMANDO que cada evento dispara, no índice 1', () => {
+  const [btn] = controlesDoHtml(BTN3_COM_EVENTOS);
+  // a forma é sempre `{ <Evento>: [ <opções de transporte>, <parâmetros> ] }`, e o índice 1 é o comando
+  expect(btn.lsevents).toEqual({ Press: [{}, { 1: 'action/3', 2: true, 3: true }] });
+  expect(sidDoLsdata(btn.lsdata).SID).toBe('wnd[0]/tbar[0]/btn[3]');   // o ONDE segue vindo do lsdata
+
+  const [okcd] = controlesDoHtml(OKCD_COM_EVENTOS);
+  // é daqui que saiu o disparo do OK-code: quem submete é o vkey/0/ses[0], não um action
+  expect(okcd.lsevents.Enter).toEqual([{}, { 1: 'vkey/0/ses[0]', 2: true }]);
+  expect(okcd.lsevents.Change).toEqual([{}, { 1: 'okcode/ses[0]' }]);
+  expect(Object.keys(okcd.lsevents)).toEqual(
+    ['Enter', 'Change', 'Select', 'DeleteItem', 'ListAccess', 'FieldHelpPress', 'ActionItemActivate']);
+
+  // o JSON do lsevents tem aspas DUPLAS dentro de aspas simples: o scanner de tag não pode cortar no
+  // primeiro `>`, e o atributo tem de sobreviver ao CDATA do delta-update
+  const brutos = controlesDoDelta(cdata('cuaarea', `<div id="cuaarea" ct="CO">${BTN3_COM_EVENTOS}${OKCD_COM_EVENTOS}</div>`));
+  expect(brutos.map((b) => b.lsevents?.Press?.[1]?.['1'] ?? b.lsevents?.Enter?.[1]?.['1'] ?? null))
+    .toEqual([null, 'action/3', 'vkey/0/ses[0]']);   // o CO não publica evento; o botão e o okcd sim
+});
+
+// lsevents ilegível não derruba a leitura — é o mesmo tratamento do lsdata
+test('its: lsevents ausente ou quebrado vira null, e o resto do controle continua lido', () => {
+  expect(controlesDoHtml(`<div ct="B" lsevents='{quebrado'>x</div>`)[0]).toMatchObject({ ct: 'B', lsevents: null, texto: 'x' });
+  expect(controlesDoHtml(`<div ct="B">x</div>`)[0].lsevents).toBeNull();
 });
 
 test('its: telaDoDelta é o MESMO modelo do lerTela do navegador — rótulo costurado pelo label, dica do data element, radio pelo aria, botões com tecla', () => {

@@ -373,7 +373,8 @@ export function atributosDe(tag) {
   return attrs;
 }
 
-function lsdataDe(bruto) {
+/** PURO: o JSON de um atributo do renderer (`lsdata`, `lsevents`) — ou `null` se não parsear. */
+function jsonDoAtributo(bruto) {
   if (!bruto) return null;
   try { return JSON.parse(decodificarEntidades(bruto)); } catch { /* entidade que virou aspa */ }
   try { return JSON.parse(bruto); } catch { return null; }
@@ -381,9 +382,16 @@ function lsdataDe(bruto) {
 
 /**
  * PURO: os controles de um trecho de HTML do ITS — todo elemento com `ct`, no MESMO formato que o
- * `JS_DESPEJO_CONTROLES` do webgui.mjs despeja do DOM: `{ id, ct, lsdata, title, aria, accesskey,
- * valor, desabilitado, somenteLeitura, texto, visivel }`. É um scanner de tags com pilha (não um
- * parser de HTML): `texto` é o que o `innerText` seria — os nós de texto do elemento e dos filhos,
+ * `JS_DESPEJO_CONTROLES` do webgui.mjs despeja do DOM: `{ id, ct, lsdata, lsevents, title, aria,
+ * accesskey, valor, desabilitado, somenteLeitura, texto, visivel }`.
+ *
+ * O `lsdata` diz o que o controle É; o `lsevents` diz o que ele FAZ — evento a evento, o comando do
+ * protocolo que o dispara (`{"Press":[{},{"1":"action/3",…}]}`, § De onde sai o COMANDO da receita).
+ * Sai como JSON parseado, igual ao `lsdata`, e `null` quando o controle não publica nenhum — medido
+ * (fila 44) em 334 de 1532 controles dos 4 raws do POC_webgui_its_lib, o MESMO total que o `grep` do
+ * atributo no bruto acha (119/119, 48/48, 119/119, 48/48): a via HTTP não perde nenhum.
+ *
+ * É um scanner de tags com pilha (não um parser de HTML): `texto` é o que o `innerText` seria — os nós de texto do elemento e dos filhos,
  * inline colado e bloco em linha nova, sem o que está em subárvore invisível, cortado em 120 — e
  * `visivel` é a ausência de marca de invisível nele ou acima.
  *
@@ -453,7 +461,8 @@ export function controlesDoHtml(html) {
       indice = brutos.length;
       brutos.push({
         id: attrs.id ? decodificarEntidades(attrs.id) : null, ct: attrs.ct,
-        lsdata: lsdataDe(attrs.lsdata),
+        lsdata: jsonDoAtributo(attrs.lsdata),
+        lsevents: jsonDoAtributo(attrs.lsevents),
         title: attrs.title ? decodificarEntidades(attrs.title) : null,
         aria: attrs['aria-checked'] ?? null,
         accesskey: attrs['data-sap-ls-accesskey'] ?? null,
@@ -579,7 +588,7 @@ export function celulasDoGrid(corpo, cid) {
     const linha = Number(m[1]);
     const coluna = Number(m[2]);
     if (coluna < 1) continue;
-    const d = lsdataDe(m[3]) ?? {};
+    const d = jsonDoAtributo(m[3]) ?? {};
     const cel = Object.values(d).find((x) => x && typeof x === 'object' && 'value' in x);
     if (!linhas.has(linha)) linhas.set(linha, {});
     linhas.get(linha)[coluna] = cel ? String(cel.value ?? '') : '';

@@ -1095,11 +1095,21 @@ se posta com o SID do campo**: o alvo do teclado é a sessão (`vkey/4/ses[0]`),
 `focus` anterior no mesmo batch (§ O teclado). Quem concatenar SID em tudo acerta `action/*` e
 `value` e falha calado no teclado.
 
+⚠ **E existe comando que já vem ENDEREÇADO com o SID de OUTRO controle.** Medido em 05/09/2026
+(fila 44): o `ActivateHelp` da barra de mensagens (`ct="MB"`) publica `action/1/wnd[0]/sbar` — o alvo
+vem no comando, e não é o SID do próprio elemento (`wnd[0]/sbar_msg`). Antes de concatenar SID,
+verifique se o comando já traz um (`/wnd[`, ou o sufixo `/ses[0]`).
+
+**As duas vias leem o `lsevents`** — `controlesDoHtml`/`controlesDoDelta` do `its.mjs` (HTTP puro) e o
+`JS_DESPEJO_CONTROLES` do `webgui.mjs` (DOM) despejam o mesmo campo, JSON já parseado, `null` quando o
+controle não publica nada. Cruzado na MESMA SE38 (fila 44, 05/09/2026): dos 56 controles com id nas
+duas vias, o mapa evento→comando é **igual em 56, diferente em 0**; e nos 4 raws do
+`POC_webgui_its_lib` o parser acha 334 de 334 atributos (`medicoes/item44-lsevents-http.md`).
+
 *Ponto aberto:* só `action/3` foi medido nessa família. `action/1`, `4`, `7`, `8`, `9`, `25`, `62`,
 `74`, `309`, `810` e `901` aparecem no mapa mas **não** foram postados — a contra-prova está em
-`POC_webgui_lsdata/scripts/derivar.mjs`, à espera de uma janela com o s4h no ar (fila 43). E o
-`controlesDoHtml` desta lib ainda não extrai `lsevents`: por esta via a tela não entrega o mapa
-(fila 44).
+`POC_webgui_lsdata/scripts/derivar.mjs`, à espera de uma janela com o s4h no ar (fila 43). Compor o
+POST a partir do `lsevents` (`acionar(sessao, alvo, { evento })`) é a fila 71.
 
 ### A caixa de comando (OK-code) — a navegação genérica do canal
 
