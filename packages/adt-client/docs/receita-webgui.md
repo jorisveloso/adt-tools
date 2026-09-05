@@ -773,12 +773,22 @@ ter vindo do gesto em teste.
 ⚠ O `change` **não discrimina**: apareceu nos três cenários da bisseção, inclusive no que perdeu.
 Quem discrimina é o `blur` ou o endereço do `vkey`.
 
-### ⚠ OK-code que abre popup trava a `wnd[0]`
+### ⚠ OK-code que abre popup trava a `wnd[0]` — **só no NAVEGADOR**
 
 `/15` (Shift+F3) no menu abre a pergunta de logoff: `sap.its.getPopupCount()` vira `1` e a partir
 daí o `okcd` de `wnd[0]` **não responde mais** — o `/nSE16` seguinte não postou nada e a tela ficou
 parada 20 s. Bisseção: a mesma sequência **sem** o `/15` (`/nSE16` → `/3` → `/nSE38` → `/n`) anda
 inteira. Dirigir popup é `wnd[1]` (fila `adt-client`, item 23).
+
+⚠ **A trava é DESTE canal, não do SAP** — é uma das divergências medidas entre as duas vias. Na via
+HTTP pura o mesmo gesto passa, inclusive com o modal **duro**: medido no s4h 758/250 em 05/09/2026
+(item 58, `POC_webgui_popup/medicoes/spop-comandar.md`) que com o **SPOP** de `/nend` aberto — 11
+SIDs na `wnd[1]`, **zero `btn[n]`**, só `usr/btnSPOP-OPTION1|2` — `comandar(s, '/nSE38')` devolveu
+`delta`/`pegou: true` em 170 ms, `cuatitle` "Editor ABAP: 1ª tela", `tcode` SE38, popup sumido; e a
+repetição de SE38→SE16 fez o mesmo em 86 ms. O SPOP era o de **logoff**, e a sessão continuou aberta
+(`s.aberta`, mais um `state/ur` sem ação para confirmar o estado estável): o modal foi **descartado**,
+não respondido "Sim". Ou seja, **na via HTTP o `comandar` não precisa fechar o popup antes** — quem
+precisa é o navegador. Não medido: SPOP com campo obrigatório, ou popup de erro que a dynpro reponha.
 
 **Vocabulário** (o mesmo da via HTTP, § "A caixa de comando (OK-code)"): `/nXXXX` de qualquer tela,
 `/n` volta ao menu, `/3` e `/8` valem como F3 e F8, o `fcode` da dynpro entra cru (`ONLI`), `/o`
@@ -1559,9 +1569,25 @@ título, mensagem, o campo (nome, rótulo, dica, maxlen), os 16 botões (okcode,
 markup" — o `okcd` (0×0 no navegador) sai `visivel: true`. E a `wnd[0]` (`GuiMainWindow`) mora no
 **shell do GET**, não no delta: sem popup, `tela.janela` é `null` por esta via.
 
-⚠ **Com popup aberto, o delta ESVAZIA a `wnd[0]/usr`.** Medido com `/nend` e `/o`: o `steploop0`
-vem `<div id="steploop0" ct="PLP"></div>`, **0** SIDs em `wnd[0]/usr` (contra 48 do mesmo menu
-sem popup), e um `state/ur` posterior devolve a mesma coisa. `tela.popup` traz a `wnd[1]`:
+⚠ **"Com popup aberto o delta ESVAZIA a `wnd[0]/usr`" é FALSO** — foi conclusão do item 21 e caiu na
+medição do item 58 (05/09/2026). O que esvazia é o **bloco `steploop0`** (`<div id="steploop0"
+ct="PLP"></div>`); os campos da `wnd[0]` vêm noutro bloco do mesmo delta, e `telaDoDelta` os enxerga.
+O controle que faltava ao item 21 é a primeira linha desta tabela — reprocessando os brutos, sem
+tocar a rede:
+
+| bruto | tela de trás | popup | campos `wnd[0]` |
+|---|---|---|---|
+| `POC_webgui_okcode/raw/c5-n.txt` | SMEN (menu) | **não** | **0** |
+| `POC_webgui_okcode/raw/d3-nend.txt` | SMEN (menu) | SPOP | 0 |
+| `POC_webgui_okcode/raw/d2-o.txt` | SMEN (menu) | Sessões ABAP | 0 |
+| `POC_webgui_popup/raw/b-o.txt` | SE16 (seleção) | Sessões ABAP | **34** |
+| `POC_webgui_popup/raw/i58-b-nend.txt` | SE16 (seleção) | **SPOP** | **34** |
+| `POC_webgui_popup/raw/f0-nend.txt` | SE38 | SPOP | 1 |
+
+**O SMEN sem popup nenhum também dá 0** — o menu não tem campos de dynpro para dar. A variável era a
+tela de origem, não o modal. Toda tela com campos os manteve no delta com o popup aberto.
+⚠ O `tela.aviso` abaixo ainda repete a afirmação falsa (só não dispara porque a condição é
+`campos.length === 0`) — corrigi-lo é item na fila. `tela.popup` traz a `wnd[1]`:
 
 ```js
 tela.popup   // { sid: 'wnd[1]', id: 'SAPLSPO1100_1', titulo: 'Efetuar logoff',
@@ -1573,7 +1599,10 @@ tela.aviso   // 'popup wnd[1] aberto — a wnd[0]/usr não vem no delta enquanto
 
 ⚠ Os botões do popup (`btnSPOP-OPTION1`) **não são `btn[n]`**: não entram em `tela.botoes` e
 `acionar(s, 'Sim')` não os acha — o endereço é `acionar(s, { sid: tela.popup.botoes[0].sid })`.
-**Responder ao popup por esta via não está medido** (item 23).
+**Responder pelo SID está medido** (item 23, `POC_webgui_popup/medicoes/dirigir-popup.md`): o SID do
+botão dispara, o apelido estoura e a **tecla não fecha o popup** (F12 voltou `pegou: true` e o modal
+continuou lá). E **não é preciso responder para sair**: `comandar` atravessa o modal (item 58, §
+"OK-code que abre popup trava a `wnd[0]`").
 
 #### O alvo tem JANELA — e por padrão é a ATIVA (item 42)
 

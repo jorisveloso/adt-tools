@@ -1054,6 +1054,16 @@ export const tecla = (sessao, nome, opts) => despachar(sessao, batchVkey(numeroD
  * mesma rodada: o mesmo OK-code SEM o valor traz a tabela inteira ("5 acertos"), e o valor sem
  * fcode nenhum não executa (fica na tela de seleção). Aqui o `okcd` é campo como outro qualquer —
  * quem submete é o Enter, e ele carrega a dynpro toda.
+ *
+ * ⚠ **ATRAVESSA POPUP, inclusive o modal duro** — e aqui a via HTTP DIVERGE do navegador. Medido no
+ * s4h 758/250 em 05/09/2026 (item 58, `POC_webgui_popup/medicoes/spop-comandar.md`): com o **SPOP**
+ * de `/nend` aberto (11 SIDs na `wnd[1]`, **zero `btn[n]`** — só `usr/btnSPOP-OPTION1|2`),
+ * `comandar(s, '/nSE38')` voltou `delta`/`pegou: true` em 170 ms, `tcode` SE38, popup sumido; a
+ * repetição SE38→SE16 fez o mesmo em 86 ms. O SPOP era o de **logoff** e a sessão continuou aberta
+ * (o "Sim" devolveria `forma: 'logoff'`, item 23 passo I): o modal foi **descartado**, não
+ * respondido. No NAVEGADOR o mesmo gesto trava — o `okcd` da `wnd[0]` para de postar assim que
+ * `getPopupCount()` vai a 1 (item 13). Logo: **não é preciso fechar o popup antes de comandar**.
+ * Não medido: SPOP com campo obrigatório, ou popup de erro que a dynpro reponha.
  */
 export async function comandar(sessao, okcode, opts) {
   const r = await despachar(sessao, batchComandar(okcode), opts);
