@@ -1106,6 +1106,14 @@ controle não publica nada. Cruzado na MESMA SE38 (fila 44, 05/09/2026): dos 56 
 duas vias, o mapa evento→comando é **igual em 56, diferente em 0**; e nos 4 raws do
 `POC_webgui_its_lib` o parser acha 334 de 334 atributos (`medicoes/item44-lsevents-http.md`).
 
+⚠ **Controle de SHELL não publica comando nenhum — o `lsevents` dele é só a lista de eventos.**
+Medido em 05/09/2026 (fila 45) no grid `C102` da lista do RSPARAM: dos **17** eventos que ele
+publica (`CellSelect`, `BlockSelect`, `RequestData`, `VerticalScroll`, `CopyToClipboardRequest`…),
+**0 têm o índice `1`** — na mesma tela, os controles comuns têm 43 pares evento→comando. Vale até
+para o `RequestData`, cujo `action/710` só apareceu capturando a rede (item 25). Para grid, árvore e
+afins o comando vem do mapa `RGACTIONS` do renderer, não da tela: ausência de índice `1` ali **não**
+quer dizer que o evento não tenha via — quer dizer que a tela não a declara.
+
 *Ponto aberto:* só `action/3` foi medido nessa família. `action/1`, `4`, `7`, `8`, `9`, `25`, `62`,
 `74`, `309`, `810` e `901` aparecem no mapa mas **não** foram postados — a contra-prova está em
 `POC_webgui_lsdata/scripts/derivar.mjs`, à espera de uma janela com o s4h no ar (fila 43). Compor o
@@ -1490,8 +1498,70 @@ Rolar dentro desse bloco não toca a rede. E o que move o grid é a **roda do mo
 mexeram na janela nem geraram uma requisição. Ler célula por DOM, portanto, só alcança o bloco —
 a faixa arbitrária é a via HTTP acima.
 
-### Exportar
+## Exportar a lista por ARQUIVO — o ITSDoc (item 45)
 
-Não é preciso: `fragments=0,<total-1>` **é** a exportação — a tabela inteira, estruturada, num
-POST. O grid publica `CopyToClipboardRequest` no `lsevents` e o ALV tem *Exportar → arquivo local*,
-mas os dois desembocam numa via de SAÍDA que este canal não tem, e nenhum foi medido.
+**O canal TEM via de saída** — não pelo `batch/json`, por um diálogo à parte. Medido no s4h 758/250
+em 05/09/2026 na mesma lista do RSPARAM (`work/POC_webgui_export/medicoes/item45-exportar.md`):
+
+```js
+const s = await abrirTransacao(cfg, 'SA38', { parametros: { 'RS38M-PROGRAMM': 'RSPARAM' }, okcode: 'STRT' });
+await acionar(s, 'btn[8]');
+const { conteudo, bytes, partes } = await exportarLista(s, { formato: 'tabuladores' });
+// 182 015 B de TSV, 1617 linhas — as MESMAS do lerGrid, com 68× menos bytes
+```
+
+O gesto é o do próprio ALV: **`wnd[0]/tbar[1]/btn[45]` "File local..."** (`CTRL_SHIFT_F9`) — a barra
+da lista publica os botões de exportação, e não é preciso caminho de menu. Ele abre o popup
+*Gravar lista em file...* (`SAPLSPO5`, 6 radios `SPOPLI-SELFLAG[n,0]`); o radio se marca com
+`action/4/<SID>` e quem confirma é o **`vkey/0/ses[0]`** (o Avançar da modal publica
+`Press: vkey/0/ses[0]`, não `action/3`).
+
+Confirmado, a dynpro vira `SAPLSIT1` e o delta deixa de trazer tela: traz um **pedido ao frontend**,
+o `sap.its.arrITSDocParams`. Cada método é um POST **fora do batch**, na URL que o pedido trouxe
+(`…/bc/gui/sap/its/webgui/<n>/data/<id>~<verbo>`), corpo vazio, `x-www-form-urlencoded`:
+
+| `ITSDocMethod` | o POST | a resposta |
+|---|---|---|
+| `Query` (`CD`) | `<URL>query?RetQuery=<caminho>` | vazia |
+| `FileSaveDialog` | `<URL>filesavedialog?FileName=…&FileEncoding=…` | vazia |
+| `Export` | `<URL>get` | **o arquivo** |
+| `GuiSapInfo` + `Method:'ClipboardExport'` | `<URL>clipboardexport` | **o texto** |
+| `Import` | `<URL>post` (FormData `LOCALFILE1`) | a via de ENTRADA — não medida (fila 72) |
+
+Depois de CADA um, o controle volta à dynpro com o trio fixo do renderer (`OK_ITSDOC`):
+`okcode/ses[0]` = `=OK`, `vkey/0/ses[0]`, `state/ur`. Sem ele o programa fica esperando o frontend.
+
+⚠ **O `Query CD` é uma pergunta de verdade, e a resposta é usada.** Respondendo vazio, o servidor
+repete o `CD`; respondendo `Z:\`, ele avança com `DefPath:'Z:\'`. O `Z:\` é a raiz do filesystem
+VIRTUAL que o renderer inventa para o browser (`nfstosfs`), não disco de ninguém.
+⚠ **Arquivo grande vem FATIADO**: o HTML veio em dois `Export` (5 120 000 B + 1 643 878 B). Daí
+`exportarLista` acumular `partes` e concatenar.
+⚠ **`planilha` não passa por aqui**: abre outro popup (*Export As*) e não chega ao ITSDoc.
+
+| formato | saída | bytes | download |
+|---|---|---:|---:|
+| `nao-convertido` | texto de largura fixa, 1617 linhas + cabeçalho | 1,08 MB | 77 ms |
+| `tabuladores` | **TSV** com cabeçalho | 182 KB | 62 ms |
+| `html` | HTML, em 2 partes | 6,76 MB | 251 ms |
+| `clipboard` | texto, num POST só, sem arquivo | 1,07 MB | 100 ms |
+
+**Exportar ou `lerGrid`?** Cruzados na mesma sessão, os 1617 nomes batem **1617 de 1617**. Mas a
+exportação traz a lista **como o ALV a formata** (cabeçalho traduzido, valor com máscara, ordem da
+tela) e o `lerGrid` traz o dado por `ColumnID`. Para *ver o que o usuário veria*, exportação; para
+*ler campo*, `lerGrid`.
+
+### ⚠ O `CopyToClipboardRequest` do grid NÃO tem via HTTP
+
+Não é falta de descoberta — é ausência de comando, por três medições independentes:
+
+1. **Controle de shell não publica comando no `lsevents`.** Dos 17 eventos do grid `C102`
+   (`CellSelect`, `BlockSelect`, `RequestData`, `CopyToClipboardRequest`…), **0 têm o índice `1`**,
+   enquanto na mesma tela os controles comuns têm 43 pares evento→comando. Vale até para o
+   `RequestData`, cujo `action/710` só apareceu **capturando a rede** (item 25): para o grid, o
+   `lsevents` diz o QUE, nunca o COMO.
+2. **O renderer marca o evento como não-submetível** (`q.rgv.submit = !1`): o handler monta a string
+   das células do DOM e chama `navigator.clipboard.writeText`. É gesto de browser, ponta a ponta.
+3. **O mapa `RGACTIONS` do `GuiGridView` tem 33 ações e nenhuma de copiar/exportar** — as duas do
+   clipboard são `760 COPYCLIPBOARDFAILED` (avisar que o cliente falhou) e `772` (o *cut*).
+
+Quem quer o texto usa o *Exportar → Clipboard* (radio 5), que é ITSDoc — e está medido acima.

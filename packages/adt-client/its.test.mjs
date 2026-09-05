@@ -11,6 +11,7 @@ import {
   sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla, janelaAtiva, janelaDoSid, ativa,
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, telaDoDelta, lerTela, parametrosDaTela,
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
+  itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS,
 } from './its.mjs';
 
 const SHELL = `<html><head><script>var moin = "FF671392BF705DEF";</script></head><body>
@@ -538,4 +539,54 @@ test('its: delta PARCIAL (o fragmento do ALV) não é a tela — lerResposta o m
   // a tela inteira traz os aParams — e não é parcial
   expect(lerResposta({ status: 200, tipo: 'text/xml', corpo: DELTA }).parcial).toBe(false);
   expect(lerResposta({ status: 400, tipo: 'text/html', corpo: 'Session Timed Out' }).parcial).toBe(false);
+});
+
+// ---------- o ITSDoc: a via de SAÍDA (item 45) ----------
+// Os três `<script-call>` são COPIADOS das respostas do s4h 758/250 de 05/09/2026, exportando a
+// lista do RSPARAM (POC_webgui_export/medicoes/raw/f-volta*.txt, h5-volta1.txt). O do
+// `FileSaveDialog` veio cortado: os 50 pares de encoding (`E1`…`E50`) não mudam nada aqui.
+const ITSDOC_URL = "/sap(cz1TSUQlM2FBTk9O…LUFUVA==)/bc/gui/sap/its/webgui/121/data/A8A20154B44A2737~";
+const ITSDOC_QUERY = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {URL:'${ITSDOC_URL}',Query:'CD',Title:'',action:'invoke_itsdoc',RetLong:0,FileName:'',Environment:'',ITSDocMethod:'Query'};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
+const ITSDOC_SALVAR = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {E46:'UTF8|4110|Unicode (UTF-8)',URL:'${ITSDOC_URL}',Title:'',DefExt:'txt',Filter:'Arquivos de texto (*.TXT)|*.TXT|Todos os arquivos (*.*)|*.*|||',action:'invoke_itsdoc',DefFile:'',DefPath:'Z:\\\\',POnOWrite:'X',NoCodLines:'50',ITSDocMethod:'FileSaveDialog',WithEncoding:'X'};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
+const ITSDOC_EXPORT = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {URL:'${ITSDOC_URL}',Append:'false',action:'invoke_itsdoc',FileName:'Z:\\\\rsparam.txt',FileType:'BIN',ITSDocMethod:'Export'};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
+const ITSDOC_CLIPBOARD = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {URL:'${ITSDOC_URL}',Mode:'',Title:'',Method:'ClipboardExport',action:'invoke_itsdoc',DefPath:'',DestUrl:'',DestFile:'',MimeType:'',Variable:'',SourceUrl:'',SourceFile:'',MimeSubType:'',ITSDocMethod:'GuiSapInfo'};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
+
+test('its: itsdocDoDelta lê o pedido do frontend — objeto JS (chave sem aspas, valor em aspas simples)', () => {
+  expect(itsdocDoDelta(ITSDOC_QUERY)).toMatchObject({ ITSDocMethod: 'Query', Query: 'CD', URL: ITSDOC_URL });
+  // o `\\` do JS vira uma barra só depois de parseado — é o caminho do filesystem virtual
+  expect(itsdocDoDelta(ITSDOC_EXPORT)).toMatchObject({ ITSDocMethod: 'Export', FileName: 'Z:\\rsparam.txt', FileType: 'BIN' });
+  expect(itsdocDoDelta(ITSDOC_CLIPBOARD)).toMatchObject({ ITSDocMethod: 'GuiSapInfo', Method: 'ClipboardExport' });
+  expect(itsdocDoDelta(ITSDOC_SALVAR)).toMatchObject({ ITSDocMethod: 'FileSaveDialog', DefPath: 'Z:\\' });
+  // delta comum não pede nada ao frontend, e o vazio não estoura
+  expect(itsdocDoDelta(DELTA)).toBe(null);
+  expect(itsdocDoDelta(FRAGMENTO)).toBe(null);
+  expect(itsdocDoDelta(null)).toBe(null);
+  // valor com aspas simples derruba o JSON.parse — devolve o `bruto`, e o pedido cai no `cancel`
+  const torto = itsdocDoDelta(`sap.its.arrITSDocParams = {Title:'d'Água',ITSDocMethod:'Export'};`);
+  expect(torto.bruto).toBeTruthy();
+  expect(pedidoDoItsdoc(torto).caminho).toBe('cancel');
+});
+
+test('its: pedidoDoItsdoc traduz cada método do ITSDoc no verbo que o renderer POSTa', () => {
+  const doc = (corpo) => itsdocDoDelta(corpo);
+  expect(pedidoDoItsdoc(doc(ITSDOC_QUERY))).toEqual({ caminho: `${ITSDOC_URL}query?RetQuery=Z%3A%5C`, conteudo: false });
+  expect(pedidoDoItsdoc(doc(ITSDOC_SALVAR), { arquivo: 'Z:\\rsparam.txt' })).toEqual({
+    caminho: `${ITSDOC_URL}filesavedialog?FileName=Z%3A%5Crsparam.txt&FileEncoding=4110`, conteudo: false });
+  // só estes dois trazem DADO na resposta — é neles que a exportação sai
+  expect(pedidoDoItsdoc(doc(ITSDOC_EXPORT))).toEqual({ caminho: `${ITSDOC_URL}get`, conteudo: true });
+  expect(pedidoDoItsdoc(doc(ITSDOC_CLIPBOARD))).toEqual({ caminho: `${ITSDOC_URL}clipboardexport`, conteudo: true });
+  // método não previsto não trava a dynpro: cancela
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'FileBrowser' })).toEqual({ caminho: 'u/cancel', conteudo: false });
+  // o GuiSapInfo de OUTRO Method não é o clipboard
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'GuiSapInfo', Method: 'ClipboardImport' }).caminho).toBe('u/cancel');
+});
+
+test('its: OK_ITSDOC devolve o controle à dynpro — o mesmo trio do updown_send_okcode', () => {
+  expect(OK_ITSDOC).toEqual([
+    { post: 'okcode/ses[0]', content: '=OK' },
+    { post: 'vkey/0/ses[0]' },
+    { get: 'state/ur' },
+  ]);
+  expect(FORMATOS.tabuladores).toBe(1);
+  expect(FORMATOS.clipboard).toBe(5);
 });

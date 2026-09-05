@@ -830,6 +830,161 @@ export async function lerGrid(sessao, alvo = null, { de = 1, ate = null, lote = 
     linhas: linhasDoGrid(dentro, g.colunas ?? []), pedidos, bytes, ms: Date.now() - t0, truncado };
 }
 
+// ---------- a via de SAÍDA: o ITSDoc (exportar por arquivo) ----------
+
+/**
+ * PURO: o `sap.its.arrITSDocParams` que o delta trouxe — ou `null` quando o delta não pede nada ao
+ * "frontend". É por ele que o WebGUI faz o que no SAP GUI seria `gui_download`: a dynpro `SAPLSIT1`
+ * devolve um pedido (`ITSDocMethod`) e ESPERA que o cliente o atenda numa URL própria, fora do
+ * batch. O objeto é JS, não JSON (chave sem aspas, valor em aspas simples) — daí a normalização.
+ */
+export function itsdocDoDelta(corpo) {
+  const m = /sap\.its\.arrITSDocParams\s*=\s*(\{[\s\S]*?\});/.exec(String(corpo ?? ''));
+  if (!m) return null;
+  const bruto = m[1];
+  try {
+    return JSON.parse(bruto.replace(/([{,])\s*([A-Za-z_]\w*)\s*:/g, '$1"$2":').replace(/'/g, '"'));
+  } catch { return { bruto }; }
+}
+
+/**
+ * O batch que DEVOLVE o controle à dynpro depois de atender o ITSDoc — o renderer manda exatamente
+ * estes três (`updown_send_okcode`, em `lsgui/js/webgui_min.js`). Sem ele o programa fica parado
+ * esperando o frontend.
+ */
+export const OK_ITSDOC = [
+  { post: 'okcode/ses[0]', content: '=OK' },
+  { post: 'vkey/0/ses[0]' },
+  { get: 'state/ur' },
+];
+
+/** Os formatos do popup "Gravar lista em file..." — o índice é o do radio `SPOPLI-SELFLAG[n,0]`. */
+export const FORMATOS = {
+  'nao-convertido': 0, tabuladores: 1, planilha: 2, 'rich-text': 3, html: 4, clipboard: 5,
+};
+
+/** A raiz do filesystem VIRTUAL que o renderer inventa para o browser (`nfstosfs`) — não é disco de ninguém. */
+const RAIZ_NFS = 'Z:\\';
+const ecodificar = (s) => encodeURIComponent(String(s ?? '')).replace(/%20/g, '+');
+
+/**
+ * PURO: o pedido que ATENDE um `arrITSDocParams` — `{ caminho, conteudo }`, onde `conteudo: true`
+ * diz que a RESPOSTA desse POST é o dado (e não um simples "ok"). É a tradução do despacho do
+ * renderer (`invoke_itsdoc`), método a método:
+ *
+ * | `ITSDocMethod`                 | pedido                                     | a resposta é |
+ * |---|---|---|
+ * | `Query` (`CD`)                 | `query?RetQuery=<caminho>`                 | vazia |
+ * | `FileSaveDialog`               | `filesavedialog?FileName=…&FileEncoding=…` | vazia |
+ * | `Export`                       | `get`                                      | **o arquivo** |
+ * | `GuiSapInfo`/`ClipboardExport` | `clipboardexport`                          | **o texto** |
+ * | qualquer outro                 | `cancel`                                   | vazia |
+ *
+ * ⚠️ O `Query CD` pergunta o DIRETÓRIO CORRENTE do frontend, e a resposta vira o `DefPath` do passo
+ * seguinte — medido: respondendo `Z:\` o `FileSaveDialog` voltou com `DefPath:'Z:\'`.
+ */
+export function pedidoDoItsdoc(doc, { caminho = RAIZ_NFS, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110' } = {}) {
+  const url = doc?.URL ?? '';
+  const metodo = doc?.ITSDocMethod;
+  if (metodo === 'Query') return { caminho: `${url}query?RetQuery=${ecodificar(caminho)}`, conteudo: false };
+  if (metodo === 'FileSaveDialog') return { caminho: `${url}filesavedialog?FileName=${ecodificar(arquivo)}&FileEncoding=${encoding}`, conteudo: false };
+  if (metodo === 'Export') return { caminho: `${url}get`, conteudo: true };
+  if (metodo === 'GuiSapInfo' && doc?.Method === 'ClipboardExport') return { caminho: `${url}clipboardexport`, conteudo: true };
+  return { caminho: `${url}cancel`, conteudo: false };
+}
+
+/**
+ * O POST do ITSDoc: fora do `batch/json`, na URL que o próprio pedido trouxe, corpo vazio e
+ * `x-www-form-urlencoded` — é o XHR que o renderer faz (`UpDownSendRequest`). Devolve o corpo como
+ * `Buffer` (o arquivo pode ser binário).
+ */
+async function updown(sessao, caminho, { tetoMs = 180000 } = {}) {
+  const url = `${sessao.cfg.base}${caminho}`;
+  const t0 = Date.now();
+  let res, buf;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: autorizacao(sessao.cfg),
+        'Content-type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+        Cookie: cookieDoJar(sessao.jar),
+      },
+      body: '',
+      signal: AbortSignal.timeout(tetoMs),
+    });
+    buf = Buffer.from(await res.arrayBuffer());
+  } catch (e) {
+    throw new Error(`its: o ITSDoc falhou — ${e.cause?.code || e.name}: ${e.message}`);
+  }
+  const ms = Date.now() - t0;
+  logHttp('POST', urlNoLog(url), res.status, ms, buf.length);
+  return { status: res.status, tipo: res.headers.get('content-type'), bytes: buf.length, ms, corpo: buf };
+}
+
+/**
+ * EXPORTA a lista da tela pelo gesto do próprio ALV — *Exportar → File local...* (`btn[45]`,
+ * `CTRL_SHIFT_F9`) — e devolve o ARQUIVO, sem navegador e sem disco de frontend nenhum.
+ *
+ * O canal TEM via de saída (era a dúvida da fila 45): não pelo batch, mas pelo **ITSDoc**, um
+ * diálogo à parte em `…/bc/gui/sap/its/webgui/<n>/data/<id>~<verbo>`. O laço aqui é o do renderer:
+ * ler o `arrITSDocParams` do delta, POSTar o verbo correspondente (`pedidoDoItsdoc`), devolver o
+ * controle com `OK_ITSDOC`, repetir enquanto o servidor pedir.
+ *
+ * Devolve `{ formato, arquivo, conteudo (Buffer), bytes, partes, voltas, pedidos, ms }`.
+ *
+ * Medido no s4h 758/250 em 05/09/2026 sobre a lista do RSPARAM (1617 linhas × 5 colunas),
+ * `work/POC_webgui_export/medicoes/item45-exportar.md`:
+ *
+ * | formato | saída | bytes | download |
+ * |---|---|---:|---:|
+ * | `nao-convertido` | texto de largura fixa, 1617 linhas + cabeçalho | 1,08 MB | 77 ms |
+ * | `tabuladores` | **TSV** — uma coluna por `\t`, com cabeçalho | 182 KB | 62 ms |
+ * | `html` | HTML, em **2 partes** de `Export` | 6,76 MB | 251 ms |
+ * | `clipboard` | texto, num POST só (`clipboardexport`, sem arquivo) | 1,07 MB | 100 ms |
+ *
+ * O `tabuladores` custa **68× menos** que ler o mesmo ALV por `lerGrid` (182 KB contra 12,4 MB) e
+ * já vem estruturado — mas é a lista FORMATADA pelo ALV (cabeçalho traduzido, valor com máscara),
+ * não o dado cru que o `lerGrid` devolve.
+ *
+ * ⚠️ `planilha` NÃO passa por aqui: abre outro popup ("Export As", `GS_EXPORT-FILE_NAME/FORMAT/
+ * DESTINATION`) e não chegou ao ITSDoc — não medido.
+ * ⚠️ Arquivo grande vem FATIADO: o HTML veio em dois `Export` (5.120.000 B + 1.643.878 B), daí
+ * `partes` e a concatenação.
+ */
+export async function exportarLista(sessao, { formato = 'tabuladores', arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', alvo = null, voltasMax = 12, tetoMs = 180000 } = {}) {
+  const idx = typeof formato === 'number' ? formato : FORMATOS[formato];
+  if (idx === undefined) throw new Error(`its: exportarLista — formato desconhecido "${formato}" (tem: ${Object.keys(FORMATOS).join(', ')})`);
+  const t0 = Date.now();
+  const botao = alvo ?? { sid: 'wnd[0]/tbar[1]/btn[45]' };
+  if (!alvo && !sessao.sids.some((x) => x.sid === botao.sid)) {
+    throw new Error('its: exportarLista — a tela não tem o botão "File local..." (wnd[0]/tbar[1]/btn[45]); é uma lista ALV?');
+  }
+  await acionar(sessao, botao, { tetoMs });
+  const radios = (popupDaTela(controlesDoDelta(sessao.delta ?? ''))?.campos ?? [])
+    .filter((c) => /radSPOPLI-SELFLAG\[\d+,0\]$/.test(c.sid));
+  const radio = radios[idx];
+  if (!radio) throw new Error(`its: exportarLista — o popup de formato tem ${radios.length} opção(ões), não a de índice ${idx}`);
+  await postar(sessao, [{ post: `action/4/${radio.sid}` }, ESTADO], { tetoMs });
+  let r = await postar(sessao, [ENTER, ESTADO], { tetoMs });
+
+  const partes = [];
+  let voltas = 0, pedidos = 0;
+  for (; voltas < voltasMax; voltas++) {
+    const doc = itsdocDoDelta(r.corpo ?? '');
+    if (!doc) break;
+    const { caminho, conteudo } = pedidoDoItsdoc(doc, { arquivo, encoding });
+    const q = await updown(sessao, caminho, { tetoMs });
+    pedidos++;
+    if (conteudo && q.bytes) partes.push(q.corpo);
+    r = await postar(sessao, OK_ITSDOC, { tetoMs });
+  }
+  const conteudo = Buffer.concat(partes);
+  detalhe(`its: exportarLista ${formato} — ${conteudo.length} B em ${partes.length} parte(s), ${voltas} volta(s) do ITSDoc`);
+  return { formato, arquivo, conteudo, bytes: conteudo.length, partes: partes.length, voltas, pedidos, ms: Date.now() - t0 };
+}
+
 // ---------- dirigir ----------
 
 /**
