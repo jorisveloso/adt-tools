@@ -27,3 +27,5 @@
 > refs jbv-adt-client->adt-client atualizadas em 17 docs: README, examples/wdi5-app, full-setup, setup-guide, ideias e todas as receita-*.md
 
 - [ ] 10. Assinatura posicional do adt-todo cria fila fantasma quando se omite a pasta. Medido em 04/09/2026: fechar/add/anotarItem sao fechar(pasta, nome, n, resultado) — posicionais puros, sem shift. A skill /next diz "a fila e opcional em todos", entao quem chama fechar(undefined, 10, texto) tem o 10 lido como NOME DA FILA e o lerOuCriar CRIA docs/filas/10.md ("# Fila 10"). Dois lixos ja nascidos assim: filas/10.md (removido nesta sessao) e sap-accelerate/adt-client/4.md (ainda no disco, untracked, conteudo "# Fila 4" — de um add com pasta relativa ao cwd). Duas correcoes candidatas: (1) aceitar chamada por objeto ou detectar nome numerico e tratar como n; (2) validarNome recusar nome puramente numerico. E rever a skill, que promete um shift que a lib nao faz.
+> adiado: 2026-09-05 22:46 — a sessão falhou (claude-code exited with code 1:
+You've hit your session limit · resets 7:50pm (America/Sao_Paulo))
