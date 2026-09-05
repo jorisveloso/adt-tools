@@ -792,8 +792,14 @@ export const vkey = (sessao, n, opts) => despachar(sessao, batchVkey(n), opts);
 export const tecla = (sessao, nome, opts) => despachar(sessao, batchVkey(numeroDaTecla(nome)), opts);
 
 /**
- * Manda um OK-code pela caixa de comando: `/nSE16` (de qualquer tela), `/n` (menu), `ONLI`/`/8`
- * (fcode e tecla da dynpro), `/nex` (encerra). LEVA o que foi `preencher`-ido, no mesmo POST.
+ * Manda um OK-code pela caixa de comando: `/nSE16` (de qualquer tela), `/nSMEN` (o menu),
+ * `ONLI`/`/8` (fcode e tecla da dynpro), `/nex` (encerra). LEVA o que foi `preencher`-ido, no
+ * mesmo POST.
+ *
+ * ⚠ `/n` (e `/3`) **encerra a transação**, não vai ao menu: medido no s4h 758/250 em 05/09/2026
+ * (item 37) que ele cai na tela de fundo da sessão — o SAP Easy Access (`SMEN`) só quando a
+ * sessão já carregou o menu alguma vez, e `S000`/`SAPMSYST` (0 campos, 1 botão) quando não,
+ * inclusive numa sessão nascida no menu que dá `/n` estando NELE. Para ir ao menu: `/nSMEN`.
  *
  * Isto ANTES recusava valores pendentes ("o OK-code levar valor não está medido"). Medido no s4h
  * 758/250 em 04/09/2026 (item 31, `sap-accelerate/work/POC_webgui_okcode_valores/`, fase H): na

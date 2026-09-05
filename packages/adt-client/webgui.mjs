@@ -938,6 +938,10 @@ export const JS_PUBLICAR_FOCO = `(() => {
  * valor (§ acima). `publicarValores: false` volta ao gesto cru, sem o `blur`.
  * `mudou: false` é INFORMAÇÃO: a tela ficou igual, o comando não pegou (popup aberto, fcode que a
  * dynpro não tem, ou sessão encerrada por um `/nex` anterior).
+ *
+ * ⚠ `/n` (e `/3`) **encerra a transação**, não vai ao menu: medido no s4h 758/250 em 05/09/2026
+ * (item 37, pela via HTTP) que ele cai na tela de fundo da sessão — `SMEN` só quando a sessão já
+ * carregou o menu, e `S000`/`SAPMSYST` quando não. Para ir ao menu: `/nSMEN`.
  */
 export async function comandar(sessao, texto, { tetoMs = 25000, publicarValores = true } = {}) {
   const js = jsComando(texto);

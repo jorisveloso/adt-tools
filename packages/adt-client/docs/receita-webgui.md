@@ -497,6 +497,10 @@ await comandar(s, '/nSE38');                 // → Editor ABAP: 1ª tela    (1,
 await comandar(s, '/n');                     // → SAP Easy Access         (1,6 s)
 ```
 
+⚠ O `/n` da última linha só devolve o menu porque **esta** sessão nasceu no menu (`ir(s, urlWebgui(cfg))`)
+— numa sessão aberta com `~transaction` ele cai no `S000`/`SAPMSYST`. A regra medida está em
+§ "⚠ `/n` NÃO é 'ir ao menu'".
+
 **O gesto é a exceção da regra do clique.** O campo (`ToolbarOkCode`, SID `wnd[0]/tbar[0]/okcd`)
 existe em toda tela e é **invisível** — `rect` 0×0, `display: flex`. Por isso:
 
@@ -786,7 +790,9 @@ texto** — cair no primeiro valor string do `lsdata` devolve a constante de des
    `btn[12]` (Cancelar, Escape) e a tecla `Shift+F3` postam, o servidor responde 200 e o programa
    **reabre a mesma dynpro**; nenhum `fcode` de saída chega. Isso NÃO é mais limite do canal: a
    caixa de comando dá a saída — `comandar(s, '/3')`, `'/n'`, `'/nex'` (§ "A caixa de comando
-   (OK-code) **pelo navegador**", s4h em 2026-09-04). Fica de fora só o popup: `/15` no menu abre
+   (OK-code) **pelo navegador**", s4h em 2026-09-04). ⚠ `/3` e `/n` **saem da transação**, e onde
+   caem depende da sessão ter o menu carregado (§ "⚠ `/n` NÃO é 'ir ao menu'"); quem encerra de
+   verdade é `/nex`. Fica de fora só o popup: `/15` no menu abre
    a pergunta de logoff e trava a `wnd[0]` (fila `adt-client`, item 23).
 2. **Statusbar e print não são assert.** A tela pode aceitar tudo e não gravar nada, calada — o
    mesmo desmentido do GUI Scripting. O assert é em **outra LUW**.
@@ -938,7 +944,7 @@ campo, o mesmo OK-code traz a tabela inteira ("5 acertos"). Na lib: `preencher(s
 | OK-code | O que faz | Medido |
 |---|---|---|
 | `/nXXXX` | vai para a transação `XXXX`, **de qualquer tela** | sim — `/nSE16` do menu; `/nSE38` de dentro de uma lista ALV |
-| `/n` | volta ao menu (SMEN) | sim |
+| `/n` | **encerra a transação atual** — cai no menu (SMEN) **só se a sessão já tiver carregado o menu**; senão, na tela de sistema `S000`/`SAPMSYST` (⚠ abaixo) | sim |
 | `ONLI`, `STRT`, … | o **fcode da dynpro** (o mesmo do `DYNP_OKCODE` da URL) | sim — `ONLI` executou a SE16 |
 | `/8` | a **tecla** F8 — vale o `/n` de qualquer tecla de função | sim — mesma lista que o `ONLI` |
 | `/o`, `/oXXXX` | abre **popup `wnd[1]`** com a lista de modos (não uma janela nova) | sim |
@@ -1134,9 +1140,28 @@ com a ação é otimização (um POST em vez de dois), não exigência — `envi
 nesta via (no navegador está medido que **não** leva — item 31). Mande os valores por
 `acionar`/`enter`/`enviar` antes, ou descarte com `sessao.fila = []`.
 
-⚠ **Observação não explicada (item 20, D5):** `/n` numa sessão aberta por `~transaction=*SE16 …`
-devolveu `t-code S000`, dynpro `SAPMSYST`, título "SAP" — não o SAP Easy Access (`SMEN`) que o
-item 8 mediu para o mesmo `/n` numa sessão nascida no menu. A causa não foi isolada (fila).
+### ⚠ `/n` NÃO é "ir ao menu" — é "encerrar a transação"
+
+**Medido no s4h 758/250 em 05/09/2026** (item 37, onze braços, um por sessão; evidência em
+`sap-accelerate/work/POC_webgui_n_menu/medicoes/item37-n-e-o-menu.md`). O item 20 tinha visto
+`/n` devolver `S000`/`SAPMSYST`/"SAP" numa sessão aberta por `~transaction`, contra o SAP Easy
+Access (`SMEN`, `SAPLSMTR_NAVIGATION`) do item 8 — e a hipótese era o `~transaction`. **Não é.**
+
+O `/n` encerra a transação atual; o que aparece depois é a **tela de fundo da sessão**, e ela só é
+o menu se o menu **já tiver sido carregado alguma vez naquela sessão**:
+
+| a partir de | sessão que já carregou o menu | sessão que nunca carregou (nasceu por `~transaction`) |
+|---|---|---|
+| uma transação (SE38) | **SMEN**, 13 botões, 269 KB | **S000** `SAPMSYST` 0040 — 0 campos, 1 botão, 106 KB |
+| o **próprio menu** | **S000** — encerra o SMEN e não há fundo abaixo | — |
+
+O fundo se **adquire**: a mesma sessão nascida em `*SE16`, depois de um `/nSMEN`, passa a responder
+`/n` com o menu. E `/3` (F3) tem o mesmo limite — da *primeira* tela de uma transação ele encerra a
+transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
+
+> **Para ir ao menu, mande `/nSMEN`** — devolveu o SAP Easy Access dos dois estados medidos (do
+> S000 e de dentro da SE16), em 318–372 ms. `/n` serve para *sair da transação*; o destino é
+> consequência, não garantia.
 
 ### O que **ainda não** está medido por esta via
 
