@@ -72,3 +72,136 @@ export async function buscar(session, padrao, adtTypes = [], max = 200) {
 
   return { itens, totalBruto: todos.length, filtrado: todos.length - itens.length, truncado, max };
 }
+
+// ---------- where-used (usage references) ----------
+// Endpoint: POST /sap/bc/adt/repository/informationsystem/usageReferences?uri=<uri do objeto>
+// É o "Verwendungsnachweis"/Where-Used do Eclipse (Ctrl+Shift+G), e o INVERSO do `deps.mjs`: o deps
+// lê o fonte e adivinha o que o objeto usa; este PERGUNTA AO SERVIDOR quem usa o objeto. Onde o
+// deps é heurística sobre texto, aqui é o índice do RIS respondendo.
+//
+// Medido em 04/09/2026 no SXD 816 (POC 4029823-J1B1N, item 10) — cinco elementos de dados do J1B*,
+// status 200 em todos. Quatro coisas que a resposta ensina, e que mudam como se lê o resultado:
+//
+//  1. A resposta é uma ÁRVORE ACHATADA. Cada `referencedObject` traz `parentUri`; os nós com
+//     `isResult="false"` são só o CONTAINER (a estrutura, o grupo de função, o pacote) e os com
+//     `isResult="true"` são a ocorrência de verdade (o campo, a linha). Contar `referencedObject`
+//     conta pai e filho junto — foi o erro do script da POC, que viu 41 "refs" onde havia 15 usos.
+//
+//  2. ⚠️ O RESULTADO CHEGA PELA METADE, e nada no status diz isso. Nó com `canHaveChildren="true"`
+//     vem COLAPSADO: o servidor sabe que há usos ali dentro e não os manda. Por isso o
+//     `numberOfResults` do cabeçalho não bate com o número de `isResult="true"` — no
+//     J_1BNFNUM_UTILITIES foram 12 anunciados contra 5 expandidos, com 11 nós colapsados. É a mesma
+//     armadilha do teto do `buscar`: lista incompleta é indistinguível de lista completa. Por isso
+//     `colapsados` sai no retorno — quem chama TEM que dizer isso a quem lê. Expandir um nó pede
+//     outra chamada, ainda NÃO MEDIDA (fila do adt-client).
+//
+//  3. Para ELEMENTO DE DADOS, o que vem expandido são DECLARAÇÕES (`TABL/DSF` — o campo na
+//     estrutura), não escritas. Quem grava o campo em runtime está justamente nos nós colapsados
+//     (FMs, includes, pacotes). Logo: **where-used de DE não responde "quem escreve neste campo"** —
+//     essa pergunta continua sendo do canal de fonte/debug. Para classe, FM e include, os usos de
+//     primeiro nível já vêm nomeados e a função serve direto.
+//
+//  4. O nome/tipo/pacote NÃO estão no `referencedObject` — estão no filho `usagereferences:adtObject`
+//     (e o pacote no `adtcore:packageRef` dentro dele). Ler só os atributos da tag de fora devolve
+//     uma lista de URIs sem nome.
+
+const CAMINHO_USOS = '/sap/bc/adt/repository/informationsystem/usageReferences';
+
+const CT_USOS = 'application/vnd.sap.adt.repository.usagereferences.request.v1+xml';
+const ACCEPT_USOS = 'application/vnd.sap.adt.repository.usagereferences.result.v1+xml';
+
+// `affectedObjects` vazio = "o objeto inteiro". Foi o corpo medido; o `grade` (definitions,
+// elements, indirectReferences) aparece no ECO do scope na resposta, mas mandá-lo não foi medido —
+// e opção não medida não entra na lib.
+const BODY_USOS =
+  '<?xml version="1.0" encoding="UTF-8"?>' +
+  '<usagereferences:usageReferenceRequest xmlns:usagereferences="http://www.sap.com/adt/ris/usageReferences">' +
+  '<usagereferences:affectedObjects/>' +
+  '</usagereferences:usageReferenceRequest>';
+
+/**
+ * Extrai a árvore de usos do XML do usageReferences. PURO (sem rede).
+ * Cada item: `{ uri, uriPai, nome, tipo, pacote, responsavel, ocorrencia, temFilhos, uso }` —
+ * `ocorrencia` é o `isResult` (é um uso, não o container) e `temFilhos` é o `canHaveChildren`
+ * (o nó veio colapsado; há uso ali que o servidor não mandou).
+ */
+export function parseUsageReferences(xml) {
+  const texto = String(xml);
+  const raiz = (texto.match(/<usagereferences:usageReferenceResult\b([^>]*)>/) || [])[1] || '';
+  const na = (fonte, chave) => (fonte.match(new RegExp(`${chave}="([^"]*)"`)) || [])[1] || '';
+  const escopo = (texto.match(/<usagereferences:objectIdentifier\b([^>]*)\/?>/) || [])[1] || '';
+
+  // Os nós ANINHAM (`canHaveChildren`), então casar `<referencedObject>…</referencedObject>` com
+  // regex não-guloso corta no fechamento errado. Varrer só as ABERTURAS, em ordem, e ler o miolo
+  // até a próxima abertura resolve: o `adtObject` do nó é sempre o primeiro filho.
+  const aberturas = [...texto.matchAll(/<usagereferences:referencedObject\b([^>]*?)\/?>/g)];
+  const refs = aberturas.map((m, i) => {
+    const attrs = m[1];
+    const ate = i + 1 < aberturas.length ? aberturas[i + 1].index : texto.length;
+    const trecho = texto.slice(m.index, ate);
+    const objeto = (trecho.match(/<usagereferences:adtObject\b([^>]*)>/) || [])[1] || '';
+    return {
+      uri: na(attrs, 'uri'),
+      uriPai: na(attrs, 'parentUri'),
+      nome: na(objeto, 'adtcore:name'),
+      tipo: na(objeto, 'adtcore:type'),
+      pacote: (trecho.match(/<adtcore:packageRef\b[^>]*adtcore:name="([^"]*)"/) || [])[1] || '',
+      responsavel: na(objeto, 'adtcore:responsible'),
+      ocorrencia: na(attrs, 'isResult') === 'true',
+      temFilhos: na(attrs, 'canHaveChildren') === 'true',
+      uso: na(attrs, 'usageInformation'),
+    };
+  });
+
+  return {
+    // O que o SERVIDOR diz que existe — não o que veio na lista (ver ponto 2 acima).
+    total: Number(na(raiz, 'numberOfResults') || 0),
+    descricao: na(raiz, 'resultDescription'),
+    escopo: { nome: na(escopo, 'displayName'), globalType: na(escopo, 'globalType') },
+    refs,
+  };
+}
+
+/**
+ * Quem usa este objeto — where-used pelo índice do RIS.
+ * @param session sessão viva (cookie + token)
+ * @param {string} uri  URI ADT do objeto, ex.: '/sap/bc/adt/oo/classes/zcl_x',
+ *                      '/sap/bc/adt/ddic/dataelements/j_1bnfe_utrib'
+ * @returns `{ total, descricao, escopo, refs, ocorrencias, colapsados, completo }` — `ocorrencias`
+ *          são os usos que vieram nomeados, `colapsados` os nós que o servidor não expandiu, e
+ *          `completo` é `false` quando há colapsado ou quando o `total` anunciado não bate com o
+ *          que veio: resultado parcial que quem chama precisa repassar ao usuário.
+ */
+export async function whereUsed(session, uri) {
+  passo(`where-used: ${uri}`);
+  const r = await call(session, {
+    method: 'POST',
+    path: `${CAMINHO_USOS}?uri=${encodeURIComponent(uri)}`,
+    accept: ACCEPT_USOS,
+    contentType: CT_USOS,
+    body: BODY_USOS,
+  });
+
+  if (r.status === 404) {
+    throw new Error(
+      `where-used respondeu 404 em ${CAMINHO_USOS}.\n` +
+      'Ou a URI do objeto não existe, ou o nó SICF do information system está inativo.',
+    );
+  }
+  if (r.status >= 400) {
+    throw new Error(`where-used falhou (${r.status}): ${r.text.slice(0, 300)}`);
+  }
+
+  const res = parseUsageReferences(r.text);
+  const ocorrencias = res.refs.filter((x) => x.ocorrencia);
+  const colapsados = res.refs.filter((x) => x.temFilhos);
+  const completo = colapsados.length === 0 && ocorrencias.length >= res.total;
+
+  detalhe(`${res.total} usos anunciados · ${ocorrencias.length} expandidos · ${res.refs.length} nós na árvore`);
+  if (!completo) {
+    detalhe(`⚠️ resultado PARCIAL — ${colapsados.length} nó(s) colapsado(s) que o servidor não expandiu`);
+    for (const x of colapsados.slice(0, 10)) detalhe(`   colapsado: ${x.uri}`);
+  }
+
+  return { ...res, ocorrencias, colapsados, completo };
+}

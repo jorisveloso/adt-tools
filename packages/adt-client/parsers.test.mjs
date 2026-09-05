@@ -5,7 +5,7 @@
 // O resto (rede, sessão, gravação) só é exercitável contra um SAP de verdade — ver README.
 
 import { test, expect } from 'vitest';
-import { parseObjectReferences } from './search.mjs';
+import { parseObjectReferences, parseUsageReferences } from './search.mjs';
 import { montarMeta } from './layout.mjs';
 import { resolverTipo, codigoDaLibKey, normalizar } from './tipos/index.mjs';
 import {
@@ -39,6 +39,51 @@ test('busca: extrai cada objectReference', () => {
 
 test('busca: resposta vazia não quebra', () => {
   expect(parseObjectReferences('<adtcore:objectReferences/>')).toEqual([]);
+});
+
+// Where-used real do SXD 816 (04/09/2026), reduzido: um container de estrutura com o campo dentro
+// (a ocorrência), um FM que veio COLAPSADO e um pacote. É o formato que o parser tem de aguentar —
+// nós aninhados, e nome/tipo/pacote só no filho adtObject.
+const XML_USOS = `<?xml version="1.0" encoding="utf-8"?><usagereferences:usageReferenceResult numberOfResults="12" resultDescription="[SXD] Verwendungsnachweis: J_1BNFNUM_UTILITIES (Data Element)" referencedObjectIdentifier="" xmlns:usagereferences="http://www.sap.com/adt/ris/usageReferences"><usagereferences:scope><usagereferences:objectIdentifier displayName="J_1BNFNUM_UTILITIES (Data Element)" globalType="DTEL/DE"/></usagereferences:scope><usagereferences:referencedObjects><usagereferences:referencedObject uri="/sap/bc/adt/ddic/structures/bapi_j_1bnfdoc" parentUri="/sap/bc/adt/packages/j1ba" isResult="false" canHaveChildren="false"><usagereferences:adtObject adtcore:responsible="SAP" adtcore:name="BAPI_J_1BNFDOC" adtcore:type="TABL/DS" xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/j1ba" adtcore:type="DEVC/K" adtcore:name="J1BA"/></usagereferences:adtObject></usagereferences:referencedObject><usagereferences:referencedObject uri="/sap/bc/adt/ddic/structures/bapi_j_1bnfdoc/source/main#type=TABL%2FDSF;name=NFNUM_UTILITIES" parentUri="/sap/bc/adt/ddic/structures/bapi_j_1bnfdoc" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive"><usagereferences:adtObject adtcore:name="NFNUM_UTILITIES" adtcore:type="TABL/DSF" xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/j1ba" adtcore:type="DEVC/K" adtcore:name="J1BA"/></usagereferences:adtObject></usagereferences:referencedObject><usagereferences:referencedObject uri="/sap/bc/adt/functions/groups/j1bb2/fmodules/j_1b_nf_unique_for_vendor" parentUri="/sap/bc/adt/functions/groups/j1bb2" isResult="false" canHaveChildren="true" usageInformation="gradeDirect,includeProductive"><usagereferences:adtObject adtcore:name="J_1B_NF_UNIQUE_FOR_VENDOR" adtcore:type="FUGR/FF" xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/j1ba" adtcore:type="DEVC/K" adtcore:name="J1BA"/></usagereferences:adtObject></usagereferences:referencedObject></usagereferences:referencedObjects></usagereferences:usageReferenceResult>`;
+
+test('where-used: nome, tipo e pacote vêm do adtObject filho, não da tag de fora', () => {
+  const r = parseUsageReferences(XML_USOS);
+  expect(r.refs.length).toBe(3);
+  expect(r.refs[1]).toEqual({
+    uri: '/sap/bc/adt/ddic/structures/bapi_j_1bnfdoc/source/main#type=TABL%2FDSF;name=NFNUM_UTILITIES',
+    uriPai: '/sap/bc/adt/ddic/structures/bapi_j_1bnfdoc',
+    nome: 'NFNUM_UTILITIES', tipo: 'TABL/DSF', pacote: 'J1BA', responsavel: '',
+    ocorrencia: true, temFilhos: false, uso: 'gradeDirect,includeProductive',
+  });
+});
+
+test('where-used: container não é uso — só o isResult="true" conta', () => {
+  const r = parseUsageReferences(XML_USOS);
+  const usos = r.refs.filter((x) => x.ocorrencia);
+  expect(usos.length).toBe(1);
+  expect(r.refs[0].nome).toBe('BAPI_J_1BNFDOC');
+  expect(r.refs[0].ocorrencia).toBe(false);
+});
+
+// O que faz uma lista incompleta parecer completa: o servidor anuncia 12 e manda 1 expandido,
+// porque o resto está atrás de nós canHaveChildren que ele não abriu.
+test('where-used: nó colapsado é sinalizado, e o total anunciado não é o que veio', () => {
+  const r = parseUsageReferences(XML_USOS);
+  expect(r.total).toBe(12);
+  const colapsados = r.refs.filter((x) => x.temFilhos);
+  expect(colapsados.map((x) => x.nome)).toEqual(['J_1B_NF_UNIQUE_FOR_VENDOR']);
+  expect(r.total).toBeGreaterThan(r.refs.filter((x) => x.ocorrencia).length);
+});
+
+test('where-used: escopo diz sobre qual objeto é o resultado', () => {
+  const r = parseUsageReferences(XML_USOS);
+  expect(r.escopo).toEqual({ nome: 'J_1BNFNUM_UTILITIES (Data Element)', globalType: 'DTEL/DE' });
+});
+
+test('where-used: resposta sem usos não quebra', () => {
+  const r = parseUsageReferences('<usagereferences:usageReferenceResult numberOfResults="0"/>');
+  expect(r.refs).toEqual([]);
+  expect(r.total).toBe(0);
 });
 
 test('meta: pacote vem do packageRef, NÃO do nome da raiz', () => {
