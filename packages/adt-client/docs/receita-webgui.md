@@ -784,6 +784,78 @@ oculto do tema colado por `\n` (`btn[8]` → `"Executar\n Destacado"`), e botão
 texto** — cair no primeiro valor string do `lsdata` devolve a constante de design
 (`btn[3]` → `"TRANSPARENT"`, não `"Voltar"`). O tooltip é quem sabe: `"Voltar (F3)"`.
 
+## ⚠ Criar é mutação IMEDIATA — fechar o navegador NÃO é rollback
+
+**Medido no SXD 816, mandante 100, em 04/09/2026** (POC 4029823, fila `adt-client` item 38). No
+FLP Designer (`/sap/bc/ui5_ui5/sap/arsrvc_upb_admn/main.html?scope=CUST`), só **abrir** o
+formulário "Criar atribuição de destino" — o clique em `AdminPage--createNewTM` — já **persiste**
+a linha. Quatro inspeções que abriram o formulário, leram os campos e fecharam a sessão deixaram
+**quatro target mappings vazios** no catálogo `YJBV_POC_4029823`, tipo de navegação "Outro"; foi
+preciso um script de limpeza para tirá-los.
+
+Evidência: `sap-accelerate/work/POC_4029823_j1b1n/medicoes/flpd-tabela-mappings.png` (as quatro
+linhas), `flpd-mappings-limpos.png` (depois da limpeza), `scripts/flpd-inspecionar-mapping.mjs` (o
+script que só inspecionava — e criava).
+
+O erro não foi do FLP Designer: foi do modelo mental. `finally { await s.fechar() }` parece
+rollback e **não é** — mata o Chrome, e o que o servidor gravou fica. Numa tela em que "Novo" abre
+um rascunho **antes** de qualquer Gravar, o gesto que desfaz (Cancelar, Excluir) é tão obrigatório
+quanto o unlock do ADT, e pela mesma razão: quem mutou tem de saber desfazer.
+
+⚠ Isto **não é** exclusividade de app UI5. Vale para qualquer tela que numere/insira ao entrar —
+e o canal WebGUI não avisa: statusbar e print não são assert (§ "O que este canal NÃO faz"), e
+uma criação silenciosa é exatamente o que eles não mostram.
+
+### A regra
+
+> Antes de acionar qualquer "Novo"/"Criar", saiba **qual é o gesto que desfaz** — e arme-o no
+> mesmo instante em que a criação acontece, não depois.
+
+### `transacional` — o corpo de um formulário que cria ao abrir
+
+```js
+await transacional(s, {
+  rotulo: 'target mapping do YJBV_POC_4029823',   // é o nome que sai no aviso, se sobrar
+  abrir:     () => clicar(s, { id: 'AdminPage--createNewTM' }),   // ← aqui já mutou
+  descartar: () => excluirMappingSelecionado(s),                  // o gesto MEDIDO que desfaz
+  corpo: async ({ confirmar }) => {
+    await preencher(s, { id: '__xmlview9--semantic_objectInput-inner' }, 'YJBVNotaFiscal');
+    await confirmar(() => clicar(s, { id: 'AdminPage--saveTileDetailsButton' }));
+  },
+});
+```
+
+- `abrir` roda e **a partir dali o descarte está armado**;
+- se o corpo não chamar `confirmar`, o `descartar` roda no `finally` — inclusive quando o corpo
+  estoura, e **sem mascarar o erro original** (ele propaga);
+- `confirmar(fn)` só dá a criação por boa se `fn` **resolver**: Gravar que estoura deixa o descarte
+  armado. ⚠ `confirmar` **não é assert** — que a linha ficou gravada se prova lendo em outra LUW,
+  como tudo neste canal;
+- sem `{ descartar }` a chamada é **recusada antes de abrir** qualquer coisa. É de propósito: um
+  script de inspeção que "só olha" foi exatamente o que produziu as quatro linhas.
+
+### `sessao.desfazer` — a rede embaixo, para o que `transacional` não cobre
+
+Toda sessão de `abrirNavegador` nasce com uma pilha LIFO. O `fechar` a executa **com o navegador
+ainda vivo** — descartar é um clique, precisa da página de pé — e só então mata o Chrome:
+
+```js
+s.desfazer.registrar('catálogo YJBV_POC_4029823', () => excluirCatalogo(s));
+// …
+const { desfeito } = await s.fechar();   // [{ rotulo, ok, erro? }], em ordem inversa da criação
+```
+
+Uma ação que estoura **não impede as demais**, e o que não saiu vira **aviso em stderr com o
+rótulo**, mesmo com o log desligado (`⚠ webgui: NÃO consegui desfazer "…" — sobrou no sistema`) —
+lixo num sistema alheio não pode depender de alguém ter lembrado do `--debug`. Se o descarte do
+`transacional` falhar, a ação **fica** na pilha: o `fechar` tenta de novo.
+
+**Medido no s4h 758/250 em 05/09/2026** (`medicoes/item38-desfazer.txt`), sobre a SE16 aberta pelo
+canal: não confirmado → marcador some; confirmado → marcador fica; pendente do `fechar` → rodou e
+a página **respondeu** (prova de que o Chrome ainda estava vivo); descarte que falha → `ok:false`
+no relatório e o aviso em stderr. ⚠ O comportamento do FLP Designer em si não foi re-medido nessa
+rodada — o SXD só responde na rede do cliente.
+
 ## O que este canal NÃO faz
 
 1. **Botão de saída não sai — quem sai é o OK-code.** Medido no SXD: `btn[15]` (Sair, Shift+F3),

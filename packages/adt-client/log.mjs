@@ -43,6 +43,17 @@ export const passo = (msg) => escrever(msg);
 /** Sub-linha de um passo — indentada, para o detalhe que só interessa quando se está caçando algo. */
 export const detalhe = (msg) => escrever(`   ${msg}`);
 
+/**
+ * O que a pessoa PRECISA ver mesmo com o log desligado — sobra que ficou no sistema do cliente
+ * (rascunho não descartado, lock não liberado). Sai em stderr como o resto do log (o stdout
+ * continua sendo o RESULTADO), mas **ignora o `ligado`**: lixo persistido num sistema alheio não
+ * pode depender de alguém ter lembrado do `--debug`. Não é canal de erro — erro se lança.
+ */
+export const aviso = (msg) => {
+  process.stderr.write(`\x1b[33m⚠ ${msg}\x1b[0m\n`);
+  escrever(`AVISO ${msg}`); // e no arquivo também, quando o log estiver ligado
+};
+
 /** Nomes dos headers enviados, SEM os valores (Authorization e Cookie carregam credencial). */
 export const nomesDeHeader = (h) => Object.keys(h).join(',');
 

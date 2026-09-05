@@ -33,7 +33,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { passo, detalhe } from './log.mjs';
+import { passo, detalhe, aviso } from './log.mjs';
 import { encerrarSessao } from './sap-connection.mjs';
 
 /** Onde o Chrome costuma estar no Windows. `{ navegador }` sobrepõe; `JBV_CHROME` também. */
@@ -388,9 +388,129 @@ export function bandeirasDeOrigemSegura(base) {
 
 const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Criar é mutação IMEDIATA — a pilha de desfazer
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// **Medido no SXD 816, mandante 100, em 04/09/2026** (POC 4029823, fila `adt-client` item 38):
+// no FLP Designer (`/sap/bc/ui5_ui5/sap/arsrvc_upb_admn`), só **ABRIR** o formulário "Criar
+// atribuição de destino" (`AdminPage--createNewTM`) já **persiste** a linha. Quatro inspeções que
+// abriram o formulário, leram os campos e fecharam a sessão deixaram QUATRO target mappings
+// vazios no catálogo YJBV_POC_4029823, tipo de navegação "Outro" — e foi preciso um script de
+// limpeza para tirá-los (`medicoes/flpd-tabela-mappings.png`, `flpd-mappings-limpos.png`).
+//
+// A lição vale além daquela tela: **fechar o navegador não é rollback.** O `finally { s.fechar() }`
+// que todo script tem mata o Chrome — o que o servidor já gravou fica. Numa tela em que "Novo"
+// abre um rascunho antes de qualquer Gravar, o gesto que desfaz (Cancelar, Excluir) é tão
+// obrigatório quanto o unlock do ADT, e pela mesma razão: quem mutou tem de saber desfazer.
+//
+// Duas peças, uma em cima da outra:
+//   • `sessao.desfazer` — a pilha LIFO da sessão; o `fechar` a executa **com o navegador ainda
+//     vivo** (descartar é um clique, precisa da página de pé) e AVISA alto o que não conseguiu;
+//   • `transacional(sessao, { abrir, corpo, descartar })` — o corpo de um formulário que cria ao
+//     abrir: arma o descarte no instante da criação e o dispara no `finally`, a menos que o corpo
+//     tenha CONFIRMADO (o Gravar de verdade).
+
 /**
- * Sobe o Chrome headless e devolve a sessão CDP `{ cfg, cmd, eventos, fechar }` já autenticada no
- * `cfg` e com o polyfill armado. Quem abre FECHA (o `fechar` mata o processo e some com o perfil).
+ * A pilha de desfazer de uma sessão. LIFO: desfaz-se na ordem inversa da criação, porque o que
+ * foi criado por último costuma ser filho do anterior.
+ *
+ * `registrar` devolve a **baixa** — chamá-la tira a ação da pilha (é o que "confirmar" faz: o
+ * rascunho virou registro de verdade, não há mais o que desfazer).
+ *
+ * `executar` é à prova de falha individual: uma ação que estoura NÃO impede as demais, e sai no
+ * relatório como `{ ok: false, erro }`. A pilha esvazia sempre — executar duas vezes não repete
+ * gesto destrutivo.
+ */
+export function criarPilhaDeDesfazer() {
+  const acoes = [];
+  return {
+    tamanho: () => acoes.length,
+    pendentes: () => acoes.map((a) => a.rotulo),
+    registrar(rotulo, fn) {
+      if (typeof fn !== 'function') throw new Error('desfazer: registrar exige uma função — o GESTO que desfaz');
+      const acao = { rotulo: String(rotulo), fn };
+      acoes.push(acao);
+      return () => {
+        const i = acoes.indexOf(acao);
+        if (i < 0) return false;
+        acoes.splice(i, 1);
+        return true;
+      };
+    },
+    async executar() {
+      const relatorio = [];
+      while (acoes.length) {
+        const { rotulo, fn } = acoes.pop();
+        try {
+          await fn();
+          relatorio.push({ rotulo, ok: true });
+        } catch (e) {
+          relatorio.push({ rotulo, ok: false, erro: e?.message ?? String(e) });
+        }
+      }
+      return relatorio;
+    },
+  };
+}
+
+/**
+ * Corpo de um formulário que **cria ao abrir**. `abrir` faz a mutação; a partir dali `descartar`
+ * está armado e roda no `finally` — a menos que o corpo tenha chamado `confirmar`.
+ *
+ * ```js
+ * await transacional(s, {
+ *   rotulo: 'target mapping do YJBV_POC_4029823',
+ *   abrir:     () => clicar(s, { id: 'AdminPage--createNewTM' }),
+ *   descartar: () => clicar(s, { id: 'AdminPage--cancelTileDetailsButton' }),
+ *   corpo: async ({ confirmar }) => {
+ *     await preencher(s, { id: '__xmlview9--semantic_objectInput-inner' }, 'YJBVNotaFiscal');
+ *     await confirmar(() => clicar(s, { id: 'AdminPage--saveTileDetailsButton' }));
+ *   },
+ * });
+ * ```
+ *
+ * ⚠ `confirmar(fn)` só dá a criação por boa se `fn` **resolver**: Gravar que estoura deixa o
+ * descarte armado. E `confirmar` não é assert — que a linha ficou gravada se prova lendo em outra
+ * LUW, como todo o resto deste canal.
+ *
+ * Se o próprio descarte falhar, a ação **fica na pilha da sessão** e o `fechar` tenta de novo; o
+ * que nem assim sair vira aviso em stderr, com o rótulo — para o lixo ter nome.
+ */
+export async function transacional(sessao, { rotulo = 'rascunho', abrir, corpo, descartar } = {}) {
+  if (!sessao?.desfazer) throw new Error('transacional: a sessão não tem pilha de desfazer (use a de `abrirNavegador`)');
+  if (typeof abrir !== 'function') throw new Error('transacional: informe { abrir } — o gesto que CRIA');
+  if (typeof descartar !== 'function') throw new Error(`transacional: informe { descartar } — criar é mutação imediata, e "${rotulo}" precisa saber se desfazer`);
+  if (typeof corpo !== 'function') throw new Error('transacional: informe { corpo }');
+
+  const aberto = await abrir();
+  const baixa = sessao.desfazer.registrar(rotulo, descartar);
+  let confirmado = false;
+  const confirmar = async (fn) => {
+    const r = typeof fn === 'function' ? await fn() : undefined;
+    confirmado = true;
+    baixa();
+    return r;
+  };
+  try {
+    return await corpo({ confirmar, aberto });
+  } finally {
+    if (!confirmado) {
+      passo(`webgui: descartando "${rotulo}" — o formulário já tinha criado`);
+      try {
+        await descartar();
+        baixa();
+      } catch (e) {
+        detalhe(`webgui: descarte de "${rotulo}" falhou (${e.message}) — fica na pilha para o fechar`);
+      }
+    }
+  }
+}
+
+/**
+ * Sobe o Chrome headless e devolve a sessão CDP `{ cfg, cmd, eventos, desfazer, fechar }` já
+ * autenticada no `cfg` e com o polyfill armado. Quem abre FECHA (o `fechar` desfaz o que ficou
+ * pendente, mata o processo e some com o perfil).
  */
 export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura = 1000, tetoMs = 30000, navegador, origemSegura = true } = {}) {
   const chrome = acharNavegador({ navegador });
@@ -449,14 +569,23 @@ export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura
   await cmd('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
   await cmd('Page.bringToFront').catch(() => {});
 
+  const desfazer = criarPilhaDeDesfazer();
+
   const fechar = async () => {
+    // ⚠ A ORDEM importa e não é negociável: desfazer é um CLIQUE, precisa da página de pé. Matar o
+    // Chrome primeiro não é rollback — o que o servidor gravou ao ABRIR o formulário fica lá.
+    const desfeito = await desfazer.executar();
+    for (const { rotulo, erro } of desfeito.filter((d) => !d.ok)) {
+      aviso(`webgui: NÃO consegui desfazer "${rotulo}" — sobrou no sistema (${erro})`);
+    }
     try { ws.close(); } catch { /* já fechado */ }
     try { await fetch(`http://127.0.0.1:${porta}/json/close/${alvo.id}`); } catch { /* já foi */ }
     try { proc.kill(); } catch { /* já morreu */ }
     await espera(300);
     try { fs.rmSync(perfil, { recursive: true, force: true }); } catch { /* o Chrome ainda segura */ }
+    return { desfeito };
   };
-  return { cfg, cmd, eventos, fechar, porta, perfil };
+  return { cfg, cmd, eventos, desfazer, fechar, porta, perfil };
 }
 
 // ---------- ler a tela ----------

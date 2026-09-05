@@ -10,6 +10,7 @@ import {
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
   interpretarSonda, jsComando, JS_PUBLICAR_FOCO,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
+  criarPilhaDeDesfazer, transacional,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -483,4 +484,130 @@ test('menu: achar o item ignora acento e caixa, e o exato ganha do prefixo', () 
 test('menu: o exato ganha do prefixo mesmo quando um rótulo é prefixo do outro', () => {
   const irmaos = [{ id: 'a/menu[0]', rotulo: 'Teste unitário' }, { id: 'a/menu[1]', rotulo: 'Teste' }];
   expect(acharItemDeMenu(irmaos, 'Teste').rotulo).toBe('Teste');
+});
+
+// ─── criar é mutação imediata: a pilha de desfazer e o `transacional` ─────────
+// O que estes testes guardam está medido no SXD 816/100 em 04/09/2026 (fila `adt-client` item 38):
+// abrir o formulário "Criar atribuição de destino" do FLP Designer já grava a linha, e fechar o
+// navegador NÃO desfaz. Aqui nada abre navegador — o que se prova é a mecânica do descarte.
+
+const sessaoFalsa = () => ({ desfazer: criarPilhaDeDesfazer() });
+
+test('desfazer: LIFO — o que foi criado por último desfaz primeiro', async () => {
+  const pilha = criarPilhaDeDesfazer();
+  const ordem = [];
+  pilha.registrar('catálogo', () => { ordem.push('catálogo'); });
+  pilha.registrar('target mapping', async () => { ordem.push('target mapping'); });
+  expect(pilha.tamanho()).toBe(2);
+  expect(pilha.pendentes()).toEqual(['catálogo', 'target mapping']);
+
+  expect(await pilha.executar()).toEqual([{ rotulo: 'target mapping', ok: true }, { rotulo: 'catálogo', ok: true }]);
+  expect(ordem).toEqual(['target mapping', 'catálogo']);
+  // esvazia sempre: executar de novo NÃO repete gesto destrutivo
+  expect(await pilha.executar()).toEqual([]);
+  expect(ordem).toEqual(['target mapping', 'catálogo']);
+});
+
+test('desfazer: a baixa tira da pilha (é o que "confirmar" faz), e só uma vez', () => {
+  const pilha = criarPilhaDeDesfazer();
+  const baixa = pilha.registrar('rascunho', () => {});
+  expect(baixa()).toBe(true);
+  expect(pilha.tamanho()).toBe(0);
+  expect(baixa()).toBe(false);
+  expect(() => pilha.registrar('x', 'não é função')).toThrow(/exige uma função/);
+});
+
+test('desfazer: ação que estoura NÃO impede as outras — sai no relatório, com o rótulo', async () => {
+  const pilha = criarPilhaDeDesfazer();
+  const feitos = [];
+  pilha.registrar('mapping 1', () => { feitos.push(1); });
+  pilha.registrar('mapping 2', () => { throw new Error('OK do popup não apareceu'); });
+  pilha.registrar('mapping 3', () => { feitos.push(3); });
+
+  expect(await pilha.executar()).toEqual([
+    { rotulo: 'mapping 3', ok: true },
+    { rotulo: 'mapping 2', ok: false, erro: 'OK do popup não apareceu' },
+    { rotulo: 'mapping 1', ok: true },
+  ]);
+  expect(feitos).toEqual([3, 1]);
+  expect(pilha.tamanho()).toBe(0);
+});
+
+test('transacional: corpo que NÃO confirma descarta o rascunho — o caso dos quatro mappings vazios', async () => {
+  const s = sessaoFalsa();
+  const gestos = [];
+  await transacional(s, {
+    rotulo: 'target mapping',
+    abrir: () => { gestos.push('createNewTM'); return 'aberto'; },
+    descartar: () => { gestos.push('cancelar'); },
+    corpo: async ({ aberto }) => { gestos.push(`inspecionar(${aberto})`); },
+  });
+  expect(gestos).toEqual(['createNewTM', 'inspecionar(aberto)', 'cancelar']);
+  expect(s.desfazer.tamanho()).toBe(0); // descartou: não sobra para o fechar
+});
+
+test('transacional: confirmado NÃO descarta — o Gravar tornou o rascunho registro de verdade', async () => {
+  const s = sessaoFalsa();
+  const gestos = [];
+  const r = await transacional(s, {
+    rotulo: 'target mapping',
+    abrir: () => { gestos.push('createNewTM'); },
+    descartar: () => { gestos.push('cancelar'); },
+    corpo: async ({ confirmar }) => confirmar(() => { gestos.push('gravar'); return 'YJBVNotaFiscal-create'; }),
+  });
+  expect(gestos).toEqual(['createNewTM', 'gravar']);
+  expect(r).toBe('YJBVNotaFiscal-create');
+  expect(s.desfazer.tamanho()).toBe(0);
+});
+
+test('transacional: Gravar que ESTOURA não confirma — o descarte continua armado', async () => {
+  const s = sessaoFalsa();
+  const gestos = [];
+  await expect(transacional(s, {
+    rotulo: 'target mapping',
+    abrir: () => {},
+    descartar: () => { gestos.push('cancelar'); },
+    corpo: ({ confirmar }) => confirmar(() => { throw new Error('saveTileDetailsButton não está na tela'); }),
+  })).rejects.toThrow(/saveTileDetailsButton/);
+  expect(gestos).toEqual(['cancelar']);
+  expect(s.desfazer.tamanho()).toBe(0);
+});
+
+test('transacional: erro no meio do corpo descarta E propaga o erro original', async () => {
+  const s = sessaoFalsa();
+  const gestos = [];
+  await expect(transacional(s, {
+    abrir: () => {},
+    descartar: () => { gestos.push('cancelar'); },
+    corpo: () => { throw new Error('campo semantic_object não está na tela'); },
+  })).rejects.toThrow(/semantic_object/); // o descarte não mascara o diagnóstico
+  expect(gestos).toEqual(['cancelar']);
+});
+
+test('transacional: descarte que falha FICA na pilha — o fechar tenta de novo', async () => {
+  const s = sessaoFalsa();
+  let tentativas = 0;
+  await transacional(s, {
+    rotulo: 'target mapping',
+    abrir: () => {},
+    descartar: () => { if (++tentativas === 1) throw new Error('diálogo de confirmação não abriu'); },
+    corpo: () => {},
+  });
+  expect(tentativas).toBe(1);
+  expect(s.desfazer.pendentes()).toEqual(['target mapping']); // é o que o `fechar` vai executar
+
+  expect(await s.desfazer.executar()).toEqual([{ rotulo: 'target mapping', ok: true }]);
+  expect(tentativas).toBe(2);
+});
+
+test('transacional: sem { descartar } recusa ANTES de criar nada', async () => {
+  const s = sessaoFalsa();
+  let abriu = false;
+  await expect(transacional(s, { rotulo: 'target mapping', abrir: () => { abriu = true; }, corpo: () => {} }))
+    .rejects.toThrow(/criar é mutação imediata.*target mapping/s);
+  expect(abriu).toBe(false);
+  await expect(transacional(s, { descartar: () => {}, corpo: () => {} })).rejects.toThrow(/informe \{ abrir \}/);
+  await expect(transacional(s, { abrir: () => {}, descartar: () => {} })).rejects.toThrow(/informe \{ corpo \}/);
+  await expect(transacional({}, { abrir: () => {}, descartar: () => {}, corpo: () => {} }))
+    .rejects.toThrow(/não tem pilha de desfazer/);
 });
