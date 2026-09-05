@@ -44,9 +44,11 @@
 import { passo, detalhe, http as logHttp } from './log.mjs';
 import { encerrarSessao } from './sap-connection.mjs';
 import {
-  urlWebgui, autorizacao, interpretarSonda, okcodeDe, campoDoSid, OKCODES,
+  urlWebgui, autorizacao, interpretarSonda, okcodeDe, campoDoSid, janelaDoSid, OKCODES,
   montarTela, sidDoLsdata, rotuloLimpo, teclaDoBotao, sidsDaTela,
 } from './webgui.mjs';
+
+export { janelaDoSid };
 
 // ---------- o vocabulário do protocolo (PURO) ----------
 
@@ -158,8 +160,9 @@ export function passosDoMultipart(corpo) {
  * PURO: os SIDs que a resposta carrega — o ENDEREÇO de cada controle da tela, tirado do `lsdata`
  * (`{"SID":"wnd[0]/usr/txtMAX_SEL","Type":"GuiTextField","value":"200 ","maxlen":11}`), sem
  * parser de DOM. Cada um sai com `sid`, `tipo` (o `Type` do SAP), o `campo` (o nome que a URL
- * `~transaction` quer) e, quando é botão, o `okcode` (`btn[8]`). A ordem é a do documento; SID
- * repetido (o mesmo controle em dois blocos) fica uma vez só.
+ * `~transaction` quer), a `janela` dona (`wnd[0]`, `wnd[1]` — o delta traz as DUAS quando há
+ * popup) e, quando é botão, o `okcode` (`btn[8]`). A ordem é a do documento; SID repetido (o
+ * mesmo controle em dois blocos) fica uma vez só.
  */
 export function sidsDaResposta(corpo) {
   const s = String(corpo ?? '');
@@ -181,7 +184,7 @@ export function sidsDaResposta(corpo) {
       if (obj?.SID && !vistos.has(obj.SID)) {
         const { SID, Type, ...resto } = obj;
         vistos.set(SID, {
-          sid: SID, tipo: Type ?? null, campo: campoDoSid(SID),
+          sid: SID, tipo: Type ?? null, campo: campoDoSid(SID), janela: janelaDoSid(SID),
           okcode: Type === 'GuiButton' ? (/\/(btn\[\d+\])$/.exec(SID)?.[1] ?? null) : null,
           ...resto,
         });
@@ -235,40 +238,104 @@ export function lerResposta({ status = null, tipo = '', corpo = '' } = {}) {
 const TIPOS_DE_ENTRADA = new Set(['GuiCTextField', 'GuiTextField', 'GuiPasswordField', 'GuiComboBox', 'GuiCheckBox', 'GuiRadioButton']);
 
 /**
+ * PURO: a janela ATIVA da tela — a `GuiModalWindow` de MAIOR índice que os SIDs declaram, ou
+ * `wnd[0]` quando não há nenhuma.
+ *
+ * Medido em 04/09/2026 sobre os deltas do s4h 758/250 (POC_webgui_okcode/medicoes/raw/*): sem
+ * popup NENHUMA janela se declara (a `wnd[0]`/`GuiMainWindow` mora no shell do GET, não no
+ * delta), e cada modal aberta se declara com o próprio `wnd[n]`/`GuiModalWindow` — uma em
+ * `d2-o.txt`, DUAS empilhadas (`wnd[1]` e `wnd[2]`) em `d2-ose16.txt`. Daí a regra ser o maior
+ * índice declarado, e não "existe popup".
+ */
+export function janelaAtiva(sids = []) {
+  let ativa = null, alto = -1;
+  for (const x of sids) {
+    if (x.tipo !== 'GuiModalWindow') continue;
+    const n = Number(/^wnd\[(\d+)\]$/.exec(x.sid ?? '')?.[1] ?? -1);
+    if (n > alto) { alto = n; ativa = x.sid; }
+  }
+  return ativa ?? 'wnd[0]';
+}
+
+/**
  * PURO: o SID de um alvo, contra os SIDs da tela atual. Quatro formas:
  *   `'wnd[0]/usr/txtMAX_SEL'` ou `{ sid }` — o endereço, passa como está;
  *   `{ campo: 'MAX_SEL' }` ou `'MAX_SEL'`   — o nome do campo (o mesmo da URL `~transaction`);
  *   `{ okcode: 'btn[8]' }`, `'btn[8]'`, `8`, `'Executar'` — o botão pelo OK-code (as três
  *   formas do `okcodeDe`), casado pelo FIM do SID (`…/tbar[1]/btn[8]`) — a barra não se adivinha.
  * Não achar estoura AQUI, com o que a tela TEM — não vira `-101` sem explicação.
+ *
+ * ⚠ O alvo é resolvido DENTRO DE UMA JANELA. Com popup aberto o delta traz as duas barras — a da
+ * `wnd[1]` E a da `wnd[0]`, que continua atrás do modal — e o mesmo `btn[n]` existe nas duas
+ * (medido em `d2-o.txt`: 17 botões, 13 da `wnd[0]` e 4 da `wnd[1]`, `btn[0]` e `btn[14]` em
+ * ambas). Sem escopo isso resolvia pelo PRIMEIRO da lista, isto é, pela ordem do markup
+ * (`webguiPopups` antes de `cuaarea`) — acaso, não regra. Aqui vence a `janelaAtiva`; `{ janela:
+ * 'wnd[0]' }` pede outra explicitamente, e o SID inteiro continua passando direto.
  */
-export function sidDoAlvo(sids = [], alvo) {
+export function sidDoAlvo(sids = [], alvo, { janela = null } = {}) {
   if (alvo === null || alvo === undefined || alvo === '') throw new Error('its: informe o alvo — SID, { campo }, ou { okcode }');
   if (typeof alvo === 'object' && alvo.sid) return alvo.sid;
   if (typeof alvo === 'string' && /^wnd\[\d+\]/.test(alvo)) return alvo;
   const campo = typeof alvo === 'object' ? alvo.campo : null;
   const okBruto = typeof alvo === 'object' ? alvo.okcode : null;
 
-  if (campo) {
-    const achado = sids.find((x) => TIPOS_DE_ENTRADA.has(x.tipo) && x.campo === campo);
-    if (achado) return achado.sid;
-    const tem = sids.filter((x) => TIPOS_DE_ENTRADA.has(x.tipo)).map((x) => x.campo).join(', ') || '(nenhum)';
-    throw new Error(`its: campo "${campo}" não está na tela — tenho ${tem}`);
-  }
-  if (okBruto !== null && okBruto !== undefined) return sidDoBotao(sids, okBruto);
-  if (typeof alvo === 'number' || /^btn\[\d+\]$/i.test(String(alvo))) return sidDoBotao(sids, alvo);
-  // string solta: primeiro apelido de botão (Gravar, Executar…), senão nome de campo
-  try { okcodeDe(alvo); return sidDoBotao(sids, alvo); } catch { /* não é botão conhecido */ }
-  return sidDoAlvo(sids, { campo: String(alvo) });
+  if (campo) return sidDoCampo(sids, campo, janela);
+  if (okBruto !== null && okBruto !== undefined) return sidDoBotao(sids, okBruto, janela);
+  if (typeof alvo === 'number' || /^btn\[\d+\]$/i.test(String(alvo))) return sidDoBotao(sids, alvo, janela);
+  // string solta: primeiro apelido de botão (Gravar, Executar…), senão nome de campo. ⚠ o `catch`
+  // é só do `okcodeDe`: apelido conhecido que a tela não tem estoura como BOTÃO, com as janelas —
+  // engolir isso devolvia `campo "Executar" não está na tela`, que manda procurar a coisa errada.
+  let okApelido = null;
+  try { okApelido = okcodeDe(alvo); } catch { /* não é botão conhecido — é nome de campo */ }
+  if (okApelido) return sidDoBotao(sids, okApelido, janela);
+  return sidDoAlvo(sids, { campo: String(alvo) }, { janela });
 }
 
-function sidDoBotao(sids, alvo) {
+function sidDoCampo(sids, campo, janela) {
+  const desses = sids.filter((x) => TIPOS_DE_ENTRADA.has(x.tipo));
+  return escolherNaJanela(sids, desses, desses.filter((x) => x.campo === campo), janela, {
+    alvo: `campo "${campo}"`, nomear: (x) => x.campo,
+  });
+}
+
+function sidDoBotao(sids, alvo, janela) {
   const okcode = okcodeDe(alvo);
-  const botoes = sids.filter((x) => x.tipo === 'GuiButton' && x.okcode);
-  const achado = botoes.find((x) => x.okcode === okcode);
-  if (achado) return achado.sid;
-  const tem = botoes.map((b) => `${b.okcode}${OKCODES[b.okcode] ? `=${OKCODES[b.okcode].nome}` : ''}`).join(', ') || '(nenhum)';
-  throw new Error(`its: botão ${okcode} não está na tela — tenho ${tem}`);
+  const desses = sids.filter((x) => x.tipo === 'GuiButton' && x.okcode);
+  return escolherNaJanela(sids, desses, desses.filter((x) => x.okcode === okcode), janela, {
+    alvo: `botão ${okcode}`, nomear: (x) => `${x.okcode}${OKCODES[x.okcode] ? `=${OKCODES[x.okcode].nome}` : ''}`,
+  });
+}
+
+/**
+ * PURO: entre os candidatos de um alvo, o da JANELA certa — e, quando não dá para decidir, um erro
+ * que mostra os candidatos janela a janela em vez de escolher no escuro.
+ *   `janela` pedida → só ela conta (não achar ali é erro, mesmo que o alvo exista em outra);
+ *   sem `janela`   → vence a `janelaAtiva`; candidato só FORA dela não é clicado por baixo do
+ *                    modal — é erro que diz onde ele está e como pedi-lo.
+ * Mais de um candidato na mesma janela (duas barras) também é erro: o SID inteiro desempata.
+ * ⚠ `sids` é a tela INTEIRA (é dela que sai a janela ativa — a modal se declara fora do tipo do
+ * alvo); `todos` são só os do tipo do alvo, e é o que a mensagem lista.
+ */
+function escolherNaJanela(sids, todos, candidatos, janela, { alvo, nomear }) {
+  const ativa = janelaAtiva(sids);
+  const pedida = janela ? (janelaDoSid(janela) ?? String(janela)) : null;
+  const escopo = pedida ?? ativa;
+  const dentro = candidatos.filter((x) => janelaDoSid(x.sid) === escopo);
+  if (dentro.length === 1) return dentro[0].sid;
+  const fora = candidatos.filter((x) => janelaDoSid(x.sid) !== escopo);
+  const listar = (lista) => lista.map(nomear).join(', ') || '(nenhum)';
+  if (dentro.length > 1) {
+    throw new Error(`its: ${alvo} está ${dentro.length}× em ${escopo} — ${dentro.map((x) => x.sid).join(', ')}; enderece pelo SID inteiro`);
+  }
+  if (fora.length) {
+    const onde = fora.map((x) => x.sid).join(', ');
+    throw new Error(`its: ${alvo} não está em ${escopo}${pedida ? '' : ' (a janela ativa)'} — está em ${onde}; `
+      + `${escopo} tem ${listar(todos.filter((x) => janelaDoSid(x.sid) === escopo))}. Se é a outra janela mesmo, peça { janela: '${janelaDoSid(fora[0].sid)}' }`);
+  }
+  const aqui = todos.filter((x) => janelaDoSid(x.sid) === escopo);
+  const outras = todos.filter((x) => janelaDoSid(x.sid) !== escopo);
+  throw new Error(`its: ${alvo} não está na tela — tenho ${listar(aqui)}`
+    + (outras.length ? ` em ${escopo}, e ${listar(outras)} nas outras janelas (${[...new Set(outras.map((x) => janelaDoSid(x.sid)))].join(', ')})` : ''));
 }
 
 // ---------- a tela do delta-update (PURO) ----------
@@ -688,10 +755,18 @@ export const parametrosDaTela = (sessao) => sidsDaTela(lerTela(sessao));
  * da tela, com rótulo e mensagem, é `lerTela`.
  */
 export const sids = (sessao) => sessao.sids;
-/** Só os campos de entrada da tela atual. */
-export const campos = (sessao) => sessao.sids.filter((x) => TIPOS_DE_ENTRADA.has(x.tipo));
-/** Só os botões (`btn[n]`) da tela atual, com o apelido medido quando há. */
-export const botoes = (sessao) => sessao.sids.filter((x) => x.tipo === 'GuiButton' && x.okcode)
+/** A janela ATIVA da sessão — a modal mais alta que o último delta declarou, ou `wnd[0]`. */
+export const ativa = (sessao) => janelaAtiva(sessao.sids);
+/** Só os campos de entrada da tela atual — de TODAS as janelas, ou só da `janela` pedida. */
+export const campos = (sessao, janela = null) => sessao.sids
+  .filter((x) => TIPOS_DE_ENTRADA.has(x.tipo) && (!janela || x.janela === janelaDoSid(janela)));
+/**
+ * Só os botões (`btn[n]`) da tela atual, com o apelido medido quando há. ⚠ Com popup aberto isto
+ * traz as DUAS barras (a da `wnd[1]` e a da `wnd[0]` atrás do modal) — o `janela` de cada botão
+ * diz de quem ele é, e `botoes(s, ativa(s))` recorta só a de cima.
+ */
+export const botoes = (sessao, janela = null) => sessao.sids
+  .filter((x) => x.tipo === 'GuiButton' && x.okcode && (!janela || x.janela === janelaDoSid(janela)))
   .map((b) => ({ ...b, nome: OKCODES[b.okcode]?.nome ?? null }));
 
 /**
@@ -753,9 +828,10 @@ export async function lerGrid(sessao, alvo = null, { de = 1, ate = null, lote = 
  * próxima ação (`acionar`, `enter`, `enviar`) — é assim que o renderer manda, e é a forma medida
  * (`value/txtMAX_SEL` + `action/3/…/btn[8]` no mesmo POST → "2 acertos"). O alvo é resolvido AGORA
  * contra a tela atual (nome errado estoura aqui, não como `-101` depois). Devolve `{ sid, valor, pendentes }`.
+ * `{ janela: 'wnd[0]' }` escopa o alvo quando há popup aberto (por padrão vale a janela ativa).
  */
-export function preencher(sessao, alvo, valor) {
-  const sid = sidDoAlvo(sessao.sids, typeof alvo === 'string' && !/^wnd\[/.test(alvo) ? { campo: alvo } : alvo);
+export function preencher(sessao, alvo, valor, { janela = null } = {}) {
+  const sid = sidDoAlvo(sessao.sids, typeof alvo === 'string' && !/^wnd\[/.test(alvo) ? { campo: alvo } : alvo, { janela });
   sessao.fila.push(...batchPreencher(sid, valor));
   return { sid, valor: String(valor ?? ''), pendentes: sessao.fila.length / 2 };
 }
@@ -767,11 +843,15 @@ export const enviar = (sessao, opts) => despachar(sessao, [], opts);
  * Aciona um botão pelo OK-code (`'btn[8]'`, `8`, `'Executar'`) ou pelo SID inteiro, levando junto o
  * que foi `preencher`-ido. `pegou: false` é INFORMAÇÃO: veio `multipart`, e `motivo` traz o
  * `X-Code`/`X-Status` — a ação não pegou, e o protocolo disse por quê.
+ *
+ * ⚠ O botão é resolvido NA JANELA ATIVA: com popup aberto o delta traz também a barra da `wnd[0]`,
+ * e `btn[0]` existe nas duas (medido, `d2-o.txt`). Para acionar a barra de trás do modal é preciso
+ * dizê-lo — `acionar(s, 'btn[15]', { janela: 'wnd[0]' })` — ou passar o SID inteiro.
  */
 export async function acionar(sessao, alvo, opts) {
   // objeto ({ sid }/{ okcode }) e SID cru passam como estão; o resto ('btn[8]', 8, 'Executar') é OK-code
   const alvoBotao = typeof alvo === 'object' || /^wnd\[/.test(String(alvo)) ? alvo : { okcode: alvo };
-  const sid = sidDoAlvo(sessao.sids, alvoBotao);
+  const sid = sidDoAlvo(sessao.sids, alvoBotao, { janela: opts?.janela ?? null });
   const r = await despachar(sessao, batchAcionar(sid), opts);
   return { ...r, sid };
 }

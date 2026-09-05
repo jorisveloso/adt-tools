@@ -851,6 +851,13 @@ export function campoDoSid(sid) {
   return m ? m[2] : folha;
 }
 
+/**
+ * PURO: a JANELA dona de um SID — `wnd[1]/tbar[0]/btn[0]` → `wnd[1]`. Sem prefixo de janela,
+ * `null`. É o que separa a barra do popup da barra da tela de trás, que vêm juntas na mesma
+ * leitura (fila 42).
+ */
+export const janelaDoSid = (sid) => /^(wnd\[\d+\])/.exec(String(sid ?? ''))?.[1] ?? null;
+
 /** PURO: o papel de um controle, pelo `Type` que o PRÓPRIO SAP põe no SID. */
 export const PAPEL_POR_TIPO = {
   GuiCTextField: 'campo', GuiTextField: 'campo', GuiPasswordField: 'campo', GuiComboBox: 'campo',
@@ -900,7 +907,7 @@ export function interpretarControle(bruto) {
   const textos = Object.values(d).filter((v) => typeof v === 'string');  // só a mensagem usa
   const base = {
     id: bruto.id, ct: bruto.ct, papel, sid: sid?.SID ?? null, tipoGui: sid?.Type ?? null,
-    campo: campoDoSid(sid?.SID), visivel: !!bruto.visivel,
+    campo: campoDoSid(sid?.SID), janela: janelaDoSid(sid?.SID), visivel: !!bruto.visivel,
   };
   switch (papel) {
     case 'campo': case 'okcode':

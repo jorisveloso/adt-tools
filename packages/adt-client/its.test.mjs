@@ -7,7 +7,7 @@ import { test, expect } from 'vitest';
 import {
   OKCD, ESTADO, BOOT, ENTER, batchPreencher, batchAcionar, batchComandar, batchVkey,
   decodificarEntidades, cabecalhoDoShell, paramDe, passosDoMultipart, sidsDaResposta, lerResposta,
-  sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla,
+  sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla, janelaAtiva, janelaDoSid, ativa,
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, telaDoDelta, lerTela, parametrosDaTela,
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
 } from './its.mjs';
@@ -343,6 +343,76 @@ test('its: com POPUP aberto o delta traz a wnd[1] e ESVAZIA a wnd[0]/usr — o m
   expect(sidDoAlvo(sidsDaTela, { sid: tela.popup.botoes[0].sid })).toBe('wnd[1]/usr/btnSPOP-OPTION1');
   expect(popupDaTela(controlesDoDelta(DELTA_SE38))).toBe(null);
   expect(popupDaTela([])).toBe(null);
+});
+
+// ---- a JANELA do alvo (item 42) ----------------------------------------------------------
+// Trechos COPIADOS da resposta do s4h 758/250 ao `/o` em 04/09/2026
+// (POC_webgui_okcode/medicoes/raw/d2-o.txt), com o `lsevents`, o `<svg>` do ícone e o `style` do
+// header tirados: a modal `wnd[1]` ("Sessões ABAP") e a barra DELA. No bruto o `/o` traz 17
+// botões — 13 da `wnd[0]`, que CONTINUA no delta atrás do modal, e 4 da `wnd[1]` — e `btn[0]`
+// existe nas duas (`wnd[1]/tbar[0]/btn[0]` e `wnd[0]/tbar[0]/btn[0]`). A ordem dos blocos é a do
+// bruto: `webguiPopups` ANTES do `cuaarea`.
+const MODAL_O = `<div ct="PW_standards" lsdata='{"0":false,"4":"663px","5":"208px","8":"webguiKeys","13":{"SID":"wnd[1]","Type":"GuiModalWindow","ModalNo":1,"focusable":"X"},"16":true}' id="RSM04000_ALV_NEW2000_1" role="dialog" aria-labelledby="RSM04000_ALV_NEW2000_1-header-title-txt" class="lsPWNew lsPWNewMaxWidthAutoX lsPWNewMaxWidthAutoY"><header class="lsPWNewHeader" id="RSM04000_ALV_NEW2000_1-header"><div id="RSM04000_ALV_NEW2000_1-header-title" tabindex="0" ti="0" class="lsPWNewHeaderDivMiddle" drag="move" role="heading" aria-level="1"><span id="RSM04000_ALV_NEW2000_1-header-title-txt" class="lsResponsivePaddingLeft " drag="move">Sessões ABAP</span></div></header></div>`;
+const BTN0_WND1 = `<div draggable="false" id="M1:50::btn[0]" ct="B" lsdata='{"x":0,"2":"TRANSPARENT","4":"Avançar","9":true,"18":"ENTER","21":true,"25":"TOGGLE","27":{"SID":"wnd[1]/tbar[0]/btn[0]","Type":"GuiButton","SubType":"toolbar"}}' role="button" title="Avan&#xe7;ar" aria-label="Avan&#xe7;ar" tabindex="0" ti="0" class="lsButton lsButton--base lsButton--onlyImage lsButton--useintoolbar lsButton--design-transparent "></div>`;
+const BTN12_WND1 = `<div draggable="false" id="M1:54::btn[12]" ct="B" lsdata='{"x":0,"2":"TRANSPARENT","4":"Cancelar","9":true,"18":"ESCAPE","21":true,"25":"TOGGLE","27":{"SID":"wnd[1]/tbar[0]/btn[12]","Type":"GuiButton","SubType":"toolbar"}}' role="button" title="Cancelar" aria-label="Cancelar" tabindex="0" ti="0" class="lsButton lsButton--base lsButton--onlyImage lsButton--useintoolbar lsButton--design-transparent "></div>`;
+const DELTA_DUAS_BARRAS = `<updates><delta-update><start-script><![CDATA[sap.its.aParams = {moin:'A',cuatitle:'Editor ABAP: 1ª tela'};]]></start-script>
+${cdata('webguiPopups', `<div id="webguiPopups" ct="CO">${MODAL_O}${BTN0_WND1}${BTN12_WND1}</div>`)}
+${cdata('steploop0', `<div id="steploop0" ct="PLP"></div>`)}
+${cdata('cuaarea', `<div id="cuaarea" ct="CO">${OKCD_HTML}${BTN3_VOLTAR}${BTN0_DESTACADO}${BTN8_SE38}</div>`)}
+</delta-update></updates>`;
+
+test('its: a janela ativa é a modal MAIS ALTA que o delta declara — sem modal, a wnd[0]', () => {
+  expect(janelaAtiva(sidsDaResposta(DELTA_SE38))).toBe('wnd[0]');   // nenhuma janela se declara no delta
+  expect(janelaAtiva(sidsDaResposta(DELTA_DUAS_BARRAS))).toBe('wnd[1]');
+  expect(janelaAtiva([])).toBe('wnd[0]');
+  // duas modais EMPILHADAS: medido em d2-ose16.txt (`/o` e, sobre ele, o popup da SE16) — vence a de cima
+  expect(janelaAtiva([{ sid: 'wnd[1]', tipo: 'GuiModalWindow' }, { sid: 'wnd[2]', tipo: 'GuiModalWindow' }])).toBe('wnd[2]');
+  expect(janelaAtiva([{ sid: 'wnd[2]', tipo: 'GuiModalWindow' }, { sid: 'wnd[1]', tipo: 'GuiModalWindow' }])).toBe('wnd[2]');
+  expect(janelaDoSid('wnd[1]/tbar[0]/btn[0]')).toBe('wnd[1]');
+  expect(janelaDoSid('grid#C102#1,1')).toBe(null);
+});
+
+test('its: com popup aberto o alvo resolve na JANELA ATIVA — btn[0] está nas duas, e a de trás só por escopo explícito', () => {
+  const lista = sidsDaResposta(DELTA_DUAS_BARRAS);
+  // o achado do item 23: o MESMO btn[0] nas duas janelas, e a `wnd[1]` só vinha primeiro por ordem de markup
+  expect(lista.filter((x) => x.okcode === 'btn[0]').map((x) => x.sid)).toEqual(['wnd[1]/tbar[0]/btn[0]', 'wnd[0]/tbar[0]/btn[0]']);
+  expect(sidDoAlvo(lista, 'btn[0]')).toBe('wnd[1]/tbar[0]/btn[0]');                       // agora por REGRA: a janela ativa
+  expect(sidDoAlvo(lista, 'btn[0]', { janela: 'wnd[0]' })).toBe('wnd[0]/tbar[0]/btn[0]'); // a de trás, dita
+  expect(sidDoAlvo(lista, 'btn[12]')).toBe('wnd[1]/tbar[0]/btn[12]');
+  expect(sidDoAlvo(lista, 'wnd[0]/tbar[0]/btn[0]')).toBe('wnd[0]/tbar[0]/btn[0]');        // o SID inteiro passa direto
+  // o botão que só a janela de trás tem NÃO é clicado por baixo do modal — o erro mostra as duas janelas
+  expect(() => sidDoAlvo(lista, 'Executar')).toThrow(
+    /botão btn\[8\] não está em wnd\[1\] \(a janela ativa\) — está em wnd\[0\]\/tbar\[1\]\/btn\[8\]; wnd\[1\] tem btn\[0\]=Enter, btn\[12\]=Cancelar\. Se é a outra janela mesmo, peça \{ janela: 'wnd\[0\]' \}/);
+  expect(sidDoAlvo(lista, 'Executar', { janela: 'wnd[0]' })).toBe('wnd[0]/tbar[1]/btn[8]');
+  // janela pedida que não tem o alvo é erro, mesmo o alvo existindo na ativa
+  expect(() => sidDoAlvo(lista, 'btn[12]', { janela: 'wnd[0]' })).toThrow(/botão btn\[12\] não está em wnd\[0\] — está em wnd\[1\]\/tbar\[0\]\/btn\[12\]/);
+  // e o que não está em janela nenhuma diz o que a ativa tem E o que as outras têm
+  expect(() => sidDoAlvo(lista, { okcode: 'btn[11]' })).toThrow(
+    /botão btn\[11\] não está na tela — tenho btn\[0\]=Enter, btn\[12\]=Cancelar em wnd\[1\], e btn\[3\]=Voltar, btn\[0\]=Enter, btn\[8\]=Executar nas outras janelas \(wnd\[0\]\)/);
+});
+
+test('its: o mesmo okcode DUAS vezes na mesma janela não se resolve no escuro — o erro pede o SID', () => {
+  // sintético: nenhum bruto medido repete o okcode dentro de uma janela (varridos os raw/*.txt das POCs)
+  const duas = [
+    { sid: 'wnd[0]/tbar[0]/btn[0]', tipo: 'GuiButton', okcode: 'btn[0]', janela: 'wnd[0]' },
+    { sid: 'wnd[0]/tbar[1]/btn[0]', tipo: 'GuiButton', okcode: 'btn[0]', janela: 'wnd[0]' },
+  ];
+  expect(() => sidDoAlvo(duas, 'btn[0]')).toThrow(/botão btn\[0\] está 2× em wnd\[0\] — wnd\[0\]\/tbar\[0\]\/btn\[0\], wnd\[0\]\/tbar\[1\]\/btn\[0\]; enderece pelo SID inteiro/);
+  expect(sidDoAlvo(duas, 'wnd[0]/tbar[1]/btn[0]')).toBe('wnd[0]/tbar[1]/btn[0]');
+});
+
+test('its: sids/botoes/campos carregam a janela dona, e recortam por ela quando pedido', () => {
+  const sessao = { sids: sidsDaResposta(DELTA_DUAS_BARRAS), fila: [] };
+  expect(ativa(sessao)).toBe('wnd[1]');
+  expect(botoes(sessao).map((b) => [b.janela, b.okcode])).toEqual([
+    ['wnd[1]', 'btn[0]'], ['wnd[1]', 'btn[12]'], ['wnd[0]', 'btn[3]'], ['wnd[0]', 'btn[0]'], ['wnd[0]', 'btn[8]'],
+  ]);
+  expect(botoes(sessao, ativa(sessao)).map((b) => b.sid)).toEqual(['wnd[1]/tbar[0]/btn[0]', 'wnd[1]/tbar[0]/btn[12]']);
+  expect(botoes(sessao, 'wnd[0]')).toHaveLength(3);
+  // o preencher escopa igual: com popup aberto o campo da wnd[0] não vem no delta, e o da wnd[1] vem
+  const comCampos = { sids: sidsDaResposta(DELTA_SE38), fila: [] };
+  expect(campos(comCampos, 'wnd[0]').map((c) => c.campo)).toEqual(['RS38M-PROGRAMM', 'RS38M-FUNC_EDIT']);
+  expect(campos(comCampos, 'wnd[1]')).toEqual([]);
 });
 
 test('its: lerTela lê o ÚLTIMO delta da sessão (multipart não o substitui) e parametrosDaTela responde o ~transaction', () => {

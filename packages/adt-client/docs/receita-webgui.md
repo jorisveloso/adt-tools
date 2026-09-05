@@ -1280,9 +1280,45 @@ tela.aviso   // 'popup wnd[1] aberto — a wnd[0]/usr não vem no delta enquanto
 
 ⚠ Os botões do popup (`btnSPOP-OPTION1`) **não são `btn[n]`**: não entram em `tela.botoes` e
 `acionar(s, 'Sim')` não os acha — o endereço é `acionar(s, { sid: tela.popup.botoes[0].sid })`.
-**Responder ao popup por esta via não está medido** (item 23). O `/o` mostrou ainda que a
-`wnd[1]` pode ter barra própria (`wnd[1]/tbar[0]/btn[0]` "Avançar", `btn[12]` "Cancelar") — e aí
-`tela.botoes` mistura os `btn[n]` das duas janelas na ordem do documento.
+**Responder ao popup por esta via não está medido** (item 23).
+
+#### O alvo tem JANELA — e por padrão é a ATIVA (item 42)
+
+A `wnd[1]` pode ter **barra própria**, e a barra da `wnd[0]` **continua no delta** atrás do modal.
+Medido no `/o` (`POC_webgui_okcode/medicoes/raw/d2-o.txt`): 17 botões — 4 da `wnd[1]`, 13 da
+`wnd[0]` — e `btn[0]` existe **nas duas** (`wnd[1]/tbar[0]/btn[0]` "Avançar" e
+`wnd[0]/tbar[0]/btn[0]`). Com `/ose16` são **três** janelas (`d2-ose16.txt`: `wnd[1]` e `wnd[2]`
+modais empilhadas) e `btn[0]` nas três. Só o `btn[n]` não endereça nada nesse estado.
+
+Por isso o alvo é resolvido **dentro de uma janela**:
+
+```js
+janelaAtiva(sids(s));                 // 'wnd[1]' — a GuiModalWindow de MAIOR índice declarada; 'wnd[0]' se não há
+ativa(s);                             // o mesmo, direto da sessão
+await acionar(s, 'btn[0]');           // wnd[1]/tbar[0]/btn[0] — a janela ATIVA, por regra
+await acionar(s, 'btn[0]', { janela: 'wnd[0]' });   // a barra de trás, DITA
+await acionar(s, 'wnd[0]/tbar[0]/btn[0]');          // o SID inteiro passa por cima de tudo
+botoes(s);                            // as duas barras, cada botão com a `janela` dona
+botoes(s, ativa(s));                  // só a de cima
+```
+
+**Como a janela ativa se descobre:** sem popup, nenhuma janela se declara no delta (a `wnd[0]` mora
+no shell do GET); cada modal aberta se declara com o próprio `wnd[n]`/`GuiModalWindow`. Daí a regra
+ser *o maior índice declarado*, e não "existe popup". Antes disto a resolução pegava o **primeiro**
+SID que casasse, e acertava a `wnd[1]` só porque o bloco `webguiPopups` vem antes do `cuaarea` —
+ordem de markup, não regra; com `wnd[2]` aberta ela errava a janela.
+
+**O que não está na janela ativa não é clicado por baixo do modal** — é erro que mostra as duas:
+
+```
+its: botão btn[15] não está em wnd[1] (a janela ativa) — está em wnd[0]/tbar[0]/btn[15];
+     wnd[1] tem btn[0]=Enter, btn[5], btn[14], btn[12]=Cancelar.
+     Se é a outra janela mesmo, peça { janela: 'wnd[0]' }
+```
+
+O mesmo `btn[n]` duas vezes **na mesma janela** (duas barras) também estoura, pedindo o SID inteiro:
+nenhum bruto medido faz isso, mas a lib não escolhe no escuro. `preencher(s, campo, valor,
+{ janela })` escopa igual.
 
 ### O módulo `its.mjs` — o protocolo portado para a lib
 
