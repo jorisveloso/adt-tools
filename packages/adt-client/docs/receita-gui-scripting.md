@@ -202,12 +202,64 @@ Gotchas medidos no caminho:
   do Node não tem cp850, WMI `Win32_Process` não tem título de janela — só `chcp 65001>nul &&
   tasklist …` resolve (`linhaTasklist`, via `cmd /c` com `windowsVerbatimArguments`). O PowerShell
   tem o mesmo mal sem `[Console]::OutputEncoding=UTF8` — o `janelasSapGui()` ainda sofre disso (fila).
-- **Aberto (anomalia anotada):** ~40 s depois de o lançador ter iniciado o pad (E), um
-  `GetObject("SAPGUI")` devolveu engine **sem filhos** com a sessão `SAP Easy Access` visível; ~1 min
-  depois o ROT listava a sessão normalmente. Não reproduzido de propósito; está na fila.
+- **A "anomalia" dos ~40 s (E) foi reproduzida em 05/09/2026 e não é do ROT:** é o pedágio do
+  cliente — o § seguinte.
 
 Para dirigir dynpro sem sessão de GUI, o caminho continua sendo o **WebGUI**
 ([receita-webgui.md](receita-webgui.md)), que não depende de nada disto.
+
+## ⚠ O pedágio do cliente: o popup "Um script está tentando acessar SAP GUI"
+
+Medido 05/09/2026 (S4H, mandante 250 — item 34 da fila `adt-client`; linha do tempo, brutos e
+scripts em `sap-accelerate/work/POC_rot_sapgui/medicoes/item34-rot.md`): mesmo com
+`sapgui/user_scripting_force_notification=FALSE` no **servidor** (lido por classrun na hora), o
+**cliente** pede autorização. O `GetObject("SAPGUI")` faz o pad abrir um diálogo modal `#32770` de
+título `SAP Logon` e texto *"Um script está tentando acessar SAP GUI"* (OK/Cancelar) **~1,4 s
+depois da chamada**, e **não devolve o objeto enquanto ninguém clicar OK** — 90 s de espera sem
+resposta.
+
+| rodada (sessão já de pé e visível) | popup aparece | clique | a sonda responde |
+|---|---|---|---|
+| sem clicar | 1,4 s | — | **nunca** (timeout de 90 s) |
+| clicando OK | 2,1 s | 3,9 s | **4,8 s** — 1 conexão, 1 sessão logada |
+
+- **É por chamada, não por pad.** Três sondas em sequência ⇒ três popups. Cada `rodarGui`,
+  `sessoesAbertas`, `lerTela` ou `fecharSapGui` é um `cscript` novo e paga o pedágio outra vez.
+- **O timeout do chamador não resolve — piora:** o `execFile` mata o `cscript` e o popup **fica
+  órfão na tela**; a chamada seguinte empilha mais um. Com um clicador em paralelo, `fecharSapGui`
+  fechou a conexão em 1,4 s.
+- **O sintoma engana, e o `diagnosticarRot` de hoje engana junto:** com o popup de pé, a janela
+  `SAP_FRONTEND_SESSION` "SAP Easy Access" está **visível** e o ROT expira. `lerJanelas` devolve
+  `sessao`, e `diagnosticarRot` conclui **`logon-pendente` — "é a TELA DE LOGON"** — errado: a sessão
+  está logada; o que falta é o OK. O popup precisa virar estado próprio (`#32770` `SAP Logon` cujo
+  `Static` contém "script"), antes do `sessao` — está na fila (61).
+- **Diagnóstico rápido, à mão:** listar as janelas top-level do pad e procurar um `#32770` visível
+  que não seja o próprio `SAP Logon <versão>` — `sap-accelerate/work/POC_rot_sapgui/scripts/janelas.ps1`
+  lista e clica no OK.
+- Onde a opção mora no cliente **não foi achado**: não está em
+  `HKCU\…\SAP Frontend Server\Scripting` (só `WindowPlacement`) nem na chave `Security` do `HKLM`
+  (`UserScripting=1`, `SecurityLevel=1`, `DefaultAction=0`); varredura por `Warn|Notif|Attach` sob
+  `HKCU\Software\SAP` e `HKLM\…\WOW6432Node\SAP` não achou nada. Fila 60.
+
+O que a linha do tempo da reprodução separou (lançamento pelo `sapshcut`, sem pad antes):
+
+| t | ROT | o que era |
+|---|---|---|
+| pad fechado | `GetObject` **falha em 1,7 s** (sem entrada `SAPGUI`) | GUI fechado responde rápido, com `Err` |
+| 3,1 s | `GetObject` falha em 2,4 s | pad `13060` nascendo do lançador `36464`; **ainda não registrou** |
+| ~5 s → 40,1 s | a chamada fica **34,7 s presa** e volta com `con[0]/ses[0]` logada | o popup |
+| depois | 3,7 s · 19,7 s · timeout · timeout | pedágio a cada chamada; dois destravaram sozinhos (aberto, fila 62) |
+
+Ou seja: o atraso real do ROT existe e dura **segundos**; o resto é pedágio. E o "engine sem filhos"
+do relato de 04/09 era leitura da versão antiga da lib, que colapsava "sem entrada no ROT" e "engine
+com 0 conexões" na mesma saída. A hipótese do `saplogon` transitório ficou **sem suporte**: um pad
+só nasceu e persistiu; o `SAPgui.exe` é o lançador e morre (§ anterior).
+
+⚠ **Duas medições deste dia discordam do § "O ROT e os seus vazios":** com o pad **fechado** o
+`GetObject` falhou limpo em 1,7 s, e com o pad **aberto sem sessão** (o `saplogon` do dia anterior)
+respondeu em 3,0 s com engine de 0 conexões — não "consumiu o timeout inteiro". O que pendura é o
+popup, não a ausência de sessão. O que mudou entre 04/09 e 05/09 não foi medido; o pad do dia
+anterior **não pedia autorização**, o pad novo pedia até depois de a conexão ser fechada (fila 62).
 
 ## Dirigir a tela: passos declarativos
 
