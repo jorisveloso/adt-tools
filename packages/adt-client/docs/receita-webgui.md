@@ -357,8 +357,10 @@ await acionar(s, 'Salvar');    // ✗ estoura AQUI, com a lista — não vira "n
 ```
 
 A **outra** via de comando da barra — o input `ToolbarOkCode` (SID `wnd[0]/tbar[0]/okcd`, title
-"Inserir código de transação") — existe em toda tela e é **invisível** (rect 0×0): não recebe
-digitação, e é por isso que este canal não manda OK-code arbitrário. Fila `adt-client`, item 13.
+"Inserir código de transação") — existe em toda tela e é **invisível** (rect 0×0): não recebe gesto
+nativo nenhum. Isso não impede mandar OK-code — impede mandá-lo por clique/digitação. O gesto que
+funciona (`value` por JS + `Enter` despachado no próprio elemento) é o `comandar`, § "A caixa de
+comando (OK-code) **pelo navegador**".
 
 ## ⚠ Cookie `secure` sobre HTTP puro — o gotcha que mata o canal calado
 
@@ -527,13 +529,54 @@ oItsParams:{…code:'vkey/0/ses[0]',submit:true,type:'GuiOKCodeField'}, oUrParam
 `sap.g4h.$`, onde mora o `submitOkCode`, **não está exposto** (`sap.g4h` publica só `openMenu`,
 `doWguMenuSelect`, `openWindow`…). O gesto do `Enter` é o mais estável dos três.
 
-### ⚠ O OK-code **não leva o que foi digitado na dynpro**
+### O OK-code **leva** o que foi digitado — o que faltava era o `blur` (item 31)
 
-Medido: `preencher` do campo da tabela na SE16 e em seguida `comandar(s, 'ONLI')` → a tela voltou
-**"Entrar nome de tabela"**, e o batch saiu **sem nenhum `value/<SID>`** do campo. O caminho curto
-do `submitOkCode` publica o OK-code, não o estado da tela.
+**Medido no s4h 758/250 em 2026-09-04**, cada cenário em sessão nova, com o batch lido do CDP
+(`Network.requestWillBeSent`, não hook no XHR — ver a armadilha abaixo). Alvo: tela de seleção da
+SE16 sobre a **T000**, filtro `MTEXT = 'Neduca'` — 1 das 5 linhas, então a contagem do título separa
+os três desfechos sem ambiguidade.
 
-> Regra prática: **acionar com valores da tela é `acionar` (botão); navegar é `comandar` (OK-code).**
+| gesto | tela | veredito |
+|---|---|---|
+| `comandar('ONLI')` **sem valor** | `T000 5 acertos` | executou, sem filtro (contrafactual do valor) |
+| `preencher` + `comandar('ONLI')` | `T000 5 acertos` | executou e **o valor se perdeu** ← o limite antigo |
+| `preencher` + **`blur`** + `comandar('ONLI')` | `T000 **1 acertos**` | **executou COM o valor** |
+| `preencher` + `blur` + Enter, **sem OK-code** | `tela de seleção` | não executou (contrafactual do fcode) |
+| `preencher` + `acionar('btn[8]')` | `T000 1 acertos` | controle positivo — o caminho já conhecido |
+
+No caso que funciona, `value/…txtI1-LOW` e `okcode/ses[0]` saem **no mesmo POST**.
+
+**A causa, no fonte do renderer.** Quem publica o valor é o `Change` do controle —
+`addBatch({post: "value/" + SID, content: …})` — e o `submitOkCode` enfileira na **mesma fila**:
+
+```js
+this.submitOkCode = function (m) {
+  v.add({ post: "okcode/ses[0]", content: m });   // v.add === addBatch
+  v.add({ post: "vkey/0/ses[0]" });
+  v.add({ get: "state/ur" });
+  this.sendWithPromise();
+};
+```
+
+Nunca houve caminho curto que descartasse a tela: faltava o valor **entrar na fila**.
+`Input.insertText` (o gesto do `preencher`) mexe no DOM e **não** dispara o `Change`; o `blur`
+dispara. Bisseção: um `change` sintético **sem** `blur` não basta — o `blur` sozinho basta.
+
+> Regra prática: **`comandar` navega E aciona com os valores da tela.** `preencher` + `comandar`
+> já funciona sozinho: `comandar` publica o campo em foco antes de mandar o OK-code. Com vários
+> campos isso já acontece por conta — o clique no campo seguinte tira o foco do anterior, e só o
+> último fica para o `comandar`. `comandar(s, ok, { publicarValores: false })` volta ao gesto cru.
+
+⚠️ **Duas armadilhas de MEDIÇÃO, pagas nesta rodada** (valem para qualquer medida neste canal):
+
+1. **Hook no `XMLHttpRequest` não vê todo o tráfego.** Um cenário chegou a mandar `T000` ao
+   servidor com **zero** `value/` capturado pelo hook — a conclusão que sairia dali seria falsa.
+   O que vê tudo é o CDP: `sessao.eventos` filtrado por `Network.requestWillBeSent` com `postData`.
+2. **"Ficou na mesma tela" não é "não executou".** Com um filtro que não casa (`MTEXT='250'`), o
+   caminho que sabidamente leva valores (o **botão**) devolve a MESMA tela e a mesma statusbar
+   ("Não foi encontrada nenhuma entrada em tabela para chave indicada") do caminho em teste — e
+   `preencher` + `comandar` pareceu falhar quando na verdade tinha funcionado. Sem o controle
+   positivo e sem um valor de filtro que EXISTE, o assert não distingue as hipóteses.
 
 ### ⚠ OK-code que abre popup trava a `wnd[0]`
 
@@ -875,6 +918,22 @@ item 13. `action/3/wnd[0]/tbar[0]/okcd` devolve `-101 not supported`. Quem entre
 
 O mesmo `vkey/0` é o **Enter da dynpro**: preencher um campo e mandá-lo avança a tela sem clicar
 em botão (medido: `DATABROWSE-TABLENAME=T000` + `vkey/0` → tela de seleção da T000).
+
+**E é por isso que o OK-code LEVA os valores desta via** (item 31, medido no s4h em 2026-09-04): o
+`okcd` é campo como outro qualquer, e quem submete é o Enter — que carrega a dynpro inteira. Um
+POST só, `113 ms`:
+
+```json
+[{"post":"focus/wnd[0]/usr/txtI1-LOW","logic":"ignore"},
+ {"post":"value/wnd[0]/usr/txtI1-LOW","content":"Neduca"},
+ {"post":"value/wnd[0]/tbar[0]/okcd","content":"ONLI"},
+ {"post":"vkey/0/ses[0]"},
+ {"get":"state/ur"}]
+```
+
+→ `Data Browser: Tabela T000 1 acertos` (o filtro entrou E o fcode executou). Sem o `value` do
+campo, o mesmo OK-code traz a tabela inteira ("5 acertos"). Na lib: `preencher(s, …)` seguido de
+`comandar(s, 'ONLI')` — o `comandar` **antes recusava** fila pendente, hoje ela vai junto.
 
 | OK-code | O que faz | Medido |
 |---|---|---|

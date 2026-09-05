@@ -793,15 +793,19 @@ export const tecla = (sessao, nome, opts) => despachar(sessao, batchVkey(numeroD
 
 /**
  * Manda um OK-code pela caixa de comando: `/nSE16` (de qualquer tela), `/n` (menu), `ONLI`/`/8`
- * (fcode e tecla da dynpro), `/nex` (encerra). ⚠ Recusa com valores pendentes: o OK-code levar o
- * que foi digitado NÃO está medido nesta via (no navegador está medido que NÃO leva — item 31);
- * acione com `acionar`/`enter`, ou descarte com `sessao.fila = []`.
+ * (fcode e tecla da dynpro), `/nex` (encerra). LEVA o que foi `preencher`-ido, no mesmo POST.
+ *
+ * Isto ANTES recusava valores pendentes ("o OK-code levar valor não está medido"). Medido no s4h
+ * 758/250 em 04/09/2026 (item 31, `sap-accelerate/work/POC_webgui_okcode_valores/`, fase H): na
+ * tela de seleção da SE16 sobre a T000, o POST
+ *   `value/wnd[0]/usr/txtI1-LOW` = "Neduca" · `value/wnd[0]/tbar[0]/okcd` = "ONLI" · `vkey/0/ses[0]`
+ * devolveu **"1 acertos"** em 113 ms — o filtro foi aplicado E o fcode executou. Contrafactuais da
+ * mesma rodada: o mesmo OK-code SEM o valor traz a tabela inteira ("5 acertos"), e o valor sem
+ * fcode nenhum não executa (fica na tela de seleção). Aqui o `okcd` é campo como outro qualquer —
+ * quem submete é o Enter, e ele carrega a dynpro toda.
  */
 export async function comandar(sessao, okcode, opts) {
-  if (sessao.fila.length) {
-    throw new Error(`its: comandar com ${sessao.fila.length / 2} valor(es) pendente(s) — mande-os por acionar/enter/enviar antes (o OK-code levar valor não está medido)`);
-  }
-  const r = await postar(sessao, [...batchComandar(okcode), ESTADO], opts);
+  const r = await despachar(sessao, batchComandar(okcode), opts);
   return { ...r, okcode: String(okcode).trim() };
 }
 

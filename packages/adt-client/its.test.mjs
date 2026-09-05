@@ -47,6 +47,23 @@ test('its: o vocabulário do protocolo é o MEDIDO — focus+value, action/3, ok
   expect(ESTADO).toEqual({ get: 'state/ur' });
 });
 
+test('its: o OK-code LEVA os valores pendentes — um POST só com value do campo, value do okcd e Enter (item 31)', () => {
+  // Medido no s4h 758/250 em 04/09/2026 (POC_webgui_okcode_valores, fase H): este batch exato, na
+  // tela de seleção da SE16 sobre a T000, devolveu "1 acertos" em 113 ms — filtro aplicado E fcode
+  // executado. Sem o `value` do campo o mesmo OK-code traz a tabela inteira ("5 acertos").
+  // `comandar` ANTES recusava fila pendente; hoje ela vai junto (é o `despachar` que a concatena).
+  const batch = [...batchPreencher('wnd[0]/usr/txtI1-LOW', 'Neduca'), ...batchComandar('ONLI'), ESTADO];
+  expect(batch).toEqual([
+    { post: 'focus/wnd[0]/usr/txtI1-LOW', logic: 'ignore' },
+    { post: 'value/wnd[0]/usr/txtI1-LOW', content: 'Neduca' },
+    { post: 'value/wnd[0]/tbar[0]/okcd', content: 'ONLI' },
+    ENTER,
+    ESTADO,
+  ]);
+  // o okcd é campo como outro qualquer: quem submete é o Enter, e ele carrega a dynpro inteira
+  expect(batch.filter((c) => String(c.post).startsWith('value/'))).toHaveLength(2);
+});
+
 test('its: a tecla vira vkey/<n>/ses[0] — o mapa MEDIDO por nome e apelido, número cru livre, nome inventado estoura', () => {
   // fila 22, s4h 758/250 04/09/2026: o n do vkey é o MESMO número de tecla de função do SAP GUI
   expect(numeroDaTecla('F8')).toBe(8);

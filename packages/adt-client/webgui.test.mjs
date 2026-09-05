@@ -8,7 +8,7 @@ import {
   autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
-  interpretarSonda, jsComando,
+  interpretarSonda, jsComando, JS_PUBLICAR_FOCO,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
 } from './webgui.mjs';
 
@@ -382,6 +382,21 @@ test('webgui: o OK-code do navegador escreve por JS e dispara o Enter NO PRÓPRI
   expect(jsComando(' /3 ')).toContain('el.value = "/3"');
   expect(() => jsComando('')).toThrow(/informe o OK-code/);
   expect(() => jsComando(null)).toThrow(/informe o OK-code/);
+});
+
+test('webgui: o OK-code leva o que foi digitado porque o blur PUBLICA o valor (item 31)', () => {
+  // Medido no s4h 758/250 em 04/09/2026 (POC_webgui_okcode_valores): na tela de seleção da SE16
+  // sobre a T000, `preencher` + `comandar('ONLI')` deu "5 acertos" (valor perdido) e com o `blur`
+  // no meio deu "1 acertos", com `value/…txtI1-LOW` e `okcode/ses[0]` no MESMO post.
+  // Quem publica o valor é o `Change` do controle; `Input.insertText` não o dispara, `blur` sim —
+  // e um `change` sintético SEM blur não bastou. Por isso o gesto aqui é o blur, e só ele.
+  expect(JS_PUBLICAR_FOCO).toContain('document.activeElement');
+  expect(JS_PUBLICAR_FOCO).toContain('e.blur()');
+  expect(JS_PUBLICAR_FOCO).not.toContain('KeyboardEvent'); // publicar não é submeter
+  // o próprio okcd nunca é o campo a publicar: quem o submete é o Enter do `jsComando`
+  expect(JS_PUBLICAR_FOCO).toContain("e.id === 'ToolbarOkCode'");
+  // sem campo em foco não há o que publicar — devolve null em vez de estourar
+  expect(JS_PUBLICAR_FOCO).toContain('return null');
 });
 
 // ── O MENU DA BARRA (item 26) ────────────────────────────────────────────────

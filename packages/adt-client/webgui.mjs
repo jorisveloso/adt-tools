@@ -878,9 +878,23 @@ export async function preencher(sessao, alvo, valor) {
 //   • navegação numa sessão: `/nSE16` → `/3` → `/nSE38` → `/n`, 1,58-1,60 s por salto;
 //   • CONTRA-PROVA: escrever o `value` e NÃO despachar o Enter não navega (fica na mesma tela, 0 POST).
 //
-// ⚠️ **Isto NÃO leva o que foi digitado na dynpro.** Medido: `preencher` + `comandar(s,'ONLI')` na
-// SE16 voltou "Entrar nome de tabela" — o batch do OK-code sai sem nenhum `value/<SID>` do campo.
-// Para acionar COM os valores da tela, o gesto é o botão (`acionar`), não o OK-code.
+// **O OK-code LEVA o que foi digitado — desde que o campo tenha PERDIDO O FOCO antes.** Medido no
+// s4h 758/250 em 04/09/2026 (item 31, `sap-accelerate/work/POC_webgui_okcode_valores/`), na tela de
+// seleção da SE16 sobre a T000, com o filtro MTEXT='Neduca' (1 das 5 linhas) e o batch lido do CDP:
+//   • `preencher` + `comandar('ONLI')`            → "5 acertos" — o valor SE PERDEU (o limite antigo);
+//   • `preencher` + **`blur`** + `comandar('ONLI')` → "1 acertos", com `value/…txtI1-LOW` e
+//     `okcode/ses[0]` no MESMO post — o filtro foi aplicado E o fcode executou.
+// Contrafactuais da mesma rodada: o OK-code sem valor traz a tabela inteira ("5 acertos"), e o
+// valor com Enter mas SEM OK-code não executa (fica na tela de seleção); o controle positivo pelo
+// botão (`acionar('btn[8]')`) dá o mesmo "1 acertos".
+//
+// A causa está no fonte: quem publica o valor é o `Change` do controle, que faz
+// `addBatch({post:"value/"+SID})` — e `submitOkCode` enfileira na MESMA fila (`v.add`) antes de
+// mandar. Faltava só o valor entrar nela: `Input.insertText` mexe no DOM e não dispara `Change`;
+// o `blur` dispara. Um `change` sintético SEM `blur` não basta (medido) — o gatilho é o `blur`.
+// Por isso `comandar` publica o campo em foco antes de mandar o OK-code (`publicarValores`).
+// Preenchendo VÁRIOS campos isso já acontece sozinho: o clique no campo seguinte tira o foco do
+// anterior — só o último fica pendente, e é dele que o `comandar` cuida.
 //
 // ⚠️ **OK-code que abre POPUP trava a janela principal.** Medido: `/15` (Shift+F3) no menu abre a
 // pergunta de logoff (`sap.its.getPopupCount()` 1) e daí o `okcd` de `wnd[0]` não responde mais —
@@ -902,19 +916,32 @@ export function jsComando(texto) {
   })()`;
 }
 
+/** PURO: o `blur` no campo em foco — o gesto que faz o renderer PUBLICAR o valor digitado
+ * (`addBatch({post:"value/"+SID})`), para o OK-code seguinte levá-lo no mesmo post. Devolve o `id`
+ * do campo publicado, ou `null` quando não havia campo em foco (nada a publicar). */
+export const JS_PUBLICAR_FOCO = `(() => {
+  const e = document.activeElement;
+  if (!e || e === document.body || !('value' in e) || e.id === 'ToolbarOkCode') return null;
+  e.blur();
+  return e.id || true;
+})()`;
+
 /**
- * Manda um OK-code pela caixa de comando e espera a resposta do ABAP.
+ * Manda um OK-code pela caixa de comando e espera a resposta do ABAP. LEVA junto o que foi
+ * `preencher`-ido: antes do OK-code, tira o foco do campo, que é o que faz o renderer publicar o
+ * valor (§ acima). `publicarValores: false` volta ao gesto cru, sem o `blur`.
  * `mudou: false` é INFORMAÇÃO: a tela ficou igual, o comando não pegou (popup aberto, fcode que a
  * dynpro não tem, ou sessão encerrada por um `/nex` anterior).
  */
-export async function comandar(sessao, texto, { tetoMs = 25000 } = {}) {
+export async function comandar(sessao, texto, { tetoMs = 25000, publicarValores = true } = {}) {
   const js = jsComando(texto);
+  const publicado = publicarValores ? await avaliar(sessao, JS_PUBLICAR_FOCO) : null;
   const antes = await carimbo(sessao);
   const t0 = Date.now();
   const achou = await avaliar(sessao, js);
   if (!achou) throw new Error(`webgui: comandar — a tela não tem o campo ToolbarOkCode (${texto})`);
   const mudou = await esperarMudanca(sessao, antes, { tetoMs });
-  return { okcode: String(texto).trim(), mudou, ms: Date.now() - t0 };
+  return { okcode: String(texto).trim(), mudou, ms: Date.now() - t0, publicado: publicado ?? null };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
