@@ -224,6 +224,23 @@ Gotchas medidos no caminho:
   `CharSet`, o `DllImport` liga em `GetWindowTextA` e o ANSI 1252 faz *best-fit* silencioso (`ĄŻ`→`AZ`,
   `—`→`-`) e `?` no que não tem mapa — perda que nenhuma codepage de saída recupera. Os dois estão em
   `psJanelas()` (`gui.mjs`), coberto em `gui.test.mjs`.
+- **O texto de um `Static` do SAP GUI é MULTILINHA — e o parser lê UMA janela por linha.** Medido
+  05/09/2026 (item 63; bruto `POC_rot_sapgui/medicoes/item63-janelas-reais.md`) contra a caixa real
+  `SAP GUI`: as três linhas que a tela mostra vêm de **um único** `Static`, separadas por `\r\n\r\n`.
+  Como `psJanelas()` emite uma janela por linha com campos por TAB, o texto quebrava a linha e
+  `interpretarJanelas` descartava tudo depois da primeira — `textos` chegava com 1 de 3. Hoje cada
+  linha do `Static` vira um item de `textos[]` e `Uma()` tira `\r`/`\n`/TAB de todo campo, título
+  inclusive (um TAB no título deslocaria os campos seguintes). Não é encoding: é enquadramento —
+  nenhuma janela do item 35 podia revelá-lo, porque título de janela não tem quebra de linha.
+- **Os dois eixos do item 35 valem contra o SAP GUI real, confirmado de ponta a ponta** (item 63):
+  `titulo` e `textos[]` das janelas `SAP GUI` e `Ligação SAP GUI - logon (S4H, 250, PT, )` chegaram
+  byte a byte iguais ao que a tela desenha (conferido contra foto da janela, `PrintWindow`), com os
+  acentos em UTF-8 e sem *best-fit*. Cuidado com expectativa escrita de memória: o diálogo diz
+  *"Entrar o nome **de** usuário e a senha"*, não *"do usuário"*.
+- **`GetWindowText` cross-process não envia `WM_GETTEXT`** — devolve o texto em cache do gerenciador
+  de janelas. No diálogo `Características do atalho SAP` os dois divergem (`txt=Connection Parameters`
+  vs `msg=Parâmetros de conexão`; um `ComboBox` devolve lixo por `WM_GETTEXT`). Nas janelas que a lib
+  usa eles coincidem — mas não conte com isso ao ler um controle novo.
 - **Para medir janela, o alvo NÃO pode ser um console**: a janela de um console pertence ao
   conhost.exe/terminal, não a quem escreve nele — `GetWindowThreadProcessId` devolve o pid do host e
   o filtro por processo não acha nada. E `spawn(…, { detached: true })` no Windows vira
