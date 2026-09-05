@@ -191,6 +191,12 @@ test('gui: psJanelas blinda o encoding nos DOIS eixos — stdout UTF-8 e P/Invok
   expect(psJanelas(['powershell'])).toContain('Get-Process -Name powershell');
   // e o formato que interpretarJanelas lê: campos por TAB
   expect(ps).toContain('+"\\t"+pid+"\\t"');
+  // 3) o texto MULTILINHA de um Static (medido 05/09/2026, item 63: a caixa 'SAP GUI' traz as três
+  //    linhas da mensagem num Static só). Sem quebrar por \n, a linha emitida ganha quebras no meio
+  //    e interpretarJanelas — que lê UMA janela por linha — descarta tudo depois da primeira.
+  expect(ps).toContain("Split('\\n')");
+  expect(ps).toContain('static string Uma(string s)');
+  expect(ps).toContain('Uma(Txt(h))'); // o título também passa pela limpeza: o TAB é o separador
 });
 
 // Janelas medidas em 04/09/2026 (SAP GUI 8.00 PT, S4H 758/250), no formato que o PowerShell emite.
@@ -198,7 +204,7 @@ const J = {
   pad: 'saplogon.exe\t42432\t#32770\tSAP Logon 800\tConnections | Footer',
   logada: 'saplogon.exe\t42432\tSAP_FRONTEND_SESSION\tSAP Easy Access\t',
   telaLogon: 'saplogon.exe\t42432\tSAP_FRONTEND_SESSION\tSAP\t',
-  pedeSenha: 'saplogon.exe\t37016\t#32770\tLigação SAP GUI - logon (S4H, 250, PT, )\tEntrar o nome do usuário e a senha | Nome do usuário: | Senha:',
+  pedeSenha: 'saplogon.exe\t37016\t#32770\tLigação SAP GUI - logon (S4H, 250, PT, )\tEntrar o nome de usuário e a senha | Nome do usuário: | Senha:',
   mensagem: 'SAPgui.exe\t48000\t#32770\tSAP GUI\tNem todos os dados estão disponíveis p/ligação a SAP GUI: | ID sistema desconhecido | Entrar os dados em falta',
   // o pedágio (medido 05/09/2026, item 60): MESMO pid do pad, título 'SAP Logon' SEM a versão
   pedagio: 'saplogon.exe\t42432\t#32770\tSAP Logon\tUm script está tentando acessar SAP GUI',

@@ -500,6 +500,17 @@ export function lerJanelas(janelas = []) {
  *     (`テスト` → `???`). É perda que nenhuma codepage de saída recupera.
  * Sem o `OutputEncoding` o eixo do `CharSet` nem se observa: a codepage 850 da escrita já achata
  * tudo (as duas variantes `utf8=false` deram byte a byte o mesmo texto corrompido).
+ *
+ * ⚠ Terceira defesa, `Uma()` — o texto de um `Static` do SAP GUI é MULTILINHA. Medido 05/09/2026
+ * (item 63, bruto `raw/item63-janelas-reais.json` + foto `raw/item63-fotos/mensagem-1-tela.png`):
+ * a caixa 'SAP GUI' tem UM único `Static` cujo texto é `"Nem todos os dados estão disponíveis
+ * p/ligação a SAP GUI:\r\n\r\nID sistema desconhecido\r\n\r\nEntrar os dados em falta"`. Sem
+ * quebrar por `\n`, a linha emitida ganhava quebras no meio e `interpretarJanelas` — que lê UMA
+ * janela por linha — descartava o resto: `textos` chegava com só a PRIMEIRA das três linhas que a
+ * tela mostra. Cada linha vira agora um item de `textos[]`, e `Uma()` tira `\r`/`\n`/TAB de
+ * qualquer campo (o TAB é o separador; um título com TAB deslocaria todos os campos).
+ * O buffer subiu 512→1024: o texto dessa caixa tem 111 caracteres, mas é o mesmo `Static` que
+ * cresce com a mensagem do servidor.
  */
 export const psJanelas = (processos = ['SAPgui', 'saplogon']) => `
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -512,11 +523,12 @@ public class JSap { public delegate bool EnumProc(IntPtr h, IntPtr l);
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
- static string Txt(IntPtr h){ var t=new StringBuilder(512); GetWindowText(h,t,512); return t.ToString(); }
+ static string Txt(IntPtr h){ var t=new StringBuilder(1024); GetWindowText(h,t,1024); return t.ToString(); }
  static string Cls(IntPtr h){ var c=new StringBuilder(256); GetClassName(h,c,256); return c.ToString(); }
+ static string Uma(string s){ return s.Replace("\\r"," ").Replace("\\n"," ").Replace("\\t"," ").Trim(); }
  public static List<string> List(Dictionary<uint,string> pids){ var r=new List<string>(); EnumWindows((h,l)=>{ uint pid; GetWindowThreadProcessId(h,out pid);
-   if(pids.ContainsKey(pid) && IsWindowVisible(h)){ string t=Txt(h); if(t.Length==0) return true; string c=Cls(h); var st=new List<string>();
-     if(c=="#32770"){ EnumChildWindows(h,(ch,l2)=>{ if(Cls(ch)=="Static"){ string s=Txt(ch); if(s.Length>0) st.Add(s);} return true; }, IntPtr.Zero); }
+   if(pids.ContainsKey(pid) && IsWindowVisible(h)){ string t=Uma(Txt(h)); if(t.Length==0) return true; string c=Cls(h); var st=new List<string>();
+     if(c=="#32770"){ EnumChildWindows(h,(ch,l2)=>{ if(Cls(ch)=="Static"){ foreach(string ln in Txt(ch).Split('\\n')){ string s=Uma(ln); if(s.Length>0) st.Add(s); } } return true; }, IntPtr.Zero); }
      r.Add(pids[pid]+"\\t"+pid+"\\t"+c+"\\t"+t+"\\t"+string.Join(" | ",st)); } return true; }, IntPtr.Zero); return r; } }
 '@
 $pids = New-Object 'System.Collections.Generic.Dictionary[uint32,string]'
