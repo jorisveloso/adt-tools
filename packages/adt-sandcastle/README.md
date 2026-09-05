@@ -73,10 +73,11 @@ no fim da resposta; sem ele, da última notinha do item na fila; sem ela, do mot
   commits do agente vão direto no HEAD do `adt-tools`.
 - **`maxIterations: 1` por item, loop aqui** — o `maxIterations` do sandcastle não deixa olhar a
   fila entre iterações.
-- **O prompt** (`prompts/item.md`) recebe a fila e o item por `promptArgs` e transcreve o
-  `~/.claude/skills/next/SKILL.md` por `` !`node -e …` `` (o que a skill pergunta ao humano vira
-  `bloqueado`/`em andamento` na fila). Não depende de `/next` funcionar em `--print` — isso não foi
-  medido.
+- **O prompt é a skill de verdade:** `prompts/item.md` começa com `/next {{FILA}}` e o resto da
+  página são as regras da sessão autônoma (o que a skill perguntaria ao humano vira
+  `bloqueado`/`em andamento` na fila; o bloco `<resumo>` no fim). Medido em 05/09/2026 que `/next …`
+  num prompt de `claude --print` invoca a skill e que o texto depois da linha chega e é obedecido.
+  O ramo `<fila>` (executar o próximo de uma fila nomeada) foi acrescentado ao `SKILL.md` para isso.
 
 ## O que fica de fora
 
