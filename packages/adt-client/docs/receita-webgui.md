@@ -1417,9 +1417,11 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
 * ~~Porte para a lib~~ **feito** (item 20): `its.mjs`. ~~`lerTela` completo~~ **feito** (item 21):
   `lerTela`/`telaDoDelta` — o mesmo modelo do navegador, lido do XML (§ "Ler a tela do
   `delta-update`"). ~~O grid sai só como cabeçalho~~ **feito** (item 25): `lerGrid` traz as LINHAS
-  do ALV pelo `RequestData` (§ "O ALV: ler as LINHAS do grid"). O que fica em aberto na leitura:
-  **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB` só existe
-  no despejo DOM), e no grid faltam **célula editável**, **ordenar/filtrar** e **selecionar linha**.
+  do ALV pelo `RequestData` (§ "O ALV: ler as LINHAS do grid"), e ~~pelo navegador só o cabeçalho~~
+  **feito** (item 46): o `lerGrid` do `webgui.mjs` lê o BLOCO do DOM sem tocar a rede (§ "Pelo
+  NAVEGADOR"). O que fica em aberto na leitura: **checkbox** por esta via não foi cruzado (nenhum
+  bruto HTTP tem um — o `chkALSOUSUB` só existe no despejo DOM), e no grid faltam **célula
+  editável**, **ordenar/filtrar** e **selecionar linha**.
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -1489,14 +1491,55 @@ A resposta do fragmento é um `<delta-update>` com `<control-update updateMethod
 (tem 0: nenhum)"*. `lerResposta` marca isso em `parcial`, e o `postar` guarda o corpo em
 `sessao.parcial` sem mexer no `delta` — vale para qualquer delta parcial, não só o do ALV.
 
-### ⚠ Pelo NAVEGADOR o gesto é a roda do mouse, não o clique
+### Pelo NAVEGADOR: `lerGrid` do BLOCO, de graça — e a roda NÃO é via de leitura
 
-Medido na mesma lista: o DOM traz **166 linhas** (não as 27 da janela) — só 27 `<tr>` têm altura,
-as outras estão lá com o texto e altura zero (`scrolling: "client"`, `clientCellThreshold: 10000`).
-Rolar dentro desse bloco não toca a rede. E o que move o grid é a **roda do mouse**
-(`Input.dispatchMouseEvent` `type: 'mouseWheel'`): clique sintético na célula e `PageDown` não
-mexeram na janela nem geraram uma requisição. Ler célula por DOM, portanto, só alcança o bloco —
-a faixa arbitrária é a via HTTP acima.
+**Medido no s4h 758/250 em 2026-09-05** (fila `adt-client`, item 46; evidência em
+`sap-accelerate/work/POC_webgui_grid/medicoes/item46-webgui-grid.md`). O `webgui.mjs` tem o seu
+próprio `lerGrid`, e ele lê **o que a tela já carregou**, sem tocar a rede:
+
+```js
+import { abrirNavegador, ir, urlWebgui, acionar, lerGrid } from './webgui.mjs';
+
+await ir(s, urlWebgui(cfg, { transacao: 'SA38', parametros: { 'RS38M-PROGRAMM': 'RSPARAM' }, okcode: 'STRT' }));
+await acionar(s, 'btn[8]');
+
+const g = await lerGrid(s);
+// { id: 'C102', sid: 'wnd[0]/usr/cntlGRID1/shellcont/shell', colunas: [ … ], total: 1617,
+//   bloco: { de: 1, ate: 166, n: 166 }, de: 1, ate: 166,
+//   linhas: [ { _linha: 1, NAME: 'Autostart', … }, … ], parcial: true, ms: 240 }
+
+await lerGrid(s, { id: 'C102' }, { de: 100, ate: 104 });   // recorta o bloco — não pede nada a mais
+```
+
+Por que ele existe, tendo a via HTTP: **é a única leitura de célula que a sessão do NAVEGADOR tem.**
+O `its.lerGrid` roda em outra sessão de diálogo, que não enxerga o estado desta (filtro aplicado,
+drill-down, linha selecionada). E é barato: o bloco já está no DOM.
+
+| | bloco pelo DOM (`webgui`) | fragmento por HTTP (`its`) |
+|---|---|---|
+| 166 linhas / 830 células | **0 requisição**, 19 ms na página | 1 pedido, 1,28 MB de corpo (41 KB gzip), ~230 ms |
+| alcance | só o bloco carregado (166 de 1617) | qualquer faixa, a tabela inteira |
+| o dado | **830 de 830 células iguais** entre as duas vias |
+
+Quatro regras medidas:
+
+1. **O DOM guarda um BLOCO, não a janela.** A tela mostra 27 linhas e o DOM tem 166 (`grid#C102#1,1`
+   … `#166,5`); as outras 139 estão lá com o texto e altura zero. É `scrolling: "client"` +
+   `clientCellThreshold: 10000` do `lsdata`.
+2. **O bloco CRESCE com a navegação, não desliza.** 30 rodadas de roda levaram o DOM de `1..166` a
+   `1..362`, contíguo, sem perder o começo. `lerGrid` devolve tudo o que a sessão já trouxe.
+3. **`parcial: true` é resposta normal, não erro** — `bloco.ate < total`. Pedir `ate: 1000` num bloco
+   de 166 devolve 166 e `parcial: true`: este módulo não vai buscar o que falta.
+4. **O valor sai do `lsdata` do span `#if`** (`{"21":{"value":"Autostart",…}}`), com o `innerText`
+   como reserva — nas 830 células os dois coincidiram. A coluna 0 fica de fora: é a caixa de
+   seleção da linha (`SAPTABLECSSELECTIONCELL`).
+
+**⚠ Rolar por roda para LER não vale.** Clique sintético e `PageDown` não movem a janela nem geram
+requisição; quem move é a **roda** (`Input.dispatchMouseEvent` `type: 'mouseWheel'`), e ao chegar
+perto do fim do bloco o próprio ITS dispara um `action/710` (`fragments=166,173;`) que acrescenta 28
+linhas. Mas é o **mesmo pedido** que a via HTTP faz, ao **mesmo preço** — 8,97 KB gzipados por 28
+linhas nos dois canais —, só que em fatias de 28 e a ~2,9 s por rodada: **~222 rodadas, ~11 min**
+para as 1617 linhas, contra 4 pedidos e **2,3 s** do `its.lerGrid`. Para a tabela inteira: via HTTP.
 
 ## Exportar a lista por ARQUIVO — o ITSDoc (item 45)
 

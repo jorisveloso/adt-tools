@@ -13,6 +13,7 @@ import {
   criarPilhaDeDesfazer, transacional,
   SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo,
   pinosDeCertificado, bandeirasDeCertificado, explicarErroDeNavegacao,
+  jsBlocoDoGrid, linhasDoBloco,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -749,4 +750,93 @@ test('webgui: a marca de ação se LÊ no DOM — e o Unified Renderer declara a
   expect(H.desc(criarNo({ tag: 'SPAN', classe: 'sapUiIcon sapUiIconTitle x', area: 10 })))
     .toBe('span.sapUiIcon.sapUiIconTitle');
   expect(H.desc(null)).toBe(null);
+});
+
+// ---------- o ALV: o bloco que o DOM já tem (item 46) ----------
+//
+// Os spans são os REAIS da lista do RSPARAM no s4h 758/250 (05/09/2026,
+// POC_webgui_grid/medicoes/raw/g-fixture-spans.txt) — inclusive o `<td>` da coluna 0
+// (SAPTABLECSSELECTIONCELL), que é seleção de linha e NÃO é dado.
+const LSDATA_GRID = JSON.stringify({ x: 0, 9: { SID: 'wnd[0]/usr/cntlGRID1/shellcont/shell',
+  Type: 'GuiGridView', totalRows: 1617, visibleRows: 27, firstVisibleRow: 0, editable: false,
+  ColumnIDs: ['NAME', 'USER_VALUE', 'DEFAULT_VALUE', 'DEFAULT_USUBS_VALUE', 'DESCR'] } });
+
+const celulaReal = (r, c, valor) => ({
+  id: `grid#C102#${r},${c}#if`, ct: 'CBS', texto: valor,
+  lsdata: JSON.stringify({ x: 0, 1: 'FREETEXT', 3: 'x_TALB', 5: valor, 7: true, 14: 'SERVER',
+    21: { value: valor, maxlen: 10, focusable: 'X' }, 25: 'FILL_FIXED_LAYOUT' }),
+});
+
+function domDoGrid(celulas, extras = []) {
+  const nos = [
+    ...celulas.map((c) => ({ ...c, get: (a) => (a === 'lsdata' ? c.lsdata : null) })),
+    ...extras.map((c) => ({ ...c, get: (a) => (a === 'lsdata' ? c.lsdata ?? null : null) })),
+  ].map((n) => ({ id: n.id, innerText: n.texto ?? '', getAttribute: n.get }));
+  const grid = { id: 'C102', getAttribute: (a) => (a === 'lsdata' ? LSDATA_GRID : null) };
+  return {
+    getElementById: (id) => (id === 'C102' ? grid : null),
+    querySelectorAll: (sel) => (sel === '[id^="grid#"]' ? nos : []),
+  };
+}
+
+const rodarBloco = (documento, cid = 'C102') =>
+  new Function('document', `return ${jsBlocoDoGrid(cid)}`)(documento);
+
+test('webgui: o bloco sai do lsdata da célula — e a coluna 0 e o outro grid ficam de fora', () => {
+  const doc = domDoGrid(
+    [celulaReal(1, 1, 'Autostart'), celulaReal(1, 2, ''), celulaReal(1, 3, '0'),
+     celulaReal(2, 1, 'CPU_CORES'), celulaReal(2, 3, '32')],
+    [
+      // a coluna 0 é a caixa de seleção da linha: `<td>`, id sem `#if`, e NÃO é dado
+      { id: 'grid#C102#1,0', texto: 'Para selecionar uma linha, pressionar a barra de espaço.',
+        lsdata: JSON.stringify({ 7: { SID: 'wnd[0]/usr/cntlGRID1/shellcont/shell/rowcol/row[1]/', Type: 'SAPTABLECSSELECTIONCELL' } }) },
+      { id: 'grid#C102#1,0-ariatutor', texto: 'Para selecionar…' },   // o rótulo ARIA da caixa
+      { id: 'grid#C102#0,1#cp1', texto: 'Nome do parâmetro' },        // o CABEÇALHO da coluna
+      { id: 'grid#C102#1,1#if-r', texto: 'Autostart' },               // o wrapper do campo, sem lsdata
+      { id: 'grid#C999#1,1#if', texto: 'de outro grid', lsdata: JSON.stringify({ 21: { value: 'de outro grid' } }) },
+    ]);
+  const b = rodarBloco(doc);
+  expect(b.cid).toBe('C102');
+  expect(b.sid).toBe('wnd[0]/usr/cntlGRID1/shellcont/shell');
+  expect(b.total).toBe(1617);
+  expect(b.visiveis).toBe(27);
+  expect(b.editavel).toBe(false);
+  expect(b.colunas).toEqual(['NAME', 'USER_VALUE', 'DEFAULT_VALUE', 'DEFAULT_USUBS_VALUE', 'DESCR']);
+  // só as células de dado: 2 linhas, e a linha 1 com as 3 colunas que ela tem
+  expect(Object.keys(b.celulas)).toEqual(['1', '2']);
+  expect(b.celulas['1']).toEqual({ 1: 'Autostart', 2: '', 3: '0' });
+  expect(b.celulas['2']).toEqual({ 1: 'CPU_CORES', 3: '32' });
+  // grid que não está no DOM não estoura aqui — devolve null, e quem chama diz o que fazer
+  expect(rodarBloco(doc, 'C999')).toBe(null);
+});
+
+test('webgui: sem lsdata a célula cai no innerText — e o cid entra no JS ESCAPADO', () => {
+  const doc = domDoGrid([{ id: 'grid#C102#1,1#if', texto: 'só texto', lsdata: null }]);
+  expect(rodarBloco(doc).celulas['1']).toEqual({ 1: 'só texto' });
+  // o id do WebGUI tem `:` e `[]`; ele vai como literal JSON, não concatenado na unha
+  expect(jsBlocoDoGrid('M0:48::x')).toContain('const cid = "M0:48::x";');
+});
+
+test('webgui: as células do bloco viram linhas com os ColumnIDs — e a faixa RECORTA o que já veio', () => {
+  // as 3 linhas são as REAIS medidas (i-bloco.json): a 1ª, a 2ª e a última do bloco de 166
+  const celulas = {
+    1: { 1: 'Autostart', 2: '', 3: '0', 4: '0', 5: 'Automatic instance start on start service startup' },
+    2: { 1: 'CPU_CORES', 2: '', 3: '32', 4: '32', 5: 'Processor cores used for system sizing.' },
+    166: { 1: 'abap/dyn_abap_log', 2: '', 3: 'off', 4: 'off', 5: 'Dynamic ABAP: Mode for Logging' },
+  };
+  const cols = ['NAME', 'USER_VALUE', 'DEFAULT_VALUE', 'DEFAULT_USUBS_VALUE', 'DESCR'];
+  const linhas = linhasDoBloco(celulas, cols);
+  expect(linhas).toHaveLength(3);
+  // `_linha` é o índice ABSOLUTO da tabela, não a posição no bloco
+  expect(linhas.map((l) => l._linha)).toEqual([1, 2, 166]);
+  expect(linhas[0]).toEqual({ _linha: 1, NAME: 'Autostart', USER_VALUE: '', DEFAULT_VALUE: '0',
+    DEFAULT_USUBS_VALUE: '0', DESCR: 'Automatic instance start on start service startup' });
+  expect(linhas[2].NAME).toBe('abap/dyn_abap_log');
+  // a faixa recorta o bloco — ela não vai buscar linha nenhuma
+  expect(linhasDoBloco(celulas, cols, { de: 2, ate: 100 }).map((l) => l._linha)).toEqual([2]);
+  expect(linhasDoBloco(celulas, cols, { de: 500 })).toEqual([]);
+  // coluna sem célula sai '' (e não `undefined`), e sem ColumnIDs a chave é o número da coluna
+  expect(linhasDoBloco({ 7: { 1: 'x' } }, cols)[0]).toEqual({ _linha: 7, NAME: 'x', USER_VALUE: '',
+    DEFAULT_VALUE: '', DEFAULT_USUBS_VALUE: '', DESCR: '' });
+  expect(linhasDoBloco({ 7: { 1: 'x', 2: 'y' } }, [])[0]).toEqual({ _linha: 7, 1: 'x', 2: 'y' });
 });

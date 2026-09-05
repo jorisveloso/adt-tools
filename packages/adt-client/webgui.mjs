@@ -1050,6 +1050,113 @@ export async function botoes(sessao) {
     .map(e => ({ okcode: e.id.split('::').pop(), title: e.title, texto: (e.innerText||'').trim().slice(0,30) }))`));
 }
 
+// ---------- o ALV (grid): o BLOCO que a tela JÁ tem ----------
+//
+// O par navegador do `lerGrid` do `its.mjs` — e o alcance é OUTRO, de propósito. Medido no s4h
+// 758/250 em 04-05/09/2026 (`POC_webgui_grid`, fases A-C e I-K, lista do RSPARAM, 1617 × 5):
+//
+//   • **o DOM guarda um BLOCO, não a janela.** A tela mostra 27 linhas e o DOM tem **166** —
+//     `grid#C102#1,1` até `#166,5`; só 27 `<tr>` têm altura, as outras 139 estão lá com o texto e
+//     altura zero. É o `scrolling: "client"` + `clientCellThreshold: 10000` do `lsdata`.
+//   • **ler esse bloco é de graça:** 166 linhas / 830 células em **19 ms** na página, 58 ms com o
+//     CDP, 21,8 KB de valor e **zero requisição**. A mesma faixa pela via HTTP custou 1 pedido,
+//     1,28 MB de corpo (41 KB gzipados na rede) e 246 ms.
+//   • **o dado é o MESMO:** 830 de 830 células batem, campo a campo, com o `its.lerGrid` da mesma
+//     faixa; e o `lsdata.value` do span bate com o `innerText` nas 830 (fase I).
+//   • **o bloco CRESCE com a navegação, não desliza:** 30 rodadas de roda do mouse levaram o DOM de
+//     `1..166` a `1..362`, contíguo, sem perder o começo (fase J). Então este `lerGrid` devolve
+//     tudo o que a sessão já trouxe, não só o que está à vista.
+//
+// ⚠️ **Passar do bloco NÃO é trabalho deste módulo.** Medido (fases C e J): clique sintético e
+// PageDown não movem a janela nem geram requisição; quem move é a RODA (`Input.dispatchMouseEvent`
+// type `mouseWheel`), e ao chegar perto do fim do bloco o próprio ITS dispara um `action/710`
+// (`fragments=166,173;`) que acrescenta 28 linhas. Mas é o MESMO pedido que a via HTTP faz, ao
+// mesmo preço — 8,97 KB gzipados por 28 linhas nos dois canais (fase K) — só que em fatias de 28 e
+// a ~2,9 s por rodada: **~222 rodadas, ~11 min** para as 1617 linhas, contra 4 pedidos e **2,3 s**
+// do `its.lerGrid`. Rolar por roda para ler não vale: para a tabela INTEIRA, use `its.mjs`.
+
+/**
+ * PURO: a expressão JS que despeja o BLOCO de um grid — `{ cid, sid, colunas, total, celulas }`,
+ * com `celulas[linha][coluna]` 1-based e ABSOLUTO (é o `lsMatrixRowIndex`, não a posição na tela).
+ *
+ * O valor sai do `lsdata` do span `grid#<CID>#<r>,<c>#if` — o mesmo campo que a via HTTP lê —, com
+ * o `innerText` como reserva. A coluna 0 fica de fora: é a caixa de seleção da linha
+ * (`SAPTABLECSSELECTIONCELL`), não é dado; a linha 0 é o cabeçalho e não tem span `#if`.
+ */
+export const jsBlocoDoGrid = (cid) => `(() => {
+  const p = (s) => { try { return s ? JSON.parse(s) : null; } catch (x) { return null; } };
+  const cid = ${JSON.stringify(String(cid))};
+  const grid = document.getElementById(cid);
+  if (!grid) return null;
+  const d = p(grid.getAttribute('lsdata')) || {};
+  const sid = Object.values(d).find((v) => v && typeof v === 'object' && v.Type === 'GuiGridView') || {};
+  const celulas = {};
+  for (const el of document.querySelectorAll('[id^="grid#"]')) {
+    const partes = el.id.split('#');
+    if (partes.length !== 4 || partes[1] !== cid || partes[3] !== 'if') continue;
+    const rc = partes[2].split(',');
+    if (rc.length !== 2 || !/^[0-9]+$/.test(rc[0]) || !/^[0-9]+$/.test(rc[1])) continue;
+    if (Number(rc[0]) < 1 || Number(rc[1]) < 1) continue;
+    const ls = p(el.getAttribute('lsdata'));
+    const v = ls && Object.values(ls).find((x) => x && typeof x === 'object' && 'value' in x);
+    (celulas[rc[0]] = celulas[rc[0]] || {})[rc[1]] = v ? String(v.value) : (el.innerText || '').trim();
+  }
+  return { cid, sid: sid.SID || null, colunas: sid.ColumnIDs || [], total: sid.totalRows || 0,
+    visiveis: sid.visibleRows || 0, primeiraVisivel: sid.firstVisibleRow, editavel: sid.editable === true,
+    celulas };
+})()`;
+
+/**
+ * PURO: as células do bloco viram LINHAS, com os `ColumnIDs` do grid como chave e `_linha` com o
+ * índice absoluto. Coluna sem célula sai `''`; sem `colunas`, a chave é o número da coluna.
+ * O mesmo contrato do `linhasDoGrid` do `its.mjs` — as duas vias devolvem a mesma forma de linha.
+ */
+export function linhasDoBloco(celulas = {}, colunas = [], { de = 1, ate = null } = {}) {
+  const chaves = Object.keys(celulas || {}).map(Number).filter((n) => Number.isFinite(n))
+    .filter((n) => n >= de && (ate === null || n <= ate)).sort((a, b) => a - b);
+  return chaves.map((n) => {
+    const cels = celulas[String(n)] || {};
+    const linha = { _linha: n };
+    const nomes = colunas.length ? colunas : Object.keys(cels).map(Number).sort((a, b) => a - b).map(String);
+    nomes.forEach((c, i) => { linha[c] = cels[String(i + 1)] ?? ''; });
+    return linha;
+  });
+}
+
+/**
+ * Lê o ALV **do bloco que esta tela já carregou** — sem tocar a rede.
+ *
+ * `alvo` escolhe o grid quando a tela tem mais de um: índice (`0`), `{ id: 'C102' }` ou
+ * `{ sid: 'wnd[0]/usr/cntlGRID1/shellcont/shell' }`. Sem alvo, o primeiro grid da tela.
+ * `de`/`ate` são 1-based, inclusivos e ABSOLUTOS (o mesmo `_linha` que volta) — recortam o bloco,
+ * não pedem nada a mais.
+ *
+ * Devolve `{ id, sid, colunas, total, bloco: { de, ate, n }, de, ate, linhas, parcial, ms }`.
+ * ⚠️ **`parcial: true` é a resposta normal, não erro:** significa que a tabela tem mais linhas do
+ * que o bloco (`bloco.ate < total`) — as que faltam não estão no DOM e este módulo não vai buscá-las
+ * (§ acima). Para a tabela inteira: `its.lerGrid` na via HTTP.
+ */
+export async function lerGrid(sessao, alvo = null, { de = 1, ate = null } = {}) {
+  const t0 = Date.now();
+  const grids = (await lerTela(sessao))?.grids ?? [];
+  const g = typeof alvo === 'number' ? grids[alvo]
+    : alvo?.sid ? grids.find((x) => x.sid === alvo.sid)
+    : alvo?.id ? grids.find((x) => x.id === alvo.id)
+    : grids[0];
+  if (!g) throw new Error(`webgui: lerGrid — a tela não tem esse grid (tem ${grids.length}: ${grids.map((x) => x.id).join(', ') || 'nenhum'})`);
+  const b = await avaliar(sessao, jsBlocoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: lerGrid — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  const presentes = Object.keys(b.celulas).map(Number).filter((n) => Number.isFinite(n)).sort((a, x) => a - x);
+  const bloco = { de: presentes[0] ?? null, ate: presentes[presentes.length - 1] ?? null, n: presentes.length };
+  const total = Number(b.total || 0);
+  const ini = Math.max(1, Number(de) || 1);
+  const fim = ate === null ? (bloco.ate ?? 0) : Math.min(Number(ate) || 0, bloco.ate ?? 0);
+  const linhas = linhasDoBloco(b.celulas, b.colunas, { de: ini, ate: fim });
+  detalhe(`webgui: lerGrid ${g.id} — ${linhas.length} linha(s) do bloco ${bloco.de}..${bloco.ate} de ${total}, sem rede`);
+  return { id: g.id, sid: b.sid ?? g.sid, colunas: b.colunas, total, bloco,
+    de: ini, ate: fim, linhas, parcial: bloco.ate !== null && bloco.ate < total, ms: Date.now() - t0 };
+}
+
 export async function print(sessao, arquivo) {
   const r = await sessao.cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   fs.writeFileSync(arquivo, Buffer.from(r.data, 'base64'));
