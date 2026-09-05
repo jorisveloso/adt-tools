@@ -101,9 +101,17 @@ export async function buscar(session, padrao, adtTypes = [], max = 200) {
 //     essa pergunta continua sendo do canal de fonte/debug. Para classe, FM e include, os usos de
 //     primeiro nível já vêm nomeados e a função serve direto.
 //
-//  4. O nome/tipo/pacote NÃO estão no `referencedObject` — estão no filho `usagereferences:adtObject`
+//  4. O nome/tipo/pacote NÃO estão no `referencedObject` — estão no filho `adtObject`
 //     (e o pacote no `adtcore:packageRef` dentro dele). Ler só os atributos da tag de fora devolve
 //     uma lista de URIs sem nome.
+//
+//  5. ⚠️ O PREFIXO DO NAMESPACE MUDA POR SISTEMA — e é o pior dos silêncios, porque tem cara de
+//     "não há usos": o SXD 816 responde `usagereferences:` (tudo minúsculo) e o s4h 758 responde
+//     `usageReferences:` (camelCase), no MESMO endpoint e com o mesmo corpo. Um parser preso ao
+//     prefixo do primeiro sistema lê os 41.226 usos de MATNR no s4h como ZERO, com status 200.
+//     Por isso todo regex daqui casa pelo nome LOCAL (`<[\w.-]+:tag`), e por isso `completo` é
+//     falso também quando o servidor anuncia usos e a lista sai vazia. (medido 04/09/2026 nos dois)
+//
 
 const CAMINHO_USOS = '/sap/bc/adt/repository/informationsystem/usageReferences';
 
@@ -127,19 +135,21 @@ const BODY_USOS =
  */
 export function parseUsageReferences(xml) {
   const texto = String(xml);
-  const raiz = (texto.match(/<usagereferences:usageReferenceResult\b([^>]*)>/) || [])[1] || '';
+  const raiz = (texto.match(/<[\w.-]+:usageReferenceResult\b([^>]*)>/) || [])[1] || '';
   const na = (fonte, chave) => (fonte.match(new RegExp(`${chave}="([^"]*)"`)) || [])[1] || '';
-  const escopo = (texto.match(/<usagereferences:objectIdentifier\b([^>]*)\/?>/) || [])[1] || '';
+  // Aqui o prefixo é OBRIGATÓRIO: no s4h cada referencedObject carrega um `<objectIdentifier>` SEM
+  // prefixo (`BlueAUTH;/ACCGO/MAT;…`), e casar com ele daria um escopo inventado.
+  const escopo = (texto.match(/<[\w.-]+:objectIdentifier\b([^>]*)\/?>/) || [])[1] || '';
 
   // Os nós ANINHAM (`canHaveChildren`), então casar `<referencedObject>…</referencedObject>` com
   // regex não-guloso corta no fechamento errado. Varrer só as ABERTURAS, em ordem, e ler o miolo
   // até a próxima abertura resolve: o `adtObject` do nó é sempre o primeiro filho.
-  const aberturas = [...texto.matchAll(/<usagereferences:referencedObject\b([^>]*?)\/?>/g)];
+  const aberturas = [...texto.matchAll(/<[\w.-]+:referencedObject\b([^>]*?)\/?>/g)];
   const refs = aberturas.map((m, i) => {
     const attrs = m[1];
     const ate = i + 1 < aberturas.length ? aberturas[i + 1].index : texto.length;
     const trecho = texto.slice(m.index, ate);
-    const objeto = (trecho.match(/<usagereferences:adtObject\b([^>]*)>/) || [])[1] || '';
+    const objeto = (trecho.match(/<[\w.-]+:adtObject\b([^>]*)>/) || [])[1] || '';
     return {
       uri: na(attrs, 'uri'),
       uriPai: na(attrs, 'parentUri'),
@@ -195,12 +205,19 @@ export async function whereUsed(session, uri) {
   const res = parseUsageReferences(r.text);
   const ocorrencias = res.refs.filter((x) => x.ocorrencia);
   const colapsados = res.refs.filter((x) => x.temFilhos);
-  const completo = colapsados.length === 0 && ocorrencias.length >= res.total;
+  const completo = colapsados.length === 0 && ocorrencias.length >= res.total && !(res.total > 0 && res.refs.length === 0);
 
   detalhe(`${res.total} usos anunciados · ${ocorrencias.length} expandidos · ${res.refs.length} nós na árvore`);
   if (!completo) {
-    detalhe(`⚠️ resultado PARCIAL — ${colapsados.length} nó(s) colapsado(s) que o servidor não expandiu`);
-    for (const x of colapsados.slice(0, 10)) detalhe(`   colapsado: ${x.uri}`);
+    if (res.total > 0 && res.refs.length === 0) {
+      // 200 com o corpo cheio e a lista vazia = o XML veio num formato que o parser não reconhece
+      // (foi assim que o prefixo camelCase do s4h se revelou). Não é "não há usos".
+      detalhe(`⚠️ o servidor anuncia ${res.total} usos e o parser não leu NENHUM — formato inesperado, não ausência de uso`);
+    }
+    if (colapsados.length) {
+      detalhe(`⚠️ resultado PARCIAL — ${colapsados.length} nó(s) colapsado(s) que o servidor não expandiu`);
+      for (const x of colapsados.slice(0, 10)) detalhe(`   colapsado: ${x.uri}`);
+    }
   }
 
   return { ...res, ocorrencias, colapsados, completo };

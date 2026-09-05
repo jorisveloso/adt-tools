@@ -86,6 +86,27 @@ test('where-used: resposta sem usos não quebra', () => {
   expect(r.total).toBe(0);
 });
 
+
+// A MESMA resposta, do s4h 758 (recorte real do where-used de MATNR, 04/09/2026): o prefixo do
+// namespace vem em camelCase, e cada nó traz um <objectIdentifier> SEM prefixo. Prender o parser ao
+// prefixo do SXD lia 41.226 usos como zero, com status 200 — o teste existe para isso não voltar.
+const XML_USOS_CAMEL = `<?xml version="1.0" encoding="utf-8"?><usageReferences:usageReferenceResult numberOfResults="41226" resultDescription="[S4H] Verwendungsnachweis: MATNR (Elemento de dados)" referencedObjectIdentifier="" xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:referencedObjects><usageReferences:referencedObject uri="/sap/bc/adt/aps/iam/auth/%2faccgo%2fmat" parentUri="/sap/bc/adt/packages/%2faccgo%2fcommon" isResult="false" canHaveChildren="true" usageInformation="gradeDirect,includeProductive"><usageReferences:adtObject adtcore:responsible="SAP" adtcore:name="/ACCGO/MAT" adtcore:type="AUTH" xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/%2faccgo%2fcommon" adtcore:type="DEVC/K" adtcore:name="/ACCGO/COMMON"/></usageReferences:adtObject><objectIdentifier>BlueAUTH;/ACCGO/MAT;\DTEL/DE:MATNR;2</objectIdentifier></usageReferences:referencedObject></usageReferences:referencedObjects></usageReferences:usageReferenceResult>`;
+
+test('where-used: o prefixo do namespace muda por sistema — o parser lê pelo nome local', () => {
+  const r = parseUsageReferences(XML_USOS_CAMEL);
+  expect(r.total).toBe(41226);
+  expect(r.refs.length).toBe(1);
+  expect(r.refs[0].nome).toBe('/ACCGO/MAT');
+  expect(r.refs[0].tipo).toBe('AUTH');
+  expect(r.refs[0].pacote).toBe('/ACCGO/COMMON');
+  expect(r.refs[0].temFilhos).toBe(true);
+});
+
+// O <objectIdentifier> sem prefixo é do NÓ, não do escopo: casar com ele daria um escopo inventado.
+test('where-used: objectIdentifier sem prefixo não vira escopo', () => {
+  expect(parseUsageReferences(XML_USOS_CAMEL).escopo).toEqual({ nome: '', globalType: '' });
+});
+
 test('meta: pacote vem do packageRef, NÃO do nome da raiz', () => {
   const m = montarMeta({ nome: 'ztb_pedido', codigo: 'TABL', libKey: 'table', xml: XML_OBJETO, temFonte: true });
   expect(m.pacote).toBe('ZPACOTE1');
