@@ -703,7 +703,16 @@ export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura
   }
   await cmd('Network.setExtraHTTPHeaders', { headers: { Authorization: cabecalho } });
   await cmd('Page.addScriptToEvaluateOnNewDocument', { source: POLYFILL_RANDOMUUID });
-  // headless não tem janela em foco, e o Unified Renderer só reage a evento em página focada
+  // Cinta de segurança, NÃO pré-requisito — e o `.catch` é seguro por isso. Medido no s4h 758/250
+  // em 05/09/2026 (fila 64, `sap-accelerate/work/POC_webgui_foco/medicoes/item64-foco.md`):
+  //  • o headless novo já entrega a página FOCADA numa aba só — desligar a emulação não tira o
+  //    foco (`document.hasFocus()` continua `true`);
+  //  • a página só perde o foco com OUTRA aba trazida à frente (`Page.bringToFront` nela) — e aí,
+  //    com `hasFocus: false` e `visibilityState: 'hidden'`, o clique POSTOU MESMO ASSIM, 4/4. O
+  //    `Input.dispatchMouseEvent` entra pelo CDP no target endereçado, não pela fila de eventos da
+  //    janela; o Unified Renderer NÃO exige página focada (a justificativa antiga daqui era falsa);
+  //  • o que a chamada faz de fato, isolado nesse mesmo par: com ela a aba de trás segue
+  //    `visible`/focada, sem ela cai para `hidden`. Vale por causa do throttling de background.
   await cmd('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
   await cmd('Page.bringToFront').catch(() => {});
 
