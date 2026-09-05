@@ -256,10 +256,39 @@ resposta.
 - **Diagnóstico rápido, à mão:** listar as janelas top-level do pad e procurar um `#32770` visível
   que não seja o próprio `SAP Logon <versão>` — `sap-accelerate/work/POC_rot_sapgui/scripts/janelas.ps1`
   lista e clica no OK.
-- Onde a opção mora no cliente **não foi achado**: não está em
-  `HKCU\…\SAP Frontend Server\Scripting` (só `WindowPlacement`) nem na chave `Security` do `HKLM`
-  (`UserScripting=1`, `SecurityLevel=1`, `DefaultAction=0`); varredura por `Warn|Notif|Attach` sob
-  `HKCU\Software\SAP` e `HKLM\…\WOW6432Node\SAP` não achou nada. Fila 60.
+### Como desligar o pedágio — um valor de registro
+
+Medido 05/09/2026 (item 60 da fila; evidência e brutos em
+`sap-accelerate/work/POC_rot_sapgui/medicoes/item60-warnonattach.md`):
+
+```
+reg add "HKCU\Software\SAP\SAPGUI Front\SAP Frontend Server\Security" ^
+        /v WarnOnAttach /t REG_DWORD /d 0 /f
+```
+
+É a checkbox **"Notify when a script attaches to SAP GUI"** das opções do GUI (a página
+`CScriptingPage` do `sapsettings.ocx`, grupo *User Settings*, controle `SCRP_NTFY_ATTCH_SCRT_CHK`).
+
+- **A chave é `…\Security`, não `…\Scripting`** — foi onde o item 34 procurou e não achou. E o
+  valor **não existe por padrão**: ausente = avisar. Quem lê é o `saplogon.exe`/`saplgpad.exe`
+  **dentro do `CSapGuiAuto::GetScriptingEngine`** (as duas strings estão coladas no binário, junto
+  do caminho da chave), e o XML do *SAP Settings Migration Tool* embutido no `sapsettings.ocx`
+  declara `UserScripting`, `WarnOnAttach` e `WarnOnConnection` como `REG_DWORD` sob ela.
+- **Vale na chamada seguinte, sem reiniciar o pad** — o valor é lido a cada `GetScriptingEngine`.
+  Medido no mesmo pad: com o valor ausente a sonda deu timeout de 25 s e popup aos 1,33 s; com `0`,
+  três sondas seguidas responderam em **0,76 / 0,85 / 0,87 s**, nenhuma com popup.
+- **Causalidade provada nos dois sentidos:** apagar o valor devolve o popup (timeout de 20 s,
+  aviso aos 1,29 s); regravar `0` tira de novo.
+- **`WarnOnAttach` sozinho basta.** `WarnOnConnection` (o aviso do outro gesto, abrir conexão por
+  script) não participa do `GetObject` — medido removendo-o e o pedágio continuou desligado.
+- **Não medido:** precedência `HKCU` × `HKLM` (o `HKLM` desta máquina não tem `WarnOnAttach`, então
+  o experimento não distingue "o `HKCU` vence" de "só o `HKCU` é lido"). Em máquina de cliente com
+  política em `HKLM`, medir antes de prometer.
+- Voltar ao comportamento anterior: `reg delete "HKCU\Software\SAP\SAPGUI Front\SAP Frontend Server\Security" /f`.
+
+⚠ Isto **desliga um aviso de segurança do cliente**: a partir daí qualquer processo do usuário
+anexa ao GUI sem perguntar. Numa máquina de cliente, é decisão de quem administra o desktop — não
+mexa sem combinar.
 
 O que a linha do tempo da reprodução separou (lançamento pelo `sapshcut`, sem pad antes):
 
