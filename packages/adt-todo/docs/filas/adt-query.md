@@ -10,3 +10,5 @@
 > Consultar() transparente implementado: informa nome (tabela OU CDS view) + campos/where/linhas; tipo descoberto na DD02L+TADIR (decidirTipo puro) e canal escolhido (readTable p/ tabela, dataPreview p/ view). Medido no s4h: T000->tabela/readTable, I_CUSTOMER->view/analitica (DD02L vazio, DDLS na TADIR)/SELECT*, IEBILLINGCLASS view classica. 12 testes vitest. Docs consulta.md + README. Exemplos praticos ficam no proximo item.
 
 - [ ] 4. Colecao de exemplos praticos do consultar() (tabela, view analitica, view classica, where/limite) + receita de uso
+> adiado: 2026-09-05 22:45 — a sessão falhou (claude-code exited with code 1:
+You've hit your session limit · resets 7:50pm (America/Sao_Paulo))
