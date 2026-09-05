@@ -1601,7 +1601,7 @@ tela.aviso   // 'popup wnd[1] aberto — a wnd[0]/usr não vem no delta enquanto
 `acionar(s, 'Sim')` não os acha — o endereço é `acionar(s, { sid: tela.popup.botoes[0].sid })`.
 **Responder pelo SID está medido** (item 23, `POC_webgui_popup/medicoes/dirigir-popup.md`): o SID do
 botão dispara, o apelido estoura e a **tecla não fecha o popup** (F12 voltou `pegou: true` e o modal
-continuou lá). E **não é preciso responder para sair**: `comandar` atravessa o modal (item 58, §
+continuou lá — hoje isso vem como `mudou: false` mais o aviso alto, § "`pegou` × `mudou`"). E **não é preciso responder para sair**: `comandar` atravessa o modal (item 58, §
 "OK-code que abre popup trava a `wnd[0]`").
 
 #### O alvo tem JANELA — e por padrão é a ATIVA (item 42)
@@ -1659,6 +1659,7 @@ try {                                          // GET + boot: 657 ms até a tela
   preencher(s, 'MAX_SEL', 2);                  // enfileira focus+value — NÃO posta ainda
   const r = await acionar(s, 'Executar');      // value + action/3 + state/ur num POST só (105 ms)
   if (!r.pegou) throw new Error(r.motivo);     // multipart: "-101 failed to fire action: not supported"
+  if (r.mudou === false) throw new Error(r.mensagem?.texto);  // delta que não mexeu na tela (§ pegou × mudou)
   r.titulo;                                    // 'Data Browser: Tabela T000          2 acertos'
   await comandar(s, '/nSE38');                 // OK-code: value/okcd + vkey/0 — de qualquer tela
   await navegarMenu(s, 'Sistema > Serviços > Reporting');   // caminho de menu: action/4, um POST (91 ms)
@@ -1681,6 +1682,7 @@ na mesma função faria cada uma virar um `if` de duas pernas. O que é comum ve
 | jar de cookie obrigatório | `abrir` guarda o `set-cookie`; `postar` manda `Cookie` | item 7 (sem ele, 400 em 48 ms) |
 | primeiro POST é o boot, ação nele é perdida | `abrir` boota sempre antes de devolver a sessão | item 7 |
 | forma da resposta = veredito, não o HTTP 200 | `lerResposta` → `forma` (`delta`/`multipart`/`logoff`/`sem-sessao`), `pegou`, `motivo` | item 7; item 20 D4 |
+| a forma boa NÃO prova efeito: a tela pode não ter mudado | `carimboDosSids` + `mudouDaTela` no `postar` → `mudou`, `mensagem`, `carimbo` | item 59 (F12 no SPOP: `pegou: true`, `mudou: false`) |
 | SID como endereço, tirado da própria tela | `sidsDaResposta` (regex sobre o `lsdata`), `sidDoAlvo` | item 20 (221 SIDs na seleção da SE16) |
 | a barra do botão não se adivinha | `acionar(s, 'btn[8]')` casa `…/btn[8]` no fim do SID da tela; fora dela estoura com a lista | item 20 D3 |
 | OK-code = `value/okcd` + `vkey/0` | `comandar` | item 8 |
@@ -1688,6 +1690,59 @@ na mesma função faria cada uma virar um `if` de duas pernas. O que é comum ve
 | a árvore do SMEN se endereça por CHAVE, no container | `arvore`, `expandirNo`, `acionarNo`, `navegarArvore` | item 50 (SMEN → SSC1 em 2,5 s; favorito → CO01 em 386 ms) |
 | o nó CORRENTE da árvore é `action/41`; sem ele o menu que age sobre o nó recusa | `postar` cru (`action/41/<SID>` + `node_key`) | item 54 (favorito inserido, acionado e apagado só por HTTP) |
 | `/nex` encerra; depois é 400 | `fechar`; `postar` recusa sessão encerrada | item 8; item 20 E |
+
+#### `pegou` × `mudou` — o protocolo aceitou ≠ aconteceu alguma coisa (item 59)
+
+`pegou` responde **"o servidor aceitou o POST?"** (a FORMA da resposta). Ele NÃO responde "a ação
+surtiu efeito" — e a diferença tem caso real medido: `vkey(s, 12)` (F12) com o SPOP
+"Efetuar logoff" aberto volta `delta` de 226 KB, `pegou: true`… **e o popup continua lá**.
+
+Quem responde a segunda pergunta é o `mudou`, que toda resposta do `postar` traz junto:
+
+```js
+const r = await tecla(s, 'F12');
+r.pegou      // true  — o servidor aceitou
+r.mudou      // false — E NÃO FEZ NADA: o carimbo da tela saiu igual
+r.mensagem   // { tipo: "OK", texto: "Não se pode selecionar código de função" }
+r.carimbo    // 'SE38/SAPLWBABAP/0100 wnd[1] "Editor ABAP: 1ª tela" #9905e6b8787d33c3'
+```
+
+e quando o popup CONTINUA aberto depois de uma ação que não mudou nada, a lib avisa alto em
+stderr (não depende do `--debug`) — é a armadilha de responder popup por tecla:
+
+```
+⚠ its: a ação não mudou NADA e o popup wnd[1] continua aberto — "Não se pode selecionar código de
+  função" — popup se responde pelo SID do botão (lerTela(s).popup.botoes), não por tecla nem por apelido.
+```
+
+**O carimbo** é `<tcode>/<dynpro>/<d-num> <janela ativa> "<cuatitle>" #<sha1 dos SIDs>` — os SIDs
+com todo o `lsdata` que carregam (valor de campo, rótulo, estado de botão), **menos a barra de
+mensagem**. Medido no s4h 758/250 em 05/09/2026
+(`sap-accelerate/work/POC_webgui_mudou/medicoes/item59-mudou.md`):
+
+- **a barra de mensagem fica fora por medição.** No par SPOP × F12 dos brutos do item 23, os 198
+  SIDs são idênticos e a ÚNICA diferença em toda a tela é `wnd[0]/sbar_msg`. A mensagem é o
+  *comentário do ABAP sobre a ação*, não a tela — dentro do carimbo, "apareceu uma recusa"
+  contaria como "a tela mudou", que é o falso positivo de volta com outra roupa. Ela sai no
+  `mensagem` da resposta, que é onde serve.
+- **⚠ o `messageType` não é veredito**: essa recusa veio com tipo `OK` (sucesso!) e texto de
+  recusa. Só a comparação ANTES × DEPOIS diz.
+- **o carimbo não é volátil**: dois POSTs na mesma tela devolveram os 223 SIDs byte a byte
+  iguais, e o hash da SE38 limpa (`#bad69abf2a47074f`) saiu igual em sessões e rodadas
+  diferentes. Nada de contador nem de carimbo de tempo dentro do delta.
+
+| forma da resposta | `pegou` | `mudou` |
+|---|---|---|
+| `delta` inteiro | `true` | o carimbo decide (`true`/`false`) |
+| `delta` do BOOT (não havia tela antes) | `true` | `null` |
+| `delta` **parcial** (fragmento do ALV — não é a tela) | `true` | `null` |
+| `multipart` (o protocolo recusou; `motivo` diz por quê) | `false` | `false` |
+| `logoff` | `false` | `true` |
+| `sem-sessao` / `outra` | `false` | `null` |
+
+⚠ `mudou: false` **não é erro por si** — `enviar` de valores, nó folha de árvore e `state/ur` puro
+legitimamente não mudam nada (medido: `state/ur` sem ação dá `mudou: false` e **nenhum aviso**).
+É informação: quem precisa saber que a ação surtiu efeito olha os dois sinais.
 
 **Medição nova do item 20: o valor mandado em POST separado PERSISTE.** `preencher` + `enviar()`
 (só `focus`+`value`+`state/ur`) e `acionar('btn[8]')` no POST seguinte deram "3 acertos". O batch

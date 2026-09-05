@@ -14,6 +14,7 @@ import {
   itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
   indiceDoNo, arvoreDosBrutos, arvore, batchExpandirNo, batchAcionarNo, acharNoDaArvore,
+  mensagemDosSids, carimboDosSids, carimboDoDelta, mudouDaTela,
 } from './its.mjs';
 
 const SHELL = `<html><head><script>var moin = "FF671392BF705DEF";</script></head><body>
@@ -690,4 +691,52 @@ test('its: acharNoDaArvore acha por chave e por rótulo (sem acento nem caixa), 
   // por objeto NÃO cai no rótulo — { chave } é endereço exato
   expect(() => acharNoDaArvore(nos, { chave: 'Escritório' })).toThrow(/a árvore não tem/);
   expect(() => acharNoDaArvore(nos, 'Contabilidade')).toThrow(/Escritório \(0000000004\)/);
+});
+
+test('its: mensagemDosSids — o tipo é a CONSTANTE do SAP, e ele NÃO é veredito (OK num texto de recusa)', () => {
+  expect(mensagemDosSids(sidsDaResposta(DELTA)))
+    .toEqual({ tipo: 'OK', texto: 'Para tabela T000 existe uma visão de atualização' });
+  expect(mensagemDosSids([])).toBe(null);
+  // a barra sem mensagem tem applicationText vazio — não é mensagem
+  expect(mensagemDosSids([{ sid: 'wnd[0]/sbar_msg', tipo: 'MESSAGEBAR', messageType: '', applicationText: '' }])).toBe(null);
+  // o falso positivo do item 59 (bruto h-vkey12.txt do s4h 758/250, 05/09/2026): tipo de SUCESSO,
+  // texto de RECUSA — por isso o veredito de mudança é o carimbo, não a mensagem
+  expect(mensagemDosSids([{ sid: 'wnd[0]/sbar_msg', tipo: 'MESSAGEBAR', messageType: 'OK',
+    applicationText: 'Não se pode selecionar código de função' }]))
+    .toEqual({ tipo: 'OK', texto: 'Não se pode selecionar código de função' });
+});
+
+test('its: carimboDosSids — a BARRA DE MENSAGEM fica de fora; janela ativa e valor de campo entram', () => {
+  const base = carimboDoDelta(DELTA);
+  expect(base).toMatch(/^SE16\/\/1BCDWB\/DBT000\/1000 wnd\[0\] "Data Browser: tabela T000: tela de seleção" #[0-9a-f]{16}$/);
+
+  // MESMA tela, mensagem DIFERENTE → MESMO carimbo (é o caso do item 59)
+  const outraMsg = DELTA.replace(/Para tabela T000 existe uma visão de atualização/g, 'Não se pode selecionar código de função')
+    .replace(/"messageType":"OK"/, '"messageType":"ERROR"');
+  expect(carimboDoDelta(outraMsg)).toBe(base);
+
+  // valor de campo mudou → carimbo mudou
+  expect(carimboDoDelta(DELTA.replace(/"value":"200 "/, '"value":"2 "'))).not.toBe(base);
+  // popup abriu → carimbo mudou, e a janela ativa aparece no prefixo legível
+  const comPopup = DELTA.replace('"SID":"wnd[0]/tbar[0]/btn[3]","Type":"GuiButton"}}\'></div>]]',
+    '"SID":"wnd[1]","Type":"GuiModalWindow"}}\'></div>]]');
+  expect(comPopup).not.toBe(DELTA);
+  expect(carimboDoDelta(comPopup)).toContain('wnd[1]');
+  expect(carimboDoDelta(comPopup)).not.toBe(base);
+
+  // corpo sem delta-update não tem tela — não tem carimbo
+  expect(carimboDoDelta(MULTIPART)).toBe(null);
+});
+
+test('its: mudouDaTela — pegou é o veredito do PROTOCOLO, mudou é o veredito da TELA', () => {
+  const delta = { forma: 'delta', parcial: false };
+  expect(mudouDaTela(delta, 'A', 'B')).toBe(true);
+  expect(mudouDaTela(delta, 'A', 'A')).toBe(false);   // o falso positivo do item 59
+  expect(mudouDaTela(delta, null, 'A')).toBe(null);   // o boot: não havia tela antes
+  // o fragmento do ALV não é a tela; o multipart recusou; o logoff mudou tudo
+  expect(mudouDaTela({ forma: 'delta', parcial: true }, 'A', 'A')).toBe(null);
+  expect(mudouDaTela({ forma: 'multipart' }, 'A', 'A')).toBe(false);
+  expect(mudouDaTela({ forma: 'logoff' }, 'A', 'A')).toBe(true);
+  expect(mudouDaTela({ forma: 'sem-sessao' }, 'A', 'A')).toBe(null);
+  expect(mudouDaTela({ forma: 'outra' }, 'A', 'A')).toBe(null);
 });

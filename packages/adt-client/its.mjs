@@ -41,7 +41,8 @@
 // o MESMO despejo que o `JS_DESPEJO_CONTROLES` do navegador — daí o `montarTela` do webgui.mjs
 // servir às duas vias, e `lerTela(sessao)` devolver o mesmo modelo (fila 21, § abaixo).
 
-import { passo, detalhe, http as logHttp } from './log.mjs';
+import { createHash } from 'node:crypto';
+import { passo, detalhe, aviso, http as logHttp } from './log.mjs';
 import { encerrarSessao } from './sap-connection.mjs';
 import {
   urlWebgui, autorizacao, interpretarSonda, okcodeDe, campoDoSid, janelaDoSid, OKCODES,
@@ -235,6 +236,84 @@ export function lerResposta({ status = null, tipo = '', corpo = '' } = {}) {
       : `${status ?? '?'} ${s.replace(/\s+/g, ' ').trim().slice(0, 160)}`,
   };
 }
+
+/**
+ * PURO: a BARRA DE MENSAGEM que os SIDs declaram — `{ tipo, texto }`, ou `null` quando a tela não
+ * tem mensagem. O `tipo` é a CONSTANTE do SAP (`OK`, `ERROR`, `WARNING`), não o texto traduzido
+ * que o `messageType` do lsdata às vezes traz.
+ *
+ * ⚠ O tipo NÃO é veredito. Medido no s4h 758/250 em 05/09/2026 (item 59, bruto
+ * `POC_webgui_popup/medicoes/raw/h-vkey12.txt`): a recusa do F12 dentro do SPOP veio como
+ * `messageType: "OK"` com o texto "Não se pode selecionar código de função" — tipo de SUCESSO
+ * num texto de recusa. Quem diz se a tela mudou é o `carimbo`; a mensagem diz o que o ABAP teve
+ * a comentar.
+ */
+export function mensagemDosSids(sids = []) {
+  const m = sids.find((x) => x.tipo === 'MESSAGEBAR' && x.applicationText);
+  return m ? { tipo: m.messageType || null, texto: m.applicationText } : null;
+}
+
+/**
+ * PURO: o CARIMBO da tela — a assinatura que se compara ANTES × DEPOIS para saber se a ação MUDOU
+ * alguma coisa. É o par desta via para o `carimbo` do webgui.mjs (lá é o DOM; aqui, o delta).
+ * Legível na frente (`SE38/SAPLWBABAP/0100 wnd[1] "Editor ABAP: 1ª tela"`), hash dos SIDs atrás.
+ *
+ * Entra: a identidade da dynpro (`t-code`/`dynpro`/`d-num`/`cuatitle`), a JANELA ATIVA (é o que
+ * denuncia popup aberto/fechado) e TODOS os SIDs com o `lsdata` que carregam — o valor de cada
+ * campo, o rótulo, o estado de cada botão.
+ *
+ * **Fica de fora a BARRA DE MENSAGEM**, e isso é medido, não gosto. Nos brutos do item 23
+ * (s4h 758/250, 05/09/2026), `f0-nend.txt` (SPOP "Efetuar logoff" aberto) × `h-vkey12.txt`
+ * (F12 depois dele) têm os MESMOS 198 SIDs e a ÚNICA diferença de `lsdata` em toda a tela é
+ * `wnd[0]/sbar_msg` — a mensagem é o comentário do ABAP sobre a ação, não a tela. Com ela dentro
+ * do carimbo, "apareceu uma mensagem de recusa" contaria como "a tela mudou", que é exatamente o
+ * falso positivo que este carimbo existe para desfazer.
+ *
+ * E o carimbo é ESTÁVEL: no controle da mesma medição (`i58-c-nse38-spop.txt` × `i58-d-estado.txt`,
+ * dois POSTs na mesma tela) os 223 SIDs vieram byte a byte iguais — nenhum contador, nenhum
+ * carimbo de tempo dentro do `lsdata`.
+ */
+export function carimboDosSids(sids = [], { dynpro = null, tcode = null, dnum = null, titulo = null } = {}) {
+  const corpo = sids
+    .filter((x) => x.tipo !== 'MESSAGEBAR')
+    .map((x) => JSON.stringify(x))
+    .sort()
+    .join('\n');
+  const h = createHash('sha1').update(corpo).digest('hex').slice(0, 16);
+  return `${tcode ?? '?'}/${dynpro ?? '?'}/${dnum ?? '?'} ${janelaAtiva(sids)} "${titulo ?? ''}" #${h}`;
+}
+
+/**
+ * PURO: o veredito de MUDANÇA da tela — `true`, `false` ou `null` (não dá para dizer), a partir da
+ * FORMA da resposta e dos carimbos ANTES × DEPOIS:
+ *
+ *   `delta` inteiro      — o carimbo decide; sem carimbo ANTES (o boot) não há o que comparar → `null`
+ *   `delta` parcial      — o fragmento do ALV NÃO é a tela → `null`
+ *   `multipart`          — o protocolo recusou, nada mudou → `false`
+ *   `logoff`             — a sessão acabou: mudou o máximo que dava → `true`
+ *   `sem-sessao`/`outra` — não houve tela para comparar → `null`
+ *
+ * ⚠ **`mudou` NÃO é `pegou`.** `pegou` é o veredito do PROTOCOLO (a forma da resposta: o servidor
+ * aceitou o POST?); `mudou` é o veredito da TELA (aconteceu alguma coisa?). Os dois discordam, e é
+ * exatamente aí que mora o item 59: `pegou: true, mudou: false` é "o servidor aceitou e não fez
+ * nada" — medido no s4h 758/250 em 05/09/2026 com o F12 dentro do SPOP "Efetuar logoff" (delta de
+ * 226 KB, `pegou: true`, popup ainda lá). Quem precisa saber que a ação SURTIU EFEITO lê o `mudou`.
+ */
+export function mudouDaTela(lida, antes, depois) {
+  if (lida.forma === 'multipart') return false;
+  if (lida.forma === 'logoff') return true;
+  if (lida.forma !== 'delta' || lida.parcial) return null;
+  if (antes === null || antes === undefined) return null;   // o boot: não havia tela antes
+  return depois !== antes;
+}
+
+/** PURO: o carimbo de um `delta-update` inteiro — o `carimboDosSids` sobre o corpo cru. */
+export const carimboDoDelta = (corpo) => (/<delta-update/i.test(String(corpo ?? ''))
+  ? carimboDosSids(sidsDaResposta(corpo), {
+      dynpro: paramDe(corpo, 'dynpro'), tcode: paramDe(corpo, 't-code'),
+      dnum: paramDe(corpo, 'd-num'), titulo: paramDe(corpo, 'cuatitle'),
+    })
+  : null);
 
 const TIPOS_DE_ENTRADA = new Set(['GuiCTextField', 'GuiTextField', 'GuiPasswordField', 'GuiComboBox', 'GuiCheckBox', 'GuiRadioButton']);
 
@@ -669,7 +748,7 @@ export async function abrir(cfg, { transacao = null, parametros = {}, okcode = n
   }
   const sessao = {
     via: 'http', cfg, url, jar, action, moin, sysid: sonda.sid, mandante: sonda.mandante,
-    sids: [], delta: null, parcial: null, ultimo: null, titulo: null, fila: [], aberta: true, tempos: { get: ms, boot: null },
+    sids: [], delta: null, parcial: null, ultimo: null, titulo: null, carimbo: null, fila: [], aberta: true, tempos: { get: ms, boot: null },
   };
   detalhe(`its: sessão ${sonda.sid}/${sonda.mandante} aberta em ${ms} ms (moin ${moin ?? '—'})`);
   if (boot) {
@@ -715,17 +794,29 @@ export async function postar(sessao, batch, { tetoMs = 30000 } = {}) {
   guardarCookies(sessao.jar, setCookieDe(res));
   const lida = { ...lerResposta({ status: res.status, tipo: res.headers.get('content-type'), corpo }), ms, corpo };
   if (lida.moin) sessao.moin = lida.moin;
+  const antes = { carimbo: sessao.carimbo, janela: sessao.sids.length ? janelaAtiva(sessao.sids) : null };
   if (lida.forma === 'delta' && !lida.parcial) {
     sessao.sids = sidsDaResposta(corpo);
     sessao.titulo = lida.titulo;
     sessao.delta = corpo;   // a última tela — é dela que `lerTela` lê (multipart não a substitui)
     sessao.parcial = null;
+    sessao.carimbo = carimboDosSids(sessao.sids, lida);
   } else if (lida.parcial) {
     sessao.parcial = corpo; // um controle só (o fragmento do ALV): NÃO é a tela, não substitui o delta
   }
   if (lida.forma === 'logoff' || lida.forma === 'sem-sessao') sessao.aberta = false;
+  lida.carimbo = sessao.carimbo;
+  lida.mensagem = lida.forma === 'delta' && !lida.parcial ? mensagemDosSids(sessao.sids) : null;
+  lida.mudou = mudouDaTela(lida, antes.carimbo, sessao.carimbo);
   sessao.ultimo = lida;
-  detalhe(`its: ${lida.forma} em ${ms} ms${lida.pegou ? ` — "${lida.titulo}"` : ` — ${lida.motivo}`}`);
+  detalhe(`its: ${lida.forma} em ${ms} ms${lida.pegou ? ` — "${lida.titulo}"` : ` — ${lida.motivo}`}${lida.mudou === false ? ' — a tela NÃO mudou' : ''}`);
+  if (lida.mensagem) detalhe(`its: mensagem ${lida.mensagem.tipo ?? '?'}: "${lida.mensagem.texto}"`);
+  // ⚠ o AVISO alto: a resposta veio boa, nada mudou e o popup continua lá — o falso positivo do item 59.
+  const janela = lida.forma === 'delta' && !lida.parcial ? janelaAtiva(sessao.sids) : null;
+  if (lida.pegou && lida.mudou === false && janela && janela !== 'wnd[0]' && antes.janela === janela) {
+    aviso(`its: a ação não mudou NADA e o popup ${janela} continua aberto${lida.mensagem ? ` — "${lida.mensagem.texto}"` : ''}`
+      + ' — popup se responde pelo SID do botão (lerTela(s).popup.botoes), não por tecla nem por apelido.');
+  }
   return lida;
 }
 
@@ -1150,10 +1241,9 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, ...
   const { caminho: partes, passos, alvo, filhos } = acharCaminhoDeMenu(itensDeMenu(sessao), caminho);
   if (!alvo.habilitado) throw new Error(`its: navegarMenu — "${alvo.rotulo}" está DESABILITADO nesta tela (${alvo.sid ?? alvo.id}); o action/4 não faria nada`);
   if (!aciona || alvo.submenu) return { caminho: partes, passos, folha: null, filhos, mudou: false };
-  const antes = { titulo: sessao.titulo, dynpro: sessao.delta ? telaDoDelta(sessao.delta)?.dynpro : null };
+  // o `mudou` vem do `postar` — carimbo ANTES × DEPOIS, não só título e dynpro (item 59)
   const r = await despachar(sessao, [{ post: `action/4/${alvo.sid ?? alvo.id}` }], opts);
-  const depois = sessao.delta ? telaDoDelta(sessao.delta)?.dynpro : null;
-  return { ...r, caminho: partes, passos, folha: alvo, mudou: r.titulo !== antes.titulo || depois !== antes.dynpro };
+  return { ...r, caminho: partes, passos, folha: alvo };
 }
 
 // ---------- a ÁRVORE do SAP Easy Access (item 50) ----------
@@ -1283,18 +1373,18 @@ export async function expandirNo(sessao, alvo, opts) {
 }
 
 /**
- * O duplo clique num nó: `{ ...lerResposta, no, mudou }`. Num nó com filhos ele EXPANDE (e `mudou`
- * é `false`); numa folha, aciona — foi assim que o favorito "Produção → … → Com material" levou o
- * SMEN à CO01. O teto sobe para `TETO_ARVORE`: 30 s não bastaram na medição.
+ * O duplo clique num nó: `{ ...lerResposta, no, mudou }`. Numa folha ele aciona — foi assim que o
+ * favorito "Produção → … → Com material" levou o SMEN à CO01; num nó com filhos ele EXPANDE, e aí
+ * `mudou` é `true` (a árvore ganhou nós), não `false` como o veredito antigo — só de título e
+ * dynpro — dizia. O teto sobe para `TETO_ARVORE`: 30 s não bastaram na medição.
  */
 export async function acionarNo(sessao, alvo, opts) {
   const a = arvore(sessao);
   if (!a.sid) throw new Error('its: esta tela não tem árvore (nenhum GuiTree no delta)');
   const no = acharNoDaArvore(a.nos, alvo);
-  const antes = { titulo: sessao.titulo, dynpro: telaDoDelta(sessao.delta)?.dynpro };
+  // o `mudou` vem do `postar` — carimbo ANTES × DEPOIS, não só título e dynpro (item 59)
   const r = await despachar(sessao, batchAcionarNo(a.sid, no.chave), { tetoMs: TETO_ARVORE, ...opts });
-  const depois = sessao.delta ? telaDoDelta(sessao.delta)?.dynpro : null;
-  return { ...r, no, mudou: r.titulo !== antes.titulo || depois !== antes.dynpro };
+  return { ...r, no };
 }
 
 /**
