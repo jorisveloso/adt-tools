@@ -1209,7 +1209,7 @@ oculto do tema colado por `\n` (`btn[8]` → `"Executar\n Destacado"`), e botão
 texto** — cair no primeiro valor string do `lsdata` devolve a constante de design
 (`btn[3]` → `"TRANSPARENT"`, não `"Voltar"`). O tooltip é quem sabe: `"Voltar (F3)"`.
 
-## ⚠ Criar é mutação IMEDIATA — fechar o navegador NÃO é rollback
+## ⚠ Criar é mutação IMEDIATA — fechar a sessão NÃO é rollback
 
 **Medido no SXD 816, mandante 100, em 04/09/2026** (POC 4029823, fila `adt-client` item 38). No
 FLP Designer (`/sap/bc/ui5_ui5/sap/arsrvc_upb_admn/main.html?scope=CUST`), só **abrir** o
@@ -1284,6 +1284,42 @@ canal: não confirmado → marcador some; confirmado → marcador fica; pendente
 a página **respondeu** (prova de que o Chrome ainda estava vivo); descarte que falha → `ok:false`
 no relatório e o aviso em stderr. ⚠ O comportamento do FLP Designer em si não foi re-medido nessa
 rodada — o SXD só responde na rede do cliente.
+
+### As duas vias têm a MESMA pilha — o que muda é o momento de rodá-la (item 66)
+
+O código é **um só**: `criarPilhaDeDesfazer` e `transacional` moram no `webgui.mjs` e o `its.mjs`
+os **importa e reexporta**, como já fazia com o `montarTela`. Cabe: as duas funções só compõem
+callbacks — não sabem de CDP nem de HTTP —, e a sessão de **cada** via tem a **sua** instância.
+Trocar de via continua sendo trocar o import:
+
+```js
+import { abrirTransacao, comandar, fechar, transacional } from 'adt-client/its';   // ← via HTTP
+const s = await abrirTransacao(cfg, 'SE16');   // nasce com s.desfazer, como a do navegador
+```
+
+O que **é** por via é o momento — e é a mesma regra dita duas vezes: **a pilha corre antes do gesto
+que mata a sessão.** No navegador, antes do `Browser.close` (descartar é um clique, precisa da
+página). Na via HTTP, antes do `/nex` (descartar é um POST, precisa da sessão do ITS): depois do
+logoff o POST seguinte volta 400 `Session Timed Out` (regra 5 do handshake, item 20).
+
+⚠ **A via HTTP tem um modo de falha que o navegador não tem:** a sessão do ITS morre **sozinha**
+(timeout do servidor, um `/nex` adiantado) e aí não há descarte possível por ela. Nesse caso o
+`fechar` **não** executa a pilha — executar gastaria os gestos um a um sem chance nenhuma e
+apagaria os rótulos. Ele avisa alto, devolve `pendentes` e **preserva** a pilha, para quem abrir
+outra sessão poder limpar:
+
+```
+⚠ its: NÃO consegui desfazer "rascunho órfão" — a sessão do ITS já estava encerrada, sobrou no sistema
+```
+
+**Medido no s4h 758/250 em 05/09/2026** (`POC_webgui_its_lib/medicoes/item66-desfazer-http.md`),
+com gestos reais e reversíveis (`/nSE38` ↔ `/nSE16`) sobre a SE16: sessão nasce com pilha vazia;
+não confirmado → a tela **voltou** para a SE16; confirmado → ficou na SE38, sem descarte; pendente
+do `fechar` → o POST do descarte voltou `delta` em **81 ms** (prova de que a sessão ainda estava de
+pé) e só então o `/nex`; descarte que falha → `ok: false` no relatório de `fechar` + aviso em
+stderr; sessão morta com pendência → nada executado, `pendentes: ["rascunho órfão"]`, pilha
+intacta. ⚠ O que **não** foi medido pela via HTTP é uma tela que crie ao entrar (o análogo do FLP
+Designer) — o que está provado aqui é a primitiva, não o comportamento de uma dynpro específica.
 
 ## O que este canal NÃO faz
 
@@ -1552,7 +1588,8 @@ duas o alvo é o mesmo); a diferença apareceria num popup — item 23.
 ### O que o navegador ainda dá, e esta via não
 
 O **print de tela**. A leitura, desde o item 21 (2026-09-04), as duas vias têm — e é o **mesmo
-modelo**: § "Ler a tela do `delta-update`" abaixo.
+modelo**: § "Ler a tela do `delta-update`" abaixo. A **pilha de desfazer** também é das duas desde
+o item 66 (§ "As duas vias têm a MESMA pilha").
 
 ### Ler a tela do `delta-update` — `lerTela` sem DOM (item 21)
 

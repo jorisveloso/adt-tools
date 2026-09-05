@@ -15,6 +15,7 @@ import {
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
   indiceDoNo, arvoreDosBrutos, arvore, batchExpandirNo, batchAcionarNo, acharNoDaArvore,
   mensagemDosSids, carimboDosSids, carimboDoDelta, mudouDaTela,
+  criarPilhaDeDesfazer, transacional, fechar,
 } from './its.mjs';
 
 const SHELL = `<html><head><script>var moin = "FF671392BF705DEF";</script></head><body>
@@ -739,4 +740,60 @@ test('its: mudouDaTela — pegou é o veredito do PROTOCOLO, mudou é o veredito
   expect(mudouDaTela({ forma: 'logoff' }, 'A', 'A')).toBe(true);
   expect(mudouDaTela({ forma: 'sem-sessao' }, 'A', 'A')).toBe(null);
   expect(mudouDaTela({ forma: 'outra' }, 'A', 'A')).toBe(null);
+});
+
+
+// ─── criar é mutação imediata TAMBÉM por esta via (item 66) ───────────────────
+// A pilha e o `transacional` são os MESMOS do webgui.mjs (mecânica provada lá). O que se prova
+// aqui é o que só existe nesta via: a sessão do `abrir` nasce com pilha, e o `fechar` a roda ANTES
+// do `/nex` — depois do logoff o POST seguinte volta 400 e não haveria como descartar nada.
+
+const sessaoIts = (extra = {}) => ({
+  via: 'http', aberta: true, action: '/sap(x)/bc/gui/sap/its/webgui/', cfg: { base: 'http://x:8000', user: 'u', pass: 'p' },
+  jar: new Map([['SAP_SESSIONID_S4H_250', 'abc']]), moin: null, fila: [], sids: [], desfazer: criarPilhaDeDesfazer(), ...extra,
+});
+
+test('its: transacional aceita a sessão desta via — o descarte não sabe de CDP nem de HTTP', async () => {
+  const s = sessaoIts();
+  const gestos = [];
+  await transacional(s, {
+    rotulo: 'pedido de compra',
+    abrir: () => { gestos.push('/nME21N'); },     // entrar na dynpro JÁ numera o rascunho
+    descartar: () => { gestos.push('/n (descartar)'); },
+    corpo: () => { gestos.push('lerTela'); },     // "só olhar" — o caso dos quatro mappings vazios
+  });
+  expect(gestos).toEqual(['/nME21N', 'lerTela', '/n (descartar)']);
+  expect(s.desfazer.tamanho()).toBe(0);
+});
+
+test('its: fechar roda o desfazer ANTES do /nex — com a sessão ITS ainda viva', async () => {
+  const s = sessaoIts();
+  const ordem = [];
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async (_url, opcoes) => {
+    ordem.push(`POST ${JSON.parse(opcoes.body).map((c) => c.post ?? `get ${c.get}`).join('|')}`);
+    return new Response('<html>logoff</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  try {
+    s.desfazer.registrar('rascunho da ME21N', () => {
+      // só consegue rodar com a sessão de pé — é o análogo do "a página respondeu" do navegador
+      ordem.push(`descartar (aberta=${s.aberta})`);
+    });
+    const r = await fechar(s);
+    expect(r).toMatchObject({ encerrada: true, via: '/nex' });
+    expect(r.desfeito).toEqual([{ rotulo: 'rascunho da ME21N', ok: true }]);
+    expect(ordem).toEqual(['descartar (aberta=true)', 'POST value/wnd[0]/tbar[0]/okcd|vkey/0/ses[0]|get state/ur']);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+test('its: sessão JÁ encerrada não executa a pilha — avisa e PRESERVA os rótulos', async () => {
+  const s = sessaoIts({ aberta: false });
+  const gestos = [];
+  s.desfazer.registrar('rascunho órfão', () => { gestos.push('descartou'); });
+  const r = await fechar(s);
+  expect(r).toMatchObject({ encerrada: false, motivo: 'já estava encerrada', pendentes: ['rascunho órfão'] });
+  expect(gestos).toEqual([]);                  // sem sessão, o POST do descarte só estouraria
+  expect(s.desfazer.tamanho()).toBe(1);        // a pilha fica de pé para quem abrir outra sessão
 });

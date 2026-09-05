@@ -538,6 +538,13 @@ const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
 //   • `transacional(sessao, { abrir, corpo, descartar })` — o corpo de um formulário que cria ao
 //     abrir: arma o descarte no instante da criação e o dispara no `finally`, a menos que o corpo
 //     tenha CONFIRMADO (o Gravar de verdade).
+//
+// ⚠ As duas peças são das DUAS vias do canal, não só do navegador (fila `adt-client` item 66): o
+// código aqui é PURO — só compõe callbacks, não toca CDP nem HTTP — e por isso o `its.mjs` o
+// IMPORTA em vez de ter o seu (o mesmo arranjo do `montarTela`). O que é por via é a INSTÂNCIA e o
+// momento de rodá-la: no navegador a pilha corre antes do `Browser.close` (o descarte é um clique,
+// precisa da página); na via HTTP, antes do `/nex` (o descarte é um POST, precisa da sessão ITS
+// viva). Sessão morta = descarte impossível pelas duas vias — daí o aviso alto, com o rótulo.
 
 /**
  * A pilha de desfazer de uma sessão. LIFO: desfaz-se na ordem inversa da criação, porque o que
@@ -582,6 +589,9 @@ export function criarPilhaDeDesfazer() {
   };
 }
 
+/** O prefixo de log da via desta sessão — a sessão do `its.mjs` se marca com `via: 'http'`. */
+const viaDa = (sessao) => (sessao?.via === 'http' ? 'its' : 'webgui');
+
 /**
  * Corpo de um formulário que **cria ao abrir**. `abrir` faz a mutação; a partir dali `descartar`
  * está armado e roda no `finally` — a menos que o corpo tenha chamado `confirmar`.
@@ -606,7 +616,7 @@ export function criarPilhaDeDesfazer() {
  * que nem assim sair vira aviso em stderr, com o rótulo — para o lixo ter nome.
  */
 export async function transacional(sessao, { rotulo = 'rascunho', abrir, corpo, descartar } = {}) {
-  if (!sessao?.desfazer) throw new Error('transacional: a sessão não tem pilha de desfazer (use a de `abrirNavegador`)');
+  if (!sessao?.desfazer) throw new Error('transacional: a sessão não tem pilha de desfazer (use a de `abrirNavegador` ou a do `its.abrir`)');
   if (typeof abrir !== 'function') throw new Error('transacional: informe { abrir } — o gesto que CRIA');
   if (typeof descartar !== 'function') throw new Error(`transacional: informe { descartar } — criar é mutação imediata, e "${rotulo}" precisa saber se desfazer`);
   if (typeof corpo !== 'function') throw new Error('transacional: informe { corpo }');
@@ -624,12 +634,12 @@ export async function transacional(sessao, { rotulo = 'rascunho', abrir, corpo, 
     return await corpo({ confirmar, aberto });
   } finally {
     if (!confirmado) {
-      passo(`webgui: descartando "${rotulo}" — o formulário já tinha criado`);
+      passo(`${viaDa(sessao)}: descartando "${rotulo}" — o formulário já tinha criado`);
       try {
         await descartar();
         baixa();
       } catch (e) {
-        detalhe(`webgui: descarte de "${rotulo}" falhou (${e.message}) — fica na pilha para o fechar`);
+        detalhe(`${viaDa(sessao)}: descarte de "${rotulo}" falhou (${e.message}) — fica na pilha para o fechar`);
       }
     }
   }

@@ -48,9 +48,15 @@ import {
   urlWebgui, autorizacao, interpretarSonda, okcodeDe, campoDoSid, janelaDoSid, OKCODES,
   montarTela, sidDoLsdata, rotuloLimpo, teclaDoBotao, sidsDaTela,
   interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu, filhoDiretoDeMenu, daBarraDeMenu,
+  criarPilhaDeDesfazer, transacional,
 } from './webgui.mjs';
 
-export { janelaDoSid };
+// A pilha de desfazer e o `transacional` são das DUAS vias e o código é UM só (fila `adt-client`
+// item 66): eles só compõem callbacks — não sabem de CDP nem de HTTP —, então vêm importados do
+// webgui.mjs como o `montarTela`, e são REEXPORTADOS aqui para trocar de via continuar sendo
+// trocar o import. O que é por via é a instância (uma por sessão) e o MOMENTO de rodá-la: ver o
+// `fechar` no fim deste arquivo.
+export { janelaDoSid, criarPilhaDeDesfazer, transacional };
 
 // ---------- o vocabulário do protocolo (PURO) ----------
 
@@ -715,8 +721,8 @@ const urlNoLog = (url) => url.replace(/\/sap\([^)]*\)/, '/sap(…)');
  *
  * A credencial vai por header em toda requisição; a resposta do GET passa pelo `interpretarSonda`
  * do webgui.mjs — página de logon com 200, nó 404, SSL 403 e ICM fora estouram aqui, com causa.
- * Devolve a sessão `{ via, cfg, jar, action, moin, sids, ultimo, titulo, fila, aberta, tempos }`.
- * Quem abre FECHA: `fechar(sessao)`.
+ * Devolve a sessão `{ via, cfg, jar, action, moin, sids, ultimo, titulo, fila, aberta, desfazer, tempos }`.
+ * Quem abre FECHA: `fechar(sessao)` — que roda a pilha `desfazer` ANTES do `/nex`.
  */
 export async function abrir(cfg, { transacao = null, parametros = {}, okcode = null, boot = true, tetoMs = 30000 } = {}) {
   const url = urlWebgui(cfg, { transacao, parametros, okcode });
@@ -748,7 +754,8 @@ export async function abrir(cfg, { transacao = null, parametros = {}, okcode = n
   }
   const sessao = {
     via: 'http', cfg, url, jar, action, moin, sysid: sonda.sid, mandante: sonda.mandante,
-    sids: [], delta: null, parcial: null, ultimo: null, titulo: null, carimbo: null, fila: [], aberta: true, tempos: { get: ms, boot: null },
+    sids: [], delta: null, parcial: null, ultimo: null, titulo: null, carimbo: null, fila: [], aberta: true,
+    desfazer: criarPilhaDeDesfazer(), tempos: { get: ms, boot: null },
   };
   detalhe(`its: sessão ${sonda.sid}/${sonda.mandante} aberta em ${ms} ms (moin ${moin ?? '—'})`);
   if (boot) {
@@ -1447,18 +1454,46 @@ export async function navegarArvore(sessao, caminho, { acionar: aciona = true, .
 /**
  * Encerra: `/nex` (medido: 200 `text/html` "logoff", e o POST seguinte 400). Se a sessão não
  * aceitar o comando, cai no logoff do ICF pelo cookie (`encerrarSessao`), o mesmo da sonda.
+ *
+ * ⚠ **A ORDEM importa e não é negociável, como no navegador** (fila `adt-client` item 66): a pilha
+ * `sessao.desfazer` corre ANTES do `/nex`, porque nesta via o descarte é um POST na MESMA sessão
+ * ITS — depois do logoff o POST seguinte volta 400 `Session Timed Out` e não há mais o que clicar.
+ * `/nex` não é rollback pelo mesmo motivo que matar o Chrome não é: o que o servidor gravou ao
+ * ABRIR o formulário fica lá.
+ *
+ * ⚠ E aqui há um modo de falha que o navegador não tem: a sessão do ITS morre **sozinha** (timeout
+ * do servidor, um `/nex` adiantado) e `postar` recusa. Com a sessão já encerrada e pendências na
+ * pilha, o `fechar` **não** as executa — executar destruiria a pilha gesto a gesto sem nenhuma
+ * chance de sucesso. Ele AVISA alto, com os rótulos, e devolve `pendentes`: o lixo tem nome, e a
+ * pilha continua de pé para quem abrir outra sessão e limpar.
+ *
+ * Devolve `{ encerrada, via, desfeito, pendentes? }`.
  */
 export async function fechar(sessao) {
-  if (!sessao?.aberta) return { encerrada: false, motivo: 'já estava encerrada' };
+  if (!sessao?.aberta) {
+    const pendentes = sessao?.desfazer?.pendentes?.() ?? [];
+    for (const rotulo of pendentes) {
+      aviso(`its: NÃO consegui desfazer "${rotulo}" — a sessão do ITS já estava encerrada, sobrou no sistema`);
+    }
+    return { encerrada: false, motivo: 'já estava encerrada', desfeito: [], ...(pendentes.length ? { pendentes } : {}) };
+  }
   sessao.fila = [];
+  const desfeito = sessao.desfazer ? await sessao.desfazer.executar() : [];
+  for (const { rotulo, erro } of desfeito.filter((d) => !d.ok)) {
+    aviso(`its: NÃO consegui desfazer "${rotulo}" — sobrou no sistema (${erro})`);
+  }
+  if (!sessao.aberta) {  // um descarte que mandou /nex por engano, ou a sessão caiu no meio
+    return { encerrada: true, via: 'desfazer', desfeito };
+  }
+  sessao.fila = [];      // de novo: um descarte pode ter enfileirado `preencher` sem despachar
   try {
     const r = await comandar(sessao, '/nex');
-    if (r.forma === 'logoff') return { encerrada: true, via: '/nex', ms: r.ms };
+    if (r.forma === 'logoff') return { encerrada: true, via: '/nex', ms: r.ms, desfeito };
     detalhe(`its: /nex devolveu ${r.forma} — caindo no logoff do ICF`);
   } catch (e) {
     detalhe(`its: /nex falhou (${e.message}) — caindo no logoff do ICF`);
   }
   const r = await encerrarSessao({ cfg: sessao.cfg, cookie: cookieDoJar(sessao.jar) });
   sessao.aberta = false;
-  return { encerrada: r.encerrada, via: 'icf-logoff', status: r.status };
+  return { encerrada: r.encerrada, via: 'icf-logoff', status: r.status, desfeito };
 }
