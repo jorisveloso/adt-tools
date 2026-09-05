@@ -802,6 +802,10 @@ rollback e **não é** — mata o Chrome, e o que o servidor gravou fica. Numa t
 um rascunho **antes** de qualquer Gravar, o gesto que desfaz (Cancelar, Excluir) é tão obrigatório
 quanto o unlock do ADT, e pela mesma razão: quem mutou tem de saber desfazer.
 
+⚠ Dirigir a tela de um app UI5 (o Designer, um Fiori Elements) é outro endereçamento — id de
+controle, não SID — e tem receita própria: [receita-fiori.md](receita-fiori.md) (`fiori.mjs`), onde
+mora o `selecionar` de ComboBox/Select. A sessão de navegador é a mesma.
+
 ⚠ Isto **não é** exclusividade de app UI5. Vale para qualquer tela que numere/insira ao entrar —
 e o canal WebGUI não avisa: statusbar e print não são assert (§ "O que este canal NÃO faz"), e
 uma criação silenciosa é exatamente o que eles não mostram.
