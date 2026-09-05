@@ -1606,8 +1606,9 @@ export const daBarraDeMenu = (id) => /^wnd\[\d+\]\/mbar\/menu\[\d+\]/.test(Strin
  * | `19` | o rótulo de novo — igual ao `1` em 121/121 | 121/121 |
  *
  * ⚠️ O `POMNI` **não publica `lsevents`** (null em 121/121): quem publica o `Select` é o `POMN`
- * pai. Por isso o acionamento aqui é CLIQUE — a via HTTP pura (`its.mjs`) ainda não tem o comando
- * do menu derivado.
+ * pai — `{"1":"action/4","2":true}`. Por isso o acionamento AQUI é CLIQUE; na via HTTP pura o
+ * comando é esse `action/4` levando o SID do item, e aí não há menu a abrir (`its.navegarMenu`,
+ * item 49) — este `interpretarItemDeMenu` serve às duas.
  */
 export function interpretarItemDeMenu(bruto) {
   const l = bruto?.lsdata ?? {};

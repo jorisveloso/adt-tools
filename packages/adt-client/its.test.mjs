@@ -12,6 +12,7 @@ import {
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, telaDoDelta, lerTela, parametrosDaTela,
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
   itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS,
+  itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
 } from './its.mjs';
 
 const SHELL = `<html><head><script>var moin = "FF671392BF705DEF";</script></head><body>
@@ -589,4 +590,45 @@ test('its: OK_ITSDOC devolve o controle à dynpro — o mesmo trio do updown_sen
   ]);
   expect(FORMATOS.tabuladores).toBe(1);
   expect(FORMATOS.clipboard).toBe(5);
+});
+
+// ---------- o MENU pela via HTTP (item 49) ----------
+// Os `<tr ct="POMNI">` abaixo são COPIADOS do boot da SE38 no s4h 758/250 (05/09/2026,
+// POC_webgui_menu/medicoes/raw/http-a-boot.xml). ⚠ Na via HTTP a árvore INTEIRA vem no boot —
+// não há menu a abrir, ao contrário do DOM.
+const DELTA_MENU = `<updates><delta-update><start-script><![CDATA[sap.its.arrSystemParams = {'d-num':'0100',dynpro:'SAPLWBABAP','t-code':'SE38'};]]></start-script><start-script><![CDATA[sap.its.aParams = {moin:'A',cuatitle:'Editor ABAP: 1ª tela'};]]></start-script>
+<control-update id="cuaarea"><content><![CDATA[<tr ct="POMNI" lsdata='{"x":0,"1":"Programa","6":true,"7":"mnu0_122","18":{"SID":"wnd[0]/mbar/menu[0]","Type":"GuiMenu"},"19":"Programa"}' id="wnd[0]/mbar/menu[0]" title="Programa" role="menuitem" aria-haspopup="true"></tr>
+<tr ct="POMNI" lsdata='{"x":0,"1":"Sistema","6":true,"7":"mnu0_143","18":{"SID":"wnd[0]/mbar/menu[5]","Type":"GuiMenu"},"19":"Sistema"}' id="wnd[0]/mbar/menu[5]" title="Sistema" role="menuitem" aria-haspopup="true"></tr>
+<tr ct="POMNI" lsdata='{"x":0,"1":"Serviços","6":true,"7":"mnu0_138","18":{"SID":"wnd[0]/mbar/menu[5]/menu[3]","Type":"GuiMenu"},"19":"Serviços"}' id="wnd[0]/mbar/menu[5]/menu[3]" title="Servi&#xe7;os" role="menuitem" aria-haspopup="true"></tr>
+<tr ct="POMNI" lsdata='{"x":0,"1":"Reporting","18":{"SID":"wnd[0]/mbar/menu[5]/menu[3]/menu[0]","Type":"GuiMenu"},"19":"Reporting"}' id="wnd[0]/mbar/menu[5]/menu[3]/menu[0]" title="Reporting" role="menuitem"></tr>
+<tr ct="POMNI" lsdata='{"x":0,"1":"Batch input","6":true,"7":"mnu0_135","18":{"SID":"wnd[0]/mbar/menu[5]/menu[3]/menu[4]","Type":"GuiMenu"},"19":"Batch input"}' id="wnd[0]/mbar/menu[5]/menu[3]/menu[4]" title="Batch&#x20;input" role="menuitem" aria-haspopup="true"></tr>
+<tr ct="POMNI" lsdata='{"x":0,"1":"Reiniciar transação","5":false,"18":{"SID":"wnd[0]/mbar/menu[5]/menu[3]/menu[4]/menu[3]","Type":"GuiMenu"},"19":"Reiniciar transação"}' id="wnd[0]/mbar/menu[5]/menu[3]/menu[4]/menu[3]" title="Reiniciar&#x20;transa&#xe7;&#xe3;o" role="menuitem" aria-disabled="true" class="urMnuRowDsbl"></tr>
+<tr ct="POMNI" lsdata='{"x":0,"1":"Sistema","18":{"SID":"sysInfoAreaMenuItem3","Type":"GuiMenu"},"19":"Sistema"}' id="sysInfoAreaMenuItem3" role="menuitem"></tr>]]></content></control-update>
+</delta-update></updates>`;
+
+test('its: itensDeMenuDoDelta lê a árvore do delta e deixa fora o menu de informação do sistema', () => {
+  const itens = itensDeMenuDoDelta(DELTA_MENU);
+  expect(itens.map((i) => i.rotulo)).toEqual(['Programa', 'Sistema', 'Serviços', 'Reporting', 'Batch input', 'Reiniciar transação']);
+  // o `id` do controle É o SID É o caminho — 121/121 no s4h, nas duas vias
+  expect(itens.every((i) => i.sid === i.id)).toBe(true);
+  expect(itens.find((i) => i.rotulo === 'Reporting')).toMatchObject({ sid: 'wnd[0]/mbar/menu[5]/menu[3]/menu[0]', submenu: false, nivel: 2, habilitado: true });
+  expect(itens.find((i) => i.rotulo === 'Reiniciar transação').habilitado).toBe(false);
+});
+
+test('its: itensDeMenu lê do último delta sem tocar a rede, e { sob } dá só os filhos DIRETOS', () => {
+  const sessao = { delta: DELTA_MENU };
+  expect(itensDeMenu(sessao).length).toBe(6);
+  expect(itensDeMenu(sessao, { sob: 'wnd[0]/mbar/menu[5]/menu[3]' }).map((i) => i.rotulo)).toEqual(['Reporting', 'Batch input']);
+  expect(() => itensDeMenu({})).toThrow(/sem delta/);
+});
+
+test('its: acharCaminhoDeMenu desce por rótulo pelos filhos diretos — acento e caixa não importam', () => {
+  const itens = itensDeMenuDoDelta(DELTA_MENU);
+  const r = acharCaminhoDeMenu(itens, 'sistema > servicos > Reporting');
+  expect(r.alvo.sid).toBe('wnd[0]/mbar/menu[5]/menu[3]/menu[0]');
+  expect(r.passos.map((p) => p.sid)).toEqual(['wnd[0]/mbar/menu[5]', 'wnd[0]/mbar/menu[5]/menu[3]', 'wnd[0]/mbar/menu[5]/menu[3]/menu[0]']);
+  // parar num nó dá os filhos dele — é como se DESCOBRE o menu, custo zero de rede
+  expect(acharCaminhoDeMenu(itens, 'Sistema > Serviços').filhos.map((f) => f.rotulo)).toEqual(['Reporting', 'Batch input']);
+  // rótulo que existe em OUTRO ramo não vale: os candidatos são só os filhos diretos
+  expect(() => acharCaminhoDeMenu(itens, 'Programa > Reporting')).toThrow(/"Reporting" não está sob wnd\[0\]\/mbar\/menu\[0\]/);
 });

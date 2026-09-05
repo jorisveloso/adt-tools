@@ -46,6 +46,7 @@ import { encerrarSessao } from './sap-connection.mjs';
 import {
   urlWebgui, autorizacao, interpretarSonda, okcodeDe, campoDoSid, janelaDoSid, OKCODES,
   montarTela, sidDoLsdata, rotuloLimpo, teclaDoBotao, sidsDaTela,
+  interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu, filhoDiretoDeMenu, daBarraDeMenu,
 } from './webgui.mjs';
 
 export { janelaDoSid };
@@ -1057,6 +1058,92 @@ export const tecla = (sessao, nome, opts) => despachar(sessao, batchVkey(numeroD
 export async function comandar(sessao, okcode, opts) {
   const r = await despachar(sessao, batchComandar(okcode), opts);
   return { ...r, okcode: String(okcode).trim() };
+}
+
+// ---------- o MENU pela via HTTP pura (item 49) ----------
+//
+// ⚠ A via HTTP NÃO precisa abrir o menu — e é aí que ela diverge do navegador. No DOM o menu não
+// existe antes do clique em `cua2sapmenu_btn` (item 26); no delta-update a árvore INTEIRA da barra
+// já vem no BOOT. Medido no s4h 758/250 em 05/09/2026, SE38: **146** `POMNI` de `wnd[0]/mbar/…`,
+// três níveis, no primeiro POST — sem clique nenhum. E o `id` do controle É o SID É o caminho
+// (`wnd[0]/mbar/menu[5]/menu[3]/menu[0]`), igual ao DOM.
+//
+// O comando é o `action/4` que o `POMN` (o container do submenu) publica no `Select` — o `POMNI`
+// não publica `lsevents` nenhum (null, confirmado nas duas vias). Ele LEVA o SID do item:
+//
+//   POST [{"post":"action/4/wnd[0]/mbar/menu[5]/menu[3]/menu[0]"},{"get":"state/ur"}]
+//   → delta, 76 ms: SE38/SAPLWBABAP "Editor ABAP: 1ª tela" → SA38/SAPMS38M "ABAP: execução do programa"
+//
+// Contra-provas da mesma rodada (`POC_webgui_menu/medicoes/item49-menu-http.md`):
+//   · `action/3` (o Press de botão) no MESMO SID → `-101 not supported`: a família é a do `4`;
+//   · `action/4` num nó COM submenu ("Sistema") → `delta` aceito, tela IGUAL, 146 menus antes e
+//     depois: "abrir" é gesto de UI, não de protocolo — não há cascata a percorrer aqui;
+//   · `action/3/wnd[0]/tbar[0]/[0]` (clicar o botão de menu) → `-102 control not found`.
+//
+// Um POST, sem Chrome, contra os três a nove do `navegarMenu` do CDP.
+
+/** PURO: os itens da barra de menu que um `delta-update` declara — `id` é o caminho e o SID. */
+export const itensDeMenuDoDelta = (corpo) => controlesDoDelta(corpo)
+  .filter((c) => c.ct === 'POMNI' && daBarraDeMenu(c.id))
+  .map(interpretarItemDeMenu);
+
+/**
+ * Os itens de menu da tela atual, do último delta — SEM tocar a rede. Com `{ sob }` só os filhos
+ * DIRETOS daquele SID; sem nada, a árvore inteira (`nivel: 0` são os da barra).
+ */
+export function itensDeMenu(sessao, { sob = null } = {}) {
+  if (!sessao?.delta) throw new Error('its: sem delta para ler o menu — abra a sessão (o boot traz a árvore)');
+  const itens = itensDeMenuDoDelta(sessao.delta);
+  if (sob === null) return itens;
+  return itens.filter((i) => filhoDiretoDeMenu(String(sob), i.id));
+}
+
+/**
+ * PURO: desce a árvore por RÓTULO e devolve `{ passos, alvo, filhos }`. Os candidatos de cada
+ * passo são só os filhos DIRETOS do nó anterior — dois menus podem ter o mesmo rótulo em ramos
+ * diferentes, e casar por rótulo solto pega o errado (item 26).
+ */
+export function acharCaminhoDeMenu(itens, caminho) {
+  const partes = partirCaminhoDeMenu(caminho);
+  const filhosDe = (sid) => (sid === null ? itens.filter((i) => i.nivel === 0) : itens.filter((i) => filhoDiretoDeMenu(sid, i.id)));
+  let sid = null;
+  const passos = [];
+  for (const rotulo of partes) {
+    const irmaos = filhosDe(sid);
+    const alvo = acharItemDeMenu(irmaos, rotulo);
+    if (!alvo) throw new Error(`its: navegarMenu — "${rotulo}" não está sob ${sid ?? 'wnd[0]/mbar'}. Tenho: ${irmaos.map((i) => i.rotulo).join(' | ')}`);
+    passos.push(alvo);
+    sid = alvo.sid ?? alvo.id;
+  }
+  return { caminho: partes, passos, alvo: passos[passos.length - 1], filhos: filhosDe(sid) };
+}
+
+/**
+ * Vai a uma tela pelo CAMINHO de menu, sem saber o tcode e sem navegador:
+ *
+ * ```js
+ * await navegarMenu(s, 'Sistema > Serviços > Reporting');   // da SE38 chega na SA38
+ * ```
+ *
+ * Ao contrário da via do navegador, aqui **não há cascata**: o caminho inteiro é resolvido no
+ * delta que já está em mãos e só a FOLHA vira POST (`action/4/<SID>`). Devolve
+ * `{ caminho, passos, folha, mudou, ...lerResposta }`; `mudou: false` é INFORMAÇÃO — o comando
+ * pegou e a tela ficou igual.
+ *
+ * Com `{ acionar: false }` nada é postado: devolve `{ filhos }` do último nó — é como se DESCOBRE
+ * o menu de uma tela (a árvore inteira já está no delta, custo zero de rede).
+ *
+ * ⚠ Item DESABILITADO (`lsdata[5] === false`, item 48) **lança** — o `action/4` nele seria a falha
+ * mais silenciosa deste canal. Medido na SE38: 11 dos 146 itens vêm assim.
+ */
+export async function navegarMenu(sessao, caminho, { acionar: aciona = true, ...opts } = {}) {
+  const { caminho: partes, passos, alvo, filhos } = acharCaminhoDeMenu(itensDeMenu(sessao), caminho);
+  if (!alvo.habilitado) throw new Error(`its: navegarMenu — "${alvo.rotulo}" está DESABILITADO nesta tela (${alvo.sid ?? alvo.id}); o action/4 não faria nada`);
+  if (!aciona || alvo.submenu) return { caminho: partes, passos, folha: null, filhos, mudou: false };
+  const antes = { titulo: sessao.titulo, dynpro: sessao.delta ? telaDoDelta(sessao.delta)?.dynpro : null };
+  const r = await despachar(sessao, [{ post: `action/4/${alvo.sid ?? alvo.id}` }], opts);
+  const depois = sessao.delta ? telaDoDelta(sessao.delta)?.dynpro : null;
+  return { ...r, caminho: partes, passos, folha: alvo, mudou: r.titulo !== antes.titulo || depois !== antes.dynpro };
 }
 
 /**

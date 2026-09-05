@@ -740,8 +740,13 @@ Dois equivalentes, para traduzir receita de um lado para o outro:
 
 ## O MENU da barra — chegar numa tela por CAMINHO, sem saber o tcode
 
-**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 26). Bruto, agregado e prova em
-`sap-accelerate/work/POC_webgui_menu/`; a leitura em `medicoes/item26-menu.md`.
+**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 26) e **em 2026-09-05** pela via
+HTTP pura (item 49). Bruto, agregado e prova em `sap-accelerate/work/POC_webgui_menu/`; a leitura em
+`medicoes/item26-menu.md` e `medicoes/item49-menu-http.md`.
+
+⚠ **As duas vias divergem no essencial:** no NAVEGADOR o menu não existe antes de ser aberto e o
+percurso é cascata de cliques; na via HTTP a árvore INTEIRA já vem no boot e só a FOLHA vira POST
+(§ "O mesmo menu pela via HTTP pura" abaixo). Mesmo modelo de item, mesmo caminho por rótulo.
 
 ```js
 import { abrirMenu, navegarMenu, itensDeMenu } from './webgui.mjs';
@@ -855,11 +860,48 @@ canal:
 
 ### O que **ainda não** está medido
 
-- **O menu não tem comando derivado para a via HTTP pura** (§ "O protocolo do ITS"). O `POMNI` não
-  publica `lsevents` (null em 121/121); quem publica o `Select` é o `POMN` pai —
-  `{"1":"action/4","2":true}`, e `action/4` está na lista dos ainda não postados (fila item 49).
 - **A árvore do SAP Easy Access (`TV` + `MG`)** — o menu de *usuário*, com `DoubleClick: action/74`
   — não foi tocada (fila item 50).
+- **A árvore inteira também está no DOM da via CDP, invisível?** O navegador recebe o mesmo
+  delta-update que traz os 146 itens. Se estiver, a cascata de cliques daqui vira uma leitura só
+  (fila item 82).
+- **Folha de menu que abre POPUP** antes de navegar: o `mudou` da via HTTP não distingue "abriu
+  modal" de "trocou de tela" (fila item 83).
+
+### O mesmo menu pela via HTTP pura — um POST, sem Chrome
+
+**Medido no s4h 758/250 em 2026-09-05** (item 49, `medicoes/item49-menu-http.md`).
+
+```js
+import { abrirTransacao, itensDeMenu, navegarMenu } from './its.mjs';
+
+const s = await abrirTransacao(cfg, 'SE38');              // o boot JÁ traz a árvore: 146 itens
+itensDeMenu(s).filter((i) => i.nivel === 0);              // Programa | Processar | … — ZERO rede
+(await navegarMenu(s, 'Sistema > Serviços', { acionar: false })).filhos;   // idem, 27 ms
+
+const r = await navegarMenu(s, 'Sistema > Serviços > Reporting');
+r.mudou;   // true — SE38 → SA38 em 91 ms, UM POST
+```
+
+**Não há menu a abrir aqui.** O boot da SE38 devolve **146 `POMNI` de `wnd[0]/mbar/…`** em três
+níveis, com `id` == SID == caminho — o renderer é que materializa o popup sob demanda, o
+delta-update já transporta tudo. Consequência: `abrirMenu`, `fecharMenu`, o toggle e a cascata
+**não têm equivalente** nesta via, e não fazem falta. (Contra-prova: `action/3/wnd[0]/tbar[0]/[0]`,
+clicar o botão de menu, devolve `-102 control not found` — ele não é endereçável por SID.)
+
+O comando é o `action/4` que o `POMN` **pai** publica no `Select` (o `POMNI` não publica nada), e
+ele **leva o SID do item**:
+
+| POST | resposta | efeito |
+|---|---|---|
+| `action/4/wnd[0]/mbar/menu[5]/menu[3]/menu[0]` ("Reporting") | `delta` **76 ms** | SE38 → **SA38** |
+| `action/4/wnd[0]/mbar/menu[5]` ("Sistema", com submenu) | `delta` 85 ms | **nada** — 146 menus antes e depois |
+| `action/3/…/menu[3]/menu[0]` (contra-prova) | `multipart` **`-101` not supported** | nada |
+
+As três linhas juntas: o comando é o `4` (o `3` é recusado no mesmo SID), o endereço é o SID do
+item, e `action/4` em nó COM submenu é aceito e inócuo — "abrir" é gesto de UI, não de protocolo.
+Só a folha vira POST. A guarda do item desabilitado (`lsdata[5] === false`, item 48) vale igual e
+custa **zero rede**: os 11 cinzas dos 146 já vieram no delta.
 
 ## O vocabulário `lsdata` — a tela é um MODELO, não pixel
 
@@ -1146,7 +1188,8 @@ para o `RequestData`, cujo `action/710` só apareceu capturando a rede (item 25)
 afins o comando vem do mapa `RGACTIONS` do renderer, não da tela: ausência de índice `1` ali **não**
 quer dizer que o evento não tenha via — quer dizer que a tela não a declara.
 
-*Ponto aberto:* só `action/3` foi medido nessa família. `action/1`, `4`, `7`, `8`, `9`, `25`, `62`,
+*Ponto aberto:* `action/3` e `action/4` foram medidos nessa família (o `4` é o do MENU — § "O mesmo
+menu pela via HTTP pura", item 49). `action/1`, `7`, `8`, `9`, `25`, `62`,
 `74`, `309`, `810` e `901` aparecem no mapa mas **não** foram postados — a contra-prova está em
 `POC_webgui_lsdata/scripts/derivar.mjs`, à espera de uma janela com o s4h no ar (fila 43). Compor o
 POST a partir do `lsevents` (`acionar(sessao, alvo, { evento })`) é a fila 71.
@@ -1377,7 +1420,7 @@ nenhum bruto medido faz isso, mas a lib não escolhe no escuro. `preencher(s, ca
 e fala o **mesmo vocabulário** do `webgui.mjs` — trocar de via é trocar o import:
 
 ```js
-import { abrirTransacao, preencher, acionar, enter, tecla, enviar, comandar, fechar, sids, campos, botoes } from 'adt-client/its';
+import { abrirTransacao, preencher, acionar, enter, tecla, enviar, comandar, navegarMenu, fechar, sids, campos, botoes } from 'adt-client/its';
 
 const cfg = { base: 'http://host:8000', client: '250', idioma: 'PT', user: 'U', pass: 's3nh4' };
 const s = await abrirTransacao(cfg, 'SE16', { parametros: { 'DATABROWSE-TABLENAME': 'T000' } });
@@ -1389,6 +1432,7 @@ try {                                          // GET + boot: 657 ms até a tela
   if (!r.pegou) throw new Error(r.motivo);     // multipart: "-101 failed to fire action: not supported"
   r.titulo;                                    // 'Data Browser: Tabela T000          2 acertos'
   await comandar(s, '/nSE38');                 // OK-code: value/okcd + vkey/0 — de qualquer tela
+  await navegarMenu(s, 'Sistema > Serviços > Reporting');   // caminho de menu: action/4, um POST (91 ms)
 } finally {
   await fechar(s);                             // /nex (75 ms); o postar seguinte estoura sem tocar a rede
 }
@@ -1411,6 +1455,7 @@ na mesma função faria cada uma virar um `if` de duas pernas. O que é comum ve
 | SID como endereço, tirado da própria tela | `sidsDaResposta` (regex sobre o `lsdata`), `sidDoAlvo` | item 20 (221 SIDs na seleção da SE16) |
 | a barra do botão não se adivinha | `acionar(s, 'btn[8]')` casa `…/btn[8]` no fim do SID da tela; fora dela estoura com a lista | item 20 D3 |
 | OK-code = `value/okcd` + `vkey/0` | `comandar` | item 8 |
+| o menu inteiro já vem no boot; a folha é `action/4/<SID>` | `itensDeMenu`, `navegarMenu` — sem abrir nada | item 49 (146 itens na SE38; SE38 → SA38 em 91 ms) |
 | `/nex` encerra; depois é 400 | `fechar`; `postar` recusa sessão encerrada | item 8; item 20 E |
 
 **Medição nova do item 20: o valor mandado em POST separado PERSISTE.** `preencher` + `enviar()`
