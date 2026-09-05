@@ -23,8 +23,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { run, claudeCode } from '@ai-hero/sandcastle';
+import { run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
+import { claudeCodeHost } from './agente.mjs';
 import { listarFilas, next, itemDaFila, adiar, status, FILAS_DIR } from 'adt-todo';
 import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve } from './veredito.mjs';
 import { repoDaFila, sujos, fecharNoGit } from './git.mjs';
@@ -81,7 +82,8 @@ for (const fila of filas) {
         name: `${fila}#${alvo.n}`,
         // `auto`: o classificador aprova/nega cada ferramenta. Sem permissionMode o sandcastle
         // passa --dangerously-skip-permissions. Decisão do Joris em 05/09/2026.
-        agent: claudeCode(opts.modelo, { permissionMode: 'auto' }),
+        // `claudeCodeHost` conserta as aspas do --model para o cmd.exe (agente.mjs).
+        agent: claudeCodeHost(opts.modelo, { permissionMode: 'auto' }),
         // No host, sem contêiner: SAP GUI (ROT), o .env do sap-accelerate e a rede do cliente só
         // existem aqui; o provider trata Windows (cmd.exe + spawn com shell).
         sandbox: noSandbox(),

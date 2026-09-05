@@ -65,6 +65,10 @@ no fim da resposta; sem ele, da última notinha do item na fila; sem ela, do mot
   com `shell`).
 - **`permissionMode: 'auto'`** — sem isso o sandcastle passa `--dangerously-skip-permissions`.
   Decisão do Joris.
+- **`claudeCodeHost()` em vez de `claudeCode()`** (`lib/agente.mjs`) — medido em 05/09/2026: o
+  sandcastle 0.12.0 escapa `--model` com aspas simples POSIX e, no host Windows, o `cmd.exe` entrega
+  `'claude-opus-5'` literal ao `claude` (*"There's an issue with the selected model"*). O wrapper
+  troca por aspas duplas só no Windows. O prompt não sofre — vai por stdin.
 - **`branchStrategy: { type: 'head' }`** — sem worktree: a fila e as POCs ficam onde estão, e os
   commits do agente vão direto no HEAD do `adt-tools`.
 - **`maxIterations: 1` por item, loop aqui** — o `maxIterations` do sandcastle não deixa olhar a
