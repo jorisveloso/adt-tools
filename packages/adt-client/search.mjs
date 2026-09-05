@@ -95,11 +95,14 @@ export async function buscar(session, padrao, adtTypes = [], max = 200) {
 //     `colapsados` sai no retorno — quem chama TEM que dizer isso a quem lê. Expandir um nó pede
 //     outra chamada, ainda NÃO MEDIDA (fila do adt-client).
 //
-//  3. Para ELEMENTO DE DADOS, o que vem expandido são DECLARAÇÕES (`TABL/DSF` — o campo na
-//     estrutura), não escritas. Quem grava o campo em runtime está justamente nos nós colapsados
-//     (FMs, includes, pacotes). Logo: **where-used de DE não responde "quem escreve neste campo"** —
-//     essa pergunta continua sendo do canal de fonte/debug. Para classe, FM e include, os usos de
-//     primeiro nível já vêm nomeados e a função serve direto.
+//  3. O que a função responde é **QUEM usa, não ONDE**. O uso em CÓDIGO chega quase sempre como nó
+//     colapsado — nomeado (o FM, o include, a classe, com tipo e pacote), mas sem a ocorrência
+//     dentro dele. Medido no s4h 758: `CL_SALV_TABLE` deu 6.282 anunciados com **38** expandidos e
+//     12.232 colapsados; `MATNR`, 41.226 anunciados com 30.221 expandidos e 26.473 colapsados.
+//     Para ELEMENTO DE DADOS o pouco que vem expandido são DECLARAÇÕES (`TABL/DSF` — o campo na
+//     estrutura), não escritas: quem GRAVA o campo em runtime está nos colapsados. Logo
+//     **where-used de DE não responde "quem escreve neste campo"** — essa pergunta continua sendo
+//     do canal de fonte/debug.
 //
 //  4. O nome/tipo/pacote NÃO estão no `referencedObject` — estão no filho `adtObject`
 //     (e o pacote no `adtcore:packageRef` dentro dele). Ler só os atributos da tag de fora devolve
