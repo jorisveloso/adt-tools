@@ -5,7 +5,7 @@
 // O resto (rede, sessão, gravação) só é exercitável contra um SAP de verdade — ver README.
 
 import { test, expect } from 'vitest';
-import { parseObjectReferences, parseUsageReferences } from './search.mjs';
+import { parseObjectReferences, parseUsageReferences, parseUsageSnippets } from './search.mjs';
 import { montarMeta } from './layout.mjs';
 import { resolverTipo, codigoDaLibKey, normalizar } from './tipos/index.mjs';
 import {
@@ -53,7 +53,7 @@ test('where-used: nome, tipo e pacote vêm do adtObject filho, não da tag de fo
     uri: '/sap/bc/adt/ddic/structures/bapi_j_1bnfdoc/source/main#type=TABL%2FDSF;name=NFNUM_UTILITIES',
     uriPai: '/sap/bc/adt/ddic/structures/bapi_j_1bnfdoc',
     nome: 'NFNUM_UTILITIES', tipo: 'TABL/DSF', pacote: 'J1BA', responsavel: '',
-    ocorrencia: true, temFilhos: false, uso: 'gradeDirect,includeProductive',
+    ocorrencia: true, temFilhos: false, uso: 'gradeDirect,includeProductive', id: '',
   });
 });
 
@@ -90,7 +90,7 @@ test('where-used: resposta sem usos não quebra', () => {
 // A MESMA resposta, do s4h 758 (recorte real do where-used de MATNR, 04/09/2026): o prefixo do
 // namespace vem em camelCase, e cada nó traz um <objectIdentifier> SEM prefixo. Prender o parser ao
 // prefixo do SXD lia 41.226 usos como zero, com status 200 — o teste existe para isso não voltar.
-const XML_USOS_CAMEL = `<?xml version="1.0" encoding="utf-8"?><usageReferences:usageReferenceResult numberOfResults="41226" resultDescription="[S4H] Verwendungsnachweis: MATNR (Elemento de dados)" referencedObjectIdentifier="" xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:referencedObjects><usageReferences:referencedObject uri="/sap/bc/adt/aps/iam/auth/%2faccgo%2fmat" parentUri="/sap/bc/adt/packages/%2faccgo%2fcommon" isResult="false" canHaveChildren="true" usageInformation="gradeDirect,includeProductive"><usageReferences:adtObject adtcore:responsible="SAP" adtcore:name="/ACCGO/MAT" adtcore:type="AUTH" xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/%2faccgo%2fcommon" adtcore:type="DEVC/K" adtcore:name="/ACCGO/COMMON"/></usageReferences:adtObject><objectIdentifier>BlueAUTH;/ACCGO/MAT;\DTEL/DE:MATNR;2</objectIdentifier></usageReferences:referencedObject></usageReferences:referencedObjects></usageReferences:usageReferenceResult>`;
+const XML_USOS_CAMEL = `<?xml version="1.0" encoding="utf-8"?><usageReferences:usageReferenceResult numberOfResults="41226" resultDescription="[S4H] Verwendungsnachweis: MATNR (Elemento de dados)" referencedObjectIdentifier="" xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:referencedObjects><usageReferences:referencedObject uri="/sap/bc/adt/aps/iam/auth/%2faccgo%2fmat" parentUri="/sap/bc/adt/packages/%2faccgo%2fcommon" isResult="false" canHaveChildren="true" usageInformation="gradeDirect,includeProductive"><usageReferences:adtObject adtcore:responsible="SAP" adtcore:name="/ACCGO/MAT" adtcore:type="AUTH" xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/%2faccgo%2fcommon" adtcore:type="DEVC/K" adtcore:name="/ACCGO/COMMON"/></usageReferences:adtObject><objectIdentifier>BlueAUTH;/ACCGO/MAT;\\DTEL/DE:MATNR;2</objectIdentifier></usageReferences:referencedObject></usageReferences:referencedObjects></usageReferences:usageReferenceResult>`;
 
 test('where-used: o prefixo do namespace muda por sistema — o parser lê pelo nome local', () => {
   const r = parseUsageReferences(XML_USOS_CAMEL);
@@ -105,6 +105,42 @@ test('where-used: o prefixo do namespace muda por sistema — o parser lê pelo 
 // O <objectIdentifier> sem prefixo é do NÓ, não do escopo: casar com ele daria um escopo inventado.
 test('where-used: objectIdentifier sem prefixo não vira escopo', () => {
   expect(parseUsageReferences(XML_USOS_CAMEL).escopo).toEqual({ nome: '', globalType: '' });
+});
+
+// …e é ELE a chave da expansão (`expandirUsos`): sem `id` no nó não há como pedir o snippet.
+test('where-used: o objectIdentifier do nó sai como `id`, com a contrabarra intacta', () => {
+  const r = parseUsageReferences(XML_USOS_CAMEL);
+  expect(r.refs[0].id).toBe('BlueAUTH;/ACCGO/MAT;\\DTEL/DE:MATNR;2');
+  // container (pacote, grupo de função) não traz identifier — e por isso não expande
+  expect(parseUsageReferences(XML_USOS).refs[0].id).toBe('');
+});
+
+// Resposta REAL do usageSnippets no s4h 250 (05/09/2026) — dois snippets do mesmo identifier, que é
+// o caso que prova o ponto 3: um nó colapsado rende N ocorrências, não uma.
+const XML_SNIPPETS = `<?xml version="1.0" encoding="utf-8"?><usageReferences:usageSnippetResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:codeSnippetObjects><usageReferences:codeSnippetObject><objectIdentifier>ABAPFullName;SAPLJ1BB2;LJ1BB2U07;\\TY:J_1BNFNUM_UTILITIES;2</objectIdentifier><usageReferences:codeSnippets><usageReferences:codeSnippet uri="/sap/bc/adt/functions/groups/j1bb2/fmodules/j_1b_nf_unique_for_vendor/source/main#start=12,28;end=12,47" matches="28-47,accessUnknown,gradeDirect"><content>    nfnum TYPE j_1bnfnum_utilities</content><description>Verwendungsart: Direkte Verwendung</description></usageReferences:codeSnippet><usageReferences:codeSnippet uri="/sap/bc/adt/functions/groups/j1bb2/fmodules/j_1b_nf_unique_for_vendor/source/main#start=28,45;end=28,64" matches="45-64,accessRead,gradeDirect"><content>  IF nfnum &lt;&gt; space.</content><description/></usageReferences:codeSnippet></usageReferences:codeSnippets></usageReferences:codeSnippetObject><usageReferences:codeSnippetObject><objectIdentifier>ABAPFullName;SAPLJ1BC;LJ1BCU03;\\TY:J_1BNFNUM_UTILITIES;2</objectIdentifier><usageReferences:codeSnippets/></usageReferences:codeSnippetObject></usageReferences:codeSnippetObjects></usageReferences:usageSnippetResult>`;
+
+test('snippets: um identifier rende N ocorrências — arquivo, linha e coluna de cada uma', () => {
+  const s = parseUsageSnippets(XML_SNIPPETS);
+  expect(s.length).toBe(2);
+  expect(s[0]).toMatchObject({
+    id: 'ABAPFullName;SAPLJ1BB2;LJ1BB2U07;\\TY:J_1BNFNUM_UTILITIES;2',
+    fonte: '/sap/bc/adt/functions/groups/j1bb2/fmodules/j_1b_nf_unique_for_vendor/source/main',
+    linha: 12,
+    coluna: 28,
+    acesso: 'accessUnknown',
+    grade: 'gradeDirect',
+  });
+  expect(s[1].linha).toBe(28);
+  expect(s[1].acesso).toBe('accessRead');
+  // o conteúdo vem com as entidades XML desfeitas — é código, e vai ser lido por humano
+  expect(s[1].conteudo).toBe('  IF nfnum <> space.');
+});
+
+// Um `codeSnippetObject` com <codeSnippets/> vazio é o sintoma do identifier alterado (a
+// contrabarra comida responde 200 com lista vazia): não pode virar ocorrência fantasma.
+test('snippets: nó que não devolveu snippet nenhum não vira ocorrência', () => {
+  const ids = parseUsageSnippets(XML_SNIPPETS).map((x) => x.id);
+  expect(ids.filter((i) => i.includes('LJ1BCU03'))).toEqual([]);
 });
 
 test('meta: pacote vem do packageRef, NÃO do nome da raiz', () => {
