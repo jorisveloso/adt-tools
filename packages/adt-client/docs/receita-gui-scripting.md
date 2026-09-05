@@ -250,8 +250,13 @@ resposta.
 | sem clicar | 1,4 s | — | **nunca** (timeout de 90 s) |
 | clicando OK | 2,1 s | 3,9 s | **4,8 s** — 1 conexão, 1 sessão logada |
 
-- **É por chamada, não por pad.** Três sondas em sequência ⇒ três popups. Cada `rodarGui`,
-  `sessoesAbertas`, `lerTela` ou `fecharSapGui` é um `cscript` novo e paga o pedágio outra vez.
+- **É por chamada, não por pad — e a autorização MORRE com a chamada.** Três sondas em sequência ⇒
+  três popups. Cada `rodarGui`, `sessoesAbertas`, `lerTela` ou `fecharSapGui` é um `cscript` novo e
+  paga o pedágio outra vez. Medido em 05/09/2026 (item 62, `medicoes/item62-pedagio-memoria.md`):
+  depois de um OK que destravou a chamada, a chamada seguinte **2 segundos depois** abriu outro
+  diálogo e pendurou — igual em +30 s e +120 s. **Não existe permissão persistida**: nem por pad,
+  nem por processo, nem por tempo. Cinco OKs seguidos não compraram um segundo de graça. Quem quiser
+  o canal sem pedágio tem um caminho só: `WarnOnAttach=0` (§ abaixo).
 - **O timeout do chamador não resolve — piora:** o `execFile` mata o `cscript` e o popup **fica
   órfão na tela**; a chamada seguinte empilha mais um. Com um clicador em paralelo, `fecharSapGui`
   fechou a conexão em 1,4 s.
@@ -264,8 +269,10 @@ resposta.
   - **O critério é o título, `#32770` `SAP Logon` SEM a versão** — o pad é `SAP Logon 800`, e os dois
     aparecem no mesmo instante (`"SAP Logon" aos 1325ms; "SAP Logon 800" aos 1326ms`,
     `medicoes/raw/item60-warnonattach.json`). O `Static` com "script"/"Skript" entra como **reforço**,
-    para o caso de outro idioma mudar o título — o texto foi visto na captura de tela do item 34, mas
-    ainda **não** foi colhido campo a campo por sonda.
+    para o caso de outro idioma mudar o título. O conteúdo do diálogo, colhido **por sonda** em
+    05/09/2026 (item 62, e não mais de captura de tela): título `SAP Logon`, thread do pad,
+    `Button:&OK / Button:&Cancelar / Static:Um script está tentando acessar SAP GUI.` — e a janela
+    **principal** do pad também é `#32770`, o que faz do título o único separador.
   - **`sessoesAbertas` lê as janelas sempre que há processo** (antes só quando o ROT vinha vazio): o
     popup convive com uma conexão no ROT, e o `!sessoes.length` o escondia do diagnóstico.
   - **Ainda pendura até o timeout.** Este item deu ao vazio o NOME certo; falhar cedo (vigiar o popup
@@ -314,7 +321,7 @@ O que a linha do tempo da reprodução separou (lançamento pelo `sapshcut`, sem
 | pad fechado | `GetObject` **falha em 1,7 s** (sem entrada `SAPGUI`) | GUI fechado responde rápido, com `Err` |
 | 3,1 s | `GetObject` falha em 2,4 s | pad `13060` nascendo do lançador `36464`; **ainda não registrou** |
 | ~5 s → 40,1 s | a chamada fica **34,7 s presa** e volta com `con[0]/ses[0]` logada | o popup |
-| depois | 3,7 s · 19,7 s · timeout · timeout | pedágio a cada chamada; dois destravaram sozinhos (aberto, fila 62) |
+| depois | 3,7 s · 19,7 s · timeout · timeout | pedágio a cada chamada; dois "destravaram sozinhos" — ver o § seguinte |
 
 Ou seja: o atraso real do ROT existe e dura **segundos**; o resto é pedágio. E o "engine sem filhos"
 do relato de 04/09 era leitura da versão antiga da lib, que colapsava "sem entrada no ROT" e "engine
@@ -324,8 +331,36 @@ só nasceu e persistiu; o `SAPgui.exe` é o lançador e morre (§ anterior).
 ⚠ **Duas medições deste dia discordam do § "O ROT e os seus vazios":** com o pad **fechado** o
 `GetObject` falhou limpo em 1,7 s, e com o pad **aberto sem sessão** (o `saplogon` do dia anterior)
 respondeu em 3,0 s com engine de 0 conexões — não "consumiu o timeout inteiro". O que pendura é o
-popup, não a ausência de sessão. O que mudou entre 04/09 e 05/09 não foi medido; o pad do dia
-anterior **não pedia autorização**, o pad novo pedia até depois de a conexão ser fechada (fila 62).
+popup, não a ausência de sessão.
+
+### O popup NÃO destrava sozinho — quem destravava era uma pessoa
+
+Medido 05/09/2026 à noite (item 62; `medicoes/item62-pedagio-memoria.md`), com o pedágio religado e
+**ninguém na frente da máquina**: **12 chamadas, 12 diálogos, 0 destraves**. Nem sem conexão
+(3 × 45 s), nem com a conexão nascendo pelo `sapshcut`, nem com a sessão de pé. Os únicos
+fechamentos do vigia têm gesto por trás.
+
+O que cai junto: **idade do pad não é variável** — o mesmo `saplogon` que pedia autorização de manhã
+pede idêntico 12 h depois; e **atividade do pad não dispensa o diálogo** — o órfão sobreviveu à
+conexão inteira nascendo.
+
+Dois números para quem for vigiar o popup enquanto o `cscript` roda (fila 101): o diálogo aparece em
+**0,48–0,73 s** (11 medições com vigia de 150 ms — o 1,4 s do item 34 era piso de amostragem), e
+**órfão não bloqueia chamada nova**: com 5 diálogos de pé a chamada seguinte abre o sexto em ~0,6 s,
+na mesma thread do pad — o `MessageBox` roda seu próprio laço e o pad continua servindo COM enquanto
+pendura.
+
+O que explica os "destraves" de 05/09 de manhã: **o diálogo é um `#32770` comum, rouba o foco ao
+abrir, e o Enter aciona o botão default.** Contra-prova positiva: um `SendKeys {ENTER}` (sem tocar no
+botão) fechou o diálogo e a chamada respondeu em **7,2 s** com a sessão logada. Naquela manhã havia
+uma pessoa na máquina — quem fotografou o popup — e **não havia vigia de janelas**: o "o pad antigo
+não pedia autorização" era **inferência pelo tempo de resposta** (3,0 s), não observação do diálogo.
+Um Enter humano em ~2 s dá exatamente esse número.
+
+**A lição de método, que vale além deste canal:** ausência de popup **medida pelo relógio** não é
+ausência de popup. Enquanto ninguém olha as janelas, "respondeu rápido" e "alguém destravou" são o
+mesmo dado. Com uma pessoa na máquina, o canal GUI **não tem medição limpa** — o teclado dela entra
+no experimento.
 
 ## Dirigir a tela: passos declarativos
 
