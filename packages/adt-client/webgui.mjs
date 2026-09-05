@@ -1508,6 +1508,19 @@ export async function preencher(sessao, alvo, valor) {
 // Preenchendo VÁRIOS campos isso já acontece sozinho: o clique no campo seguinte tira o foco do
 // anterior — só o último fica pendente, e é dele que o `comandar` cuida.
 //
+// **E SÓ o `comandar` tinha esse problema.** Medido no s4h 758/250 em 05/09/2026 (item 55,
+// `sap-accelerate/work/POC_webgui_gestos_valores/`), o MESMO ciclo da SE16/T000 com a linha de base
+// repetida na rodada: `tecla('F8')`, `clicar` em outro campo, `clicar` num rótulo `<L>`, `clique`
+// cru por coordenada em área inerte, `abrirMenu` e `navegarMenu` deram TODOS "1 acertos" — nenhum
+// perde o valor, e por isso `publicarValores` não existe (nem precisa) em `clicar`/`tecla`.
+// São dois mecanismos: o gesto de MOUSE tira o foco e o `blur` publica (vale até quando o foco vai
+// ao `BODY`, e aí sai um POST isolado `[{post:"value/…",logic:"ignore"}]`); o gesto de TECLA NÃO
+// blura (medido com listener no campo) e ainda assim leva, porque o `vkey` sai endereçado ao
+// CONTROLE (`vkey/8/wnd[0]`) com o `value/` dele junto — ao contrário do `vkey/0/ses[0]` do
+// `submitOkCode`, que é da SESSÃO. A razão de fundo: `comandar` é o único gesto do canal que NÃO
+// é nativo — despacha um `KeyboardEvent` sintético NOUTRO elemento (o `ToolbarOkCode`, 0×0), então
+// o campo preenchido não perde o foco nem recebe evento algum.
+//
 // ⚠️ **OK-code que abre POPUP trava a janela principal.** Medido: `/15` (Shift+F3) no menu abre a
 // pergunta de logoff (`sap.its.getPopupCount()` 1) e daí o `okcd` de `wnd[0]` não responde mais —
 // o `/nSE16` seguinte não postou nada. Dirigir popup é `wnd[1]` (fila adt-client, item 23).

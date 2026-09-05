@@ -701,6 +701,45 @@ dispara. Bisseção: um `change` sintético **sem** `blur` não basta — o `blu
    `preencher` + `comandar` pareceu falhar quando na verdade tinha funcionado. Sem o controle
    positivo e sem um valor de filtro que EXISTE, o assert não distingue as hipóteses.
 
+### Os OUTROS gestos **não** tinham a armadilha — só o `comandar` (item 55)
+
+O § acima levanta a suspeita natural: se o `comandar` perdia o valor, quais outros gestos perdem?
+**Nenhum.** Medido no s4h 758/250 em 2026-09-05 (`sap-accelerate/work/POC_webgui_gestos_valores/`),
+com o **mesmo ciclo** do item 31 — SE16 sobre a T000, `MTEXT='Neduca'`, 1 das 5 linhas — e a linha
+de base repetida na mesma rodada (`comandar` cru sem valor = 5 acertos · `preencher` + `comandar`
+cru = 5 acertos · `preencher` + `acionar('btn[8]')` = 1 acerto):
+
+| gesto, com o campo preenchido | tela | leva o valor? |
+|---|---|---|
+| `tecla(s, 'F8')` | `T000 1 acertos` | **sim** |
+| `clicar` em **outro campo** | `T000 1 acertos` | **sim** |
+| `clicar` num **rótulo** `<L>` (`descer: false`) | `T000 1 acertos` | **sim** |
+| `clique` cru **por coordenada, em área inerte** (foco vai ao `BODY`) | `T000 1 acertos` | **sim** |
+| `abrirMenu` (e `abrirMenu` + `fecharMenu`) | `T000 1 acertos` | **sim** |
+| `navegarMenu('Programa > Executar')` | `T000 1 acertos` | **sim** |
+
+Nos que não executam sozinhos (`clicar`, `abrirMenu`) o executor foi o `comandar` **cru**
+(`publicarValores: false`) — que a linha de base mede perdendo o valor. Logo o "1 acerto" só pode
+ter vindo do gesto em teste.
+
+**São dois mecanismos, e o batch os separa** (bisseção com listener de `blur`/`change` no campo):
+
+* **gesto de MOUSE** — o foco sai do campo, o `blur` dispara, o `Change` publica. Vale **até** para
+  o clique em área inerte: o foco vai ao `BODY` e sai um POST isolado
+  `[{"post":"value/…","content":"…","logic":"ignore"}]`.
+* **gesto de TECLA** — o campo **não** perde o foco (nenhum `blur`) e o valor vai assim mesmo: o
+  `vkey` sai endereçado ao **controle** (`vkey/8/wnd[0]`) e leva o `value/` dele junto, ao contrário
+  do `vkey/0/ses[0]` do `submitOkCode`, que é da **sessão**.
+
+> **A regra, e por que só o `comandar` caía nela:** ele é o único gesto deste canal que **não é
+> nativo** — escreve o `value` do `ToolbarOkCode` (0×0) e despacha um `KeyboardEvent` sintético
+> **nesse outro elemento**, então o campo preenchido não perde o foco nem recebe evento. Todo o
+> resto é `Input.dispatchMouseEvent`/`dispatchKeyEvent` de verdade, e aí Chrome e renderer fazem o
+> trabalho sozinhos. Por isso `publicarValores` existe só no `comandar`, e não em `clicar`/`tecla`.
+
+⚠ O `change` **não discrimina**: apareceu nos três cenários da bisseção, inclusive no que perdeu.
+Quem discrimina é o `blur` ou o endereço do `vkey`.
+
 ### ⚠ OK-code que abre popup trava a `wnd[0]`
 
 `/15` (Shift+F3) no menu abre a pergunta de logoff: `sap.its.getPopupCount()` vira `1` e a partir
