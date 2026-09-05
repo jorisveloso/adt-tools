@@ -636,16 +636,70 @@ export async function transacional(sessao, { rotulo = 'rascunho', abrir, corpo, 
 }
 
 /**
- * Sobe o Chrome headless e devolve a sessão CDP `{ cfg, cmd, eventos, desfazer, fechar }` já
- * autenticada no `cfg` e com o polyfill armado. Quem abre FECHA (o `fechar` desfaz o que ficou
- * pendente, mata o processo e some com o perfil).
+ * Espera o Chrome apagar do disco o perfil temporário — o `rmSync` de uma tentativa só falha
+ * enquanto algum processo do grupo ainda segura arquivo lá dentro. Devolve `true` se saiu.
  */
-export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura = 1000, tetoMs = 30000, navegador, origemSegura = true, certificado = cfg?.certificado ?? null } = {}) {
+async function apagarPerfil(perfil, { tentativas = 10, intervaloMs = 200 } = {}) {
+  for (let i = 0; i < tentativas; i++) {
+    try { fs.rmSync(perfil, { recursive: true, force: true }); } catch { /* ainda segurado */ }
+    if (!fs.existsSync(perfil)) return true;
+    await espera(intervaloMs);
+  }
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A porta do CDP: EFÊMERA, e lida do arquivo que o Chrome escreve NO NOSSO PERFIL
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// **Medido em 05/09/2026** (fila `adt-client` item 65, `sap-accelerate/work/POC_webgui_porta/`):
+// com a porta FIXA em 9222 e um Chrome anterior ainda vivo, o Chrome novo **falha o bind e morre**,
+// mas o `GET /json/list` responde — do Chrome ANTIGO. A sessão "nova" se anexava à página VELHA sem
+// aviso nenhum: `window.__marca = 'SESSAO_A'` escrita na primeira sessão era lida pela segunda
+// (`anexouNaSessaoAntiga: true`, `medicoes/raw/porta-presa-antes.txt`). Duas "sessões" na MESMA
+// dynpro é pior que o erro que o item relatava: o `CDP não respondeu na porta 9222` só aparece
+// quando o antigo já fechou o listener; enquanto ele está de pé, a corrupção é silenciosa.
+//
+// A porta 0 tira a corrida da mesa: o SO dá uma porta livre e o Chrome escreve a porta REAL em
+// `<perfil>/DevToolsActivePort` (medido: 668 ms; dois Chromes simultâneos ganham 58176 e 58177, e
+// cada um enxerga só o próprio target). E como o arquivo é do NOSSO perfil, ele é a prova de que
+// quem subiu foi o NOSSO processo — se o Chrome morreu no bind, o arquivo não aparece e o erro sai
+// nomeando a porta ocupada, em vez de anexar na sessão de outro.
+const ARQUIVO_PORTA = 'DevToolsActivePort';
+
+/** Sonda `<perfil>/DevToolsActivePort` até o Chrome escrevê-lo por inteiro; devolve a porta real. */
+async function esperarPortaDoPerfil(perfil, { ate, saiu }) {
+  const arquivo = path.join(perfil, ARQUIVO_PORTA);
+  while (Date.now() < ate) {
+    try {
+      const txt = fs.readFileSync(arquivo, 'utf8');
+      // o Chrome escreve DUAS linhas (porta, caminho do ws) — sem a quebra, ainda está escrevendo
+      if (txt.includes('\n')) {
+        const p = Number(txt.split('\n')[0].trim());
+        if (Number.isInteger(p) && p > 0) return p;
+      }
+    } catch { /* ainda subindo */ }
+    if (saiu()) return null; // morreu antes de escrever: bind recusado ou Chrome que não sobe
+    await espera(100);
+  }
+  return null;
+}
+
+/**
+ * Sobe o Chrome headless e devolve a sessão CDP `{ cfg, cmd, eventos, desfazer, fechar, porta }` já
+ * autenticada no `cfg` e com o polyfill armado. Quem abre FECHA (o `fechar` desfaz o que ficou
+ * pendente, fecha o navegador e some com o perfil).
+ *
+ * `porta: 0` (o default) pede uma porta EFÊMERA ao SO — é o que faz várias sessões em série, ou
+ * duas ao mesmo tempo, não se atropelarem; ver o bloco acima. Passe um número só quando alguém de
+ * fora precisar se anexar num endereço conhecido, sabendo que aí a porta ocupada vira erro.
+ */
+export async function abrirNavegador(cfg, { porta = 0, largura = 1600, altura = 1000, tetoMs = 30000, navegador, origemSegura = true, certificado = cfg?.certificado ?? null } = {}) {
   const chrome = acharNavegador({ navegador });
   const cabecalho = autorizacao(cfg); // recusa ANTES de subir navegador nenhum
   const bandeirasCert = bandeirasDeCertificado(certificado); // recusa pino torto aqui, não na navegação
   const perfil = fs.mkdtempSync(path.join(os.tmpdir(), 'jbv-webgui-'));
-  passo(`webgui: subindo ${path.basename(chrome)} headless na porta ${porta}`);
+  passo(`webgui: subindo ${path.basename(chrome)} headless (porta ${porta || 'efêmera'})`);
   const proc = spawn(chrome, [
     '--headless=new', `--remote-debugging-port=${porta}`, `--user-data-dir=${perfil}`,
     '--no-first-run', '--no-default-browser-check', '--disable-gpu',
@@ -654,20 +708,33 @@ export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura
     `--window-size=${largura},${altura}`, 'about:blank',
   ], { detached: true, stdio: 'ignore' });
   proc.unref();
+  let saiu = false;
+  proc.on('exit', () => { saiu = true; });
 
-  // o CDP só responde depois que o listener sobe — sondar, em vez de dormir um número mágico
-  let alvo = null;
   const ate = Date.now() + tetoMs;
+  // a porta REAL sai do arquivo do NOSSO perfil — nunca de `/json/list`, que pode ser de outro Chrome
+  const portaReal = await esperarPortaDoPerfil(perfil, { ate, saiu: () => saiu });
+  if (!portaReal) {
+    try { proc.kill(); } catch { /* já morreu */ }
+    await apagarPerfil(perfil);
+    throw new Error(saiu
+      ? `webgui: o Chrome saiu sem abrir o CDP${porta ? ` — a porta ${porta} já está ocupada (outro Chrome ainda a segura); use a porta 0 (default), que pede uma livre ao SO` : ''}`
+      : `webgui: o Chrome não escreveu ${ARQUIVO_PORTA} no perfil em ${tetoMs} ms`);
+  }
+
+  // o listener já está de pé; falta a aba aparecer no /json/list
+  let alvo = null;
   while (Date.now() < ate && !alvo) {
-    await espera(500);
     try {
-      const lista = await (await fetch(`http://127.0.0.1:${porta}/json/list`)).json();
+      const lista = await (await fetch(`http://127.0.0.1:${portaReal}/json/list`)).json();
       alvo = lista.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
     } catch { /* ainda subindo */ }
+    if (!alvo) await espera(100);
   }
   if (!alvo) {
     try { proc.kill(); } catch { /* já morreu */ }
-    throw new Error(`webgui: CDP não respondeu na porta ${porta} em ${tetoMs} ms`);
+    await apagarPerfil(perfil);
+    throw new Error(`webgui: CDP não respondeu na porta ${portaReal} em ${tetoMs} ms`);
   }
 
   const ws = new WebSocket(alvo.webSocketDebuggerUrl);
@@ -725,14 +792,22 @@ export async function abrirNavegador(cfg, { porta = 9222, largura = 1600, altura
     for (const { rotulo, erro } of desfeito.filter((d) => !d.ok)) {
       aviso(`webgui: NÃO consegui desfazer "${rotulo}" — sobrou no sistema (${erro})`);
     }
+    // Fechar o NAVEGADOR, não a aba: medido em 05/09/2026 que o `proc.kill()` puro deixava
+    // renderer órfão segurando o perfil (84 pastas `jbv-webgui-*` no tmp e 3 chrome.exe vivos de
+    // sessões de horas antes). O `Browser.close` derruba o grupo inteiro — e NÃO responde, o
+    // navegador morre antes do retorno; o que volta pelo ws é `Inspector.detached`. Por isso o
+    // comando vai sem `await` e quem espera é o `exit` do processo.
+    cmd('Browser.close').catch(() => {});
+    const morreu = Date.now() + 3000;
+    while (!saiu && Date.now() < morreu) await espera(100);
     try { ws.close(); } catch { /* já fechado */ }
-    try { await fetch(`http://127.0.0.1:${porta}/json/close/${alvo.id}`); } catch { /* já foi */ }
     try { proc.kill(); } catch { /* já morreu */ }
-    await espera(300);
-    try { fs.rmSync(perfil, { recursive: true, force: true }); } catch { /* o Chrome ainda segura */ }
+    if (!await apagarPerfil(perfil)) {
+      aviso(`webgui: o perfil temporário ${perfil} NÃO saiu do disco — algum processo do Chrome ainda o segura. Apague à mão.`);
+    }
     return { desfeito };
   };
-  return { cfg, cmd, eventos, desfazer, fechar, porta, perfil };
+  return { cfg, cmd, eventos, desfazer, fechar, porta: portaReal, perfil };
 }
 
 // ---------- ler a tela ----------

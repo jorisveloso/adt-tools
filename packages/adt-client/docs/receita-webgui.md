@@ -213,12 +213,40 @@ try {
   if (depois.mensagem?.tipo === 'ERROR') throw new Error(depois.mensagem.texto);
   await print(s, 'tela.png');
 } finally {
-  await s.fechar();                            // quem abre fecha (mata o Chrome e o perfil temporário)
+  await s.fechar();                            // quem abre fecha (Browser.close + o perfil temporário)
 }
 ```
 
 **O assert NÃO está aí.** Statusbar e print não provam gravação — fecha-se com `dataPreview` /
 `readTable` em **outra LUW** ([receita-ciclo-escrita-verificacao.md](receita-ciclo-escrita-verificacao.md)).
+
+### ⚠ Uma sessão por Chrome, uma PORTA por sessão — e o anexo silencioso (item 65)
+
+`abrirNavegador` sobe com **`porta: 0`** (o default): o SO dá uma porta livre e o Chrome escreve a
+porta REAL em `<perfil>/DevToolsActivePort`, que é de onde a lib a lê. Parece detalhe de plumbing;
+não é. Até 05/09/2026 a porta era **9222 fixa**, e o que isso produzia está medido em
+`sap-accelerate/work/POC_webgui_porta/medicoes/item65-porta.md`:
+
+- com a 9222 ainda ocupada por um Chrome **vivo**, o Chrome novo falha o bind e morre — **mas o
+  `GET /json/list` responde, do Chrome ANTIGO**. A sessão "nova" se anexava à página VELHA sem
+  aviso nenhum: `window.__marca = 'SESSAO_A'` escrita na primeira sessão era lida pela segunda.
+  Duas sessões dirigindo a MESMA dynpro, caladas;
+- o `CDP não respondeu na porta 9222` que se via de vez em quando era o caso **benigno** — o antigo
+  já tinha fechado o listener. O caso mau não dava erro;
+- e o `fechar()` matava só o processo pai: sobraram **85 pastas `jbv-webgui-*` no `%TEMP%`, 7,1 GB**,
+  com 10 `chrome.exe` órfãos ainda segurando arquivo.
+
+Duas instâncias simultâneas com porta efêmera ganham portas distintas e cada `/json/list` mostra só
+o próprio target — medido. E o `fechar` passou a mandar **`Browser.close`** (derruba o grupo de
+processos, 10 → 0, e solta o perfil) antes do `kill` de fallback, com o `rmSync` em até 10
+tentativas; o que ainda assim não sair vira **aviso alto em stderr com o caminho**, em vez de sumir
+num `catch {}` vazio.
+
+⚠ `Browser.close` **não responde** — o navegador morre antes do retorno, e o que volta pelo ws é
+`Inspector.detached / Render process gone`. Quem o mandar com `await` espera para sempre.
+
+Passar `porta: <número>` continua valendo para quem precisa de um endereço conhecido (anexar um
+DevTools de fora, por exemplo) — mas aí a porta ocupada vira **erro nomeado**, nunca anexo.
 
 ### Entrar na tela já preenchida
 
