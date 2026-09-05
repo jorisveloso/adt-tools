@@ -94,7 +94,7 @@ export const OKCODES = {
   'btn[3]': { nome: 'Voltar', apelidos: [], tecla: 'F3',
     medido: 'SXD 816/100 03/09/2026 — SE38: id M0:56::btn[3]' },
   'btn[8]': { nome: 'Executar', apelidos: [], tecla: 'F8',
-    medido: 'SXD 816/100 03/09/2026 — SE38: id M0:48::btn[8], title " (F8)", lsdata {"0":"Executar"}' },
+    medido: `SXD 816/100 03/09/2026 — SE38: id M0:48::btn[8], title " (F8)", lsdata {"0":"Executar"}. s4h 758/250 05/09/2026 (fila 36) — tela de seleção do RSPARAM, id M0:50::btn[8]: executou o report em 10 de 10 sessões, 1,0-1,5 s até a lista ALV (85 -> 960 ct), com e sem esperarResposta` },
   'btn[11]': { nome: 'Gravar', apelidos: [], tecla: 'Ctrl+S',
     medido: 'SXD 816/100 03/09/2026 — Writer da J1B1N: M0:50::btn[11] criou a NF 0000000082, confirmada em outra LUW' },
   'btn[12]': { nome: 'Cancelar', apelidos: [], tecla: 'Escape',
@@ -817,6 +817,12 @@ export async function clique(sessao, p) {
  * Clica um alvo (`{ id }`, `{ seletor }` ou `{ okcode }`). Com `{ esperarResposta: true }` devolve
  * `mudou: false` quando a tela ficou IGUAL — que é como se descobre que a ação não pegou (é assim
  * que `btn[15]` e `btn[12]` se denunciam neste canal).
+ *
+ * ⚠️ **Sem `esperarResposta` este clique não OLHA o resultado** — ele volta na hora, tenha a ação
+ * pegado ou não. Medido (fila 36, s4h 758/250 05/09/2026): um `clicar` puro no `btn[8]` da tela de
+ * seleção do RSPARAM ficou 65 s cego numa tela que o renderer não terminou de montar (sem o menu
+ * suspenso, `document.title` vazio); com `acionar`, o `mudou: false` teria denunciado em 30 s.
+ * Quem precisa SABER que a ação pegou usa `acionar` e lê o `mudou`.
  */
 export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false } = {}) {
   const ate = Date.now() + tetoMs;
