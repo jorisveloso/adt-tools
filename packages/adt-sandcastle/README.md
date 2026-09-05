@@ -40,6 +40,8 @@ fila vive:
 
 - só entra o que **mudou durante a sessão** (mtime ≥ início, ou sujeira que não existia antes) —
   sujeira anterior à tarefa não é da tarefa e fica como estava;
+- **sem nada a commitar, ainda faz push** se há commits locais à frente do upstream — o agente
+  costuma commitar a fila ele mesmo e deixar tudo só local (12 dos 27 itens da 1ª execução);
 - mensagem `chore(fila): <fila> #<n> <fechado|bloqueado|adiar> — <título>` com a sessão no corpo;
   o commit "de verdade", com a mensagem que explica a mudança, continua sendo do agente;
 - `git push` só se há remote; push que falha (sem rede, sem upstream) vira aviso, não derruba o loop.
@@ -87,4 +89,9 @@ no fim da resposta; sem ele, da última notinha do item na fila; sem ela, do mot
 - Log por fila em `logs/<fila>.log` (ignorado pelo git). A sessão de cada item fica em
   `~/.claude/projects/…/<sessionId>.jsonl` — o resumo no fim imprime o id; `claude --resume <id>`
   reabre.
-- Ainda não rodou ponta a ponta: a primeira execução real é `--fila adt-client --max 1`.
+- **Limite de uso do Claude** ("You've hit your session limit · resets 7:50pm"): o item não
+  falhou e **não é adiado** — o runner espera até a hora do reset (+1 min) e tenta o mesmo item.
+  Sem isso a 1ª execução (05/09/2026) adiou 47 itens em 15 min sem fazer nada. O limite de 5 h
+  rende ~25 itens por janela; "até acabar" atravessa janelas parado.
+- 1ª execução ponta a ponta em 05/09/2026: 66 sessões na `adt-client`, 24 fechados, 2 bloqueados
+  (53 e 30 esperam o Joris), ~12–29 min por item.

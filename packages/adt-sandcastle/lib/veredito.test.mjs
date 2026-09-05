@@ -1,7 +1,7 @@
 // veredito.test.mjs — o veredito do runner é PURO: item parseado → ação. Sem disco, sem sandcastle.
 import { test, expect } from 'vitest';
 import { parseFila } from 'adt-todo';
-import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve } from './veredito.mjs';
+import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite } from './veredito.mjs';
 
 test('tituloBreve corta no "— detalhe" e no tamanho', () => {
   expect(tituloBreve('Anomalia do ROT — medido em 04/09: ~40 s depois')).toBe('Anomalia do ROT');
@@ -71,4 +71,27 @@ test('lerArgs: padrões e sobrescrita', () => {
   expect(lerArgs(['--fila', 'adt-query', '--max', '1', '--dry'])).toMatchObject({ fila: 'adt-query', max: 1, dry: true });
   expect(() => lerArgs(['--max', '0'])).toThrow(/--max/);
   expect(() => lerArgs(['--x'])).toThrow(/desconhecido/);
+});
+
+test('umaLinha: a quebra de linha vira separador — a nota da fila é uma linha só', () => {
+  expect(umaLinha('claude-code exited with code 1:\nYou\'ve hit your session limit')).toBe(
+    "claude-code exited with code 1: · You've hit your session limit",
+  );
+});
+
+test('esperaDoLimite: só erro de limite espera; a hora do reset vem da mensagem, com 1 min de folga', () => {
+  expect(esperaDoLimite(null)).toBeNull();
+  expect(esperaDoLimite('idle timeout after 1800s')).toBeNull();
+  const agora = new Date(2026, 8, 5, 19, 32, 0).getTime(); // 05/09/2026 19:32 local
+  const e = esperaDoLimite("claude-code exited with code 1: · You've hit your session limit · resets 7:50pm (America/Sao_Paulo)", { agora });
+  expect(e).toBe(18 * 60_000 + 60_000);
+  // hora do reset já passou hoje → amanhã
+  const madrugada = esperaDoLimite('rate limit · resets 7:50pm', { agora: new Date(2026, 8, 5, 20, 0, 0).getTime() });
+  expect(madrugada).toBe((23 * 60 + 50) * 60_000 + 60_000);
+  // sem hora legível → padrão
+  expect(esperaDoLimite('rate_limit rejected', { padraoMs: 5 })).toBe(5);
+});
+
+test('lerArgs: o `--` que o pnpm repassa é ignorado', () => {
+  expect(lerArgs(['--', '--dry']).dry).toBe(true);
 });

@@ -27,7 +27,7 @@ import { run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { claudeCodeHost } from './agente.mjs';
 import { listarFilas, next, itemDaFila, adiar, status, FILAS_DIR } from 'adt-todo';
-import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve } from './veredito.mjs';
+import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite } from './veredito.mjs';
 import { repoDaFila, sujos, fecharNoGit } from './git.mjs';
 
 const RAIZ = fileURLToPath(new URL('../../../', import.meta.url)); // raiz do monorepo adt-tools
@@ -100,7 +100,19 @@ for (const fila of filas) {
       sessao = res.iterations[0]?.sessionId ?? null;
       stdout = res.stdout ?? '';
     } catch (e) {
-      erro = e?.message ?? String(e);
+      erro = umaLinha(e?.message ?? String(e));
+    }
+
+    // 0. Limite de uso do Claude: o item não falhou — espera o reset e tenta O MESMO item de novo.
+    //    Adiar aqui esvaziaria a fila em cascata sem fazer nada (05/09/2026: 47 adiados em 15 min).
+    const espera = esperaDoLimite(erro);
+    if (espera !== null) {
+      tentados.delete(alvo.n);
+      r.sessoes--;
+      const ate = new Date(Date.now() + espera).toTimeString().slice(0, 5);
+      console.log(`${hora()} ⏸ limite de uso do Claude — espero até ${ate} (local) e retomo o item ${alvo.n}: ${erro}`);
+      await new Promise((ok) => setTimeout(ok, espera));
+      continue;
     }
 
     // 1. O veredito sai do ARQUIVO, não do que o agente disse.
@@ -122,7 +134,9 @@ for (const fila of filas) {
         mensagem: `chore(fila): ${fila} #${alvo.n} ${v.acao} — ${tituloBreve(alvo.titulo, 60)}\n\nadt-sandcastle${ref}`,
       });
       const nome = path.basename(repo.replace(/[\\/]+$/, ''));
-      if (g.commit) git.push(`${nome} ${g.commit}${g.push === 'ok' ? ' push ok' : g.push === 'sem remote' ? ' (sem remote)' : ' PUSH FALHOU'}`);
+      const pushTxt = g.push === 'ok' ? 'push ok' : g.push === 'sem remote' ? '(sem remote)' : 'PUSH FALHOU';
+      if (g.commit) git.push(`${nome} ${g.commit} ${pushTxt}`);
+      else if (g.aFrente > 0) git.push(`${nome} ${pushTxt} (${g.aFrente} commit(s) do agente)`);
       else if (g.erro) git.push(`${nome}: ${g.erro}`);
     }
 

@@ -58,23 +58,38 @@ export function mudadosNaSessao({ sujosAgora, sujosAntes, inicioMs, mtimeDe }) {
 }
 
 /**
- * Commita o que mudou durante a sessão e publica. Devolve
- * { repo, arquivos, commit: sha|null, push: 'ok'|'sem remote'|'falhou'|null, erro? }.
+ * Commita o que mudou durante a sessão e publica. Sem nada a commitar, ainda publica o que o
+ * agente commitou e deixou local (`aFrente` > 0). Devolve
+ * { repo, arquivos, commit: sha|null, aFrente, push: 'ok'|'sem remote'|'falhou'|null, erro? }.
  */
 export async function fecharNoGit(repo, { inicioMs, sujosAntes = [], mensagem }) {
-  const res = { repo, arquivos: [], commit: null, push: null, erro: null };
+  const res = { repo, arquivos: [], commit: null, aFrente: 0, push: null, erro: null };
   if (!(await ehRepo(repo))) { res.erro = 'não é repositório git'; return res; }
 
   const mtimeDe = (p) => { try { return fs.statSync(path.join(repo, p)).mtimeMs; } catch { return null; } };
   res.arquivos = mudadosNaSessao({ sujosAgora: await sujos(repo), sujosAntes, inicioMs, mtimeDe });
-  if (!res.arquivos.length) return res;
+  if (!res.arquivos.length) {
+    // Nada sobrou para o runner — mas o agente pode ter commitado tudo (inclusive a fila) e
+    // deixado os commits SÓ locais. Medido em 05/09/2026: 12 dos 27 itens ficaram sem push assim.
+    res.aFrente = await commitsAFrente(repo);
+    return res.aFrente > 0 ? publicar(repo, res) : res;
+  }
 
   const add = await git(repo, ['add', '-A', '--', ...res.arquivos]);
   if (!add.ok) { res.erro = `git add: ${add.erro}`; return res; }
   const commit = await git(repo, ['commit', '-q', '-m', mensagem]);
   if (!commit.ok) { res.erro = `git commit: ${commit.erro || commit.out}`; return res; }
   res.commit = (await git(repo, ['rev-parse', '--short', 'HEAD'])).out.trim();
+  return publicar(repo, res);
+}
 
+/** Quantos commits locais o upstream ainda não tem (0 se não há upstream). */
+export async function commitsAFrente(repo) {
+  const r = await git(repo, ['rev-list', '--count', '@{u}..HEAD']);
+  return r.ok ? Number(r.out.trim()) || 0 : 0;
+}
+
+async function publicar(repo, res) {
   const remotes = (await git(repo, ['remote'])).out.trim();
   if (!remotes) { res.push = 'sem remote'; return res; }
   const push = await git(repo, ['push']);

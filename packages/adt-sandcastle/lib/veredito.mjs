@@ -25,6 +25,34 @@ export function veredito(item, { erro } = {}) {
   };
 }
 
+/** Uma mensagem de erro em UMA linha — a nota da fila é uma linha; o que vem depois da quebra
+ * virava linha solta no markdown e o motivo ficava truncado (medido em 05/09/2026). */
+export function umaLinha(s) {
+  return String(s ?? '').replace(/\s*\r?\n\s*/g, ' · ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * A sessão morreu no LIMITE de uso do Claude ("You've hit your session limit · resets 7:50pm")?
+ * Então o item NÃO falhou — nem pode ser adiado: adiar em cascata esvazia a fila em minutos sem
+ * fazer nada (05/09/2026: 47 itens adiados em 15 min). Devolve quantos ms esperar até o reset
+ * (+1 min de folga), ou null se o erro não é de limite. Sem hora legível, espera `padraoMs`.
+ */
+export function esperaDoLimite(erro, { agora = Date.now(), padraoMs = 10 * 60_000 } = {}) {
+  const txt = String(erro ?? '');
+  if (!/(session|usage|rate)[ -]?limit|hit your .*limit|rate_limit/i.test(txt)) return null;
+  const m = txt.match(/resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (!m) return padraoMs;
+  let h = Number(m[1]);
+  const min = Number(m[2] ?? 0);
+  const ampm = (m[3] ?? '').toLowerCase();
+  if (ampm === 'pm' && h < 12) h += 12;
+  if (ampm === 'am' && h === 12) h = 0;
+  const alvo = new Date(agora);
+  alvo.setHours(h, min, 0, 0);
+  if (alvo.getTime() <= agora) alvo.setDate(alvo.getDate() + 1);
+  return alvo.getTime() - agora + 60_000;
+}
+
 /** Quais filas rodar: uma pelo nome, ou todas (ordem alfabética — a mesma da fila "ativa"). */
 export function escolherFilas(todas, nome) {
   const nomes = todas.map((f) => f.nome);
@@ -40,6 +68,7 @@ export function lerArgs(argv, padrao = {}) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const v = () => argv[++i];
+    if (a === '--') continue; // `pnpm start -- --dry` repassa o `--` literal
     if (a === '--fila') o.fila = v();
     else if (a === '--max') o.max = Number(v());
     else if (a === '--modelo') o.modelo = v();
