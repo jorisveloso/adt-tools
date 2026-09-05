@@ -507,12 +507,27 @@ test('menu: o vocabulário lsdata do POMNI — rótulo, atalho, submenu e iníci
   expect(criar.inicioDeGrupo).toBe(false);
 });
 
-test('menu: habilitação sai do ARIA, e "a tela não disse" NÃO é "habilitado"', () => {
-  // medido: aria-disabled="false" em 20 dos 121 itens, AUSENTE nos outros 101. Ausente é null.
+test('menu: habilitação sai do lsdata[5] — ausente é HABILITADO, e o ARIA "false" é só o realce', () => {
+  // Medido no item 48 (s4h 758/250, 05/09/2026), 279 itens de 5 telas: os 7 desabilitados trazem
+  // `5: false`; os 272 habilitados omitem o `5`. Estes três `lsdata` são REAIS da medição.
+  const gravar = interpretarItemDeMenu({ // SU01 > Usuário > Gravar — cinza
+    id: 'wnd[0]/mbar/menu[0]/menu[4]',
+    lsdata: { 1: 'Gravar', 5: false, 18: { SID: 'wnd[0]/mbar/menu[0]/menu[4]', Type: 'GuiMenu' }, 19: 'Gravar', x: 0 },
+    desabilitado: 'true',
+  });
+  expect(gravar).toMatchObject({ rotulo: 'Gravar', habilitado: false });
+
+  // ⚠️ ausência de `aria-disabled` é o caso NORMAL (101 dos 121 itens da SE38): habilitado.
   const semAria = interpretarItemDeMenu({ id: 'wnd[0]/mbar/menu[0]', lsdata: { 1: 'Programa' }, desabilitado: null });
-  expect(semAria.habilitado).toBe(null);
+  expect(semAria.habilitado).toBe(true);
+
+  // ⚠️ `aria-disabled="false"` é o item REALÇADO do popup (`urMnuRowOn`), não uma habilitação —
+  // ler habilitação daí era ler o realce. Aqui ele apenas não contradiz o `lsdata`.
   expect(interpretarItemDeMenu({ id: 'x', lsdata: {}, desabilitado: 'false' }).habilitado).toBe(true);
+
+  // as duas fontes concordaram em 7/7; se um dia discordarem, DESABILITADO ganha.
   expect(interpretarItemDeMenu({ id: 'x', lsdata: {}, desabilitado: 'true' }).habilitado).toBe(false);
+  expect(interpretarItemDeMenu({ id: 'x', lsdata: { 5: false }, desabilitado: null }).habilitado).toBe(false);
 });
 
 test('menu: o caminho aceita string com ">" ou lista, e recusa vazio', () => {

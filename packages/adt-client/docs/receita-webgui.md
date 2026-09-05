@@ -769,12 +769,15 @@ wnd[0]/mbar/menu[5]/menu[3]            Sistema > Serviços
 wnd[0]/mbar/menu[5]/menu[3]/menu[0]    Sistema > Serviços > Reporting
 ```
 
-### O vocabulário `lsdata` do `POMNI` — 121 itens, sete índices, nenhum sobrando
+### O vocabulário `lsdata` do `POMNI` — oito índices, nenhum sobrando
+
+Os sete primeiros do item 26 (121 itens da SE38); o `5` entrou no item 48 (279 itens, 5 telas).
 
 | índice | o que é | cobertura |
 |---|---|---|
 | `1` | o rótulo | 121/121 |
 | `4` | `true` = há uma **linha separadora logo acima** (início de grupo) — provado por posição `y` | 14 |
+| `5` | `false` = item **DESABILITADO**; ausente = habilitado | 7 de 279 |
 | `6` | `true` = tem submenu | 26 |
 | `7` | o id do popup filho — **volátil** | 26 |
 | `15` | o atalho (`F5`, `CTRL_F3`, `ESCAPE`) | 29 |
@@ -782,6 +785,38 @@ wnd[0]/mbar/menu[5]/menu[3]/menu[0]    Sistema > Serviços > Reporting
 | `19` | o rótulo de novo — igual ao `1` | 121/121 |
 
 `lsdata[6] === true` ⟺ existe `lsdata[7]` ⟺ `aria-haspopup="true"`, 1:1 nos 121.
+
+### O item DESABILITADO: `lsdata[5] === false` — e o ARIA engana
+
+Medido no item 48 (s4h 758/250, 05/09/2026), 279 itens de 5 telas — SE38, SAP Easy Access, SE16,
+SM37, SU01. **A SE38 não tem nenhum item cinza**; as outras quatro têm 7 no total (SU01 "Usuário >
+Gravar", Easy Access "Processar > Criar ligação no desktop", …). Os 7 trazem, sempre juntos:
+
+```
+lsdata[5] === false   ·   aria-disabled="true"   ·   class="urMnuRowDsbl…"
+```
+
+e os 272 habilitados **omitem o `5`** — o `lsdata` só transporta o que difere do default, como já
+fazia com `4` e `6`. Por isso `interpretarItemDeMenu` lê a habilitação do **`lsdata[5]`**, ausente
+é `habilitado: true`, e não há mais `null`.
+
+⚠ **`aria-disabled="false"` NÃO quer dizer "habilitado".** Ele aparece só no item **realçado** de
+cada popup — 47/47 batem com a classe `urMnuRowOn`, nas 5 telas. Quem lia habilitação do ARIA
+estava lendo o realce; era isso que fazia o `"true"` nunca aparecer na SE38 (nenhum item cinza lá).
+
+⚠ **O cinza não está na cor.** A cor computada do item desabilitado é a mesma do habilitado
+(`rgb(50,54,58)` em todos os nós da árvore, os dois). A única marca é a classe `urMnuRowDsbl` — não
+adianta procurar item desabilitado por `getComputedStyle`.
+
+**O que "desabilitado" faz**, medido no MESMO popup ("Processar", do Easy Access): clicar no cinza
+deixa o menu **aberto** e o carimbo **igual**; clicar no irmão habilitado **fecha** o menu e muda o
+carimbo. O clique é engolido — por isso `navegarMenu` **lança** ao topar com um item desabilitado,
+em vez de esperar 8 s por filhos que nunca vêm:
+
+```
+webgui: navegarMenu — "Criar ligação no desktop" está DESABILITADO nesta tela
+        (wnd[0]/mbar/menu[1]/menu[3]); o clique não faria nada
+```
 
 ### ⚠ Cinco armadilhas, todas silenciosas
 
@@ -820,9 +855,6 @@ canal:
 
 ### O que **ainda não** está medido
 
-- **Item de menu desabilitado nunca apareceu.** `aria-disabled` veio `"false"` em 20 dos 121 e
-  **ausente** nos outros 101 — nenhum `"true"`. Por isso `interpretarItemDeMenu` devolve
-  `habilitado: null` para "a tela não disse": `null` **não** é "habilitado" (fila item 48).
 - **O menu não tem comando derivado para a via HTTP pura** (§ "O protocolo do ITS"). O `POMNI` não
   publica `lsevents` (null em 121/121); quem publica o `Select` é o `POMN` pai —
   `{"1":"action/4","2":true}`, e `action/4` está na lista dos ainda não postados (fila item 49).

@@ -1598,6 +1598,7 @@ export const daBarraDeMenu = (id) => /^wnd\[\d+\]\/mbar\/menu\[\d+\]/.test(Strin
  * |---|---|---|
  * | `1`  | o rótulo | 121/121 |
  * | `4`  | `true` = há uma linha SEPARADORA logo acima (início de grupo) | 14 |
+ * | `5`  | `false` = item DESABILITADO — só aparece quando falso (item 48) | 7 em 279 |
  * | `6`  | `true` = tem submenu — bate 1:1 com `aria-haspopup` e com o índice `7` | 26 |
  * | `7`  | o id do popup FILHO (`mnu0_494`) — **volátil**, muda a cada render | 26 |
  * | `15` | o atalho (`F5`, `CTRL_F3`, `ESCAPE`) | 29 |
@@ -1618,9 +1619,14 @@ export function interpretarItemDeMenu(bruto) {
     atalho: typeof l['15'] === 'string' ? l['15'] : null,
     submenu: l['6'] === true,
     inicioDeGrupo: l['4'] === true,
-    // ⚠️ habilitação sai do ARIA, não do `lsdata` — a mesma regra do checkbox (§ "`lsdata` é o
-    // estado que o SERVIDOR mandou"). `null` é "a tela não disse", NÃO é "habilitado".
-    habilitado: bruto?.desabilitado == null ? null : bruto.desabilitado !== 'true',
+    // A habilitação sai do `lsdata[5]`, NÃO do ARIA (item 48, s4h 758/250, 05/09/2026). Medido em
+    // 279 itens de 5 telas: os 7 desabilitados trazem `5: false` + `aria-disabled="true"` +
+    // classe `urMnuRowDsbl`; os 272 habilitados OMITEM o `5` — o `lsdata` só transporta o que
+    // difere do default, como já fazia com `4` e `6`. Por isso "ausente" é habilitado, e não há
+    // mais `null` aqui.
+    // ⚠️ `aria-disabled="false"` NÃO quer dizer "habilitado": ele aparece só no item REALÇADO de
+    // cada popup (`urMnuRowOn`), 47/47 nas 5 telas. Ler habilitação do ARIA era ler o realce.
+    habilitado: !(l['5'] === false || bruto?.desabilitado === 'true'),
     nivel: String(bruto?.id ?? '').split('/menu[').length - 2,
   };
 }
@@ -1711,6 +1717,13 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, tet
     const alvo = acharItemDeMenu(irmaos, rotulo);
     if (!alvo) {
       throw new Error(`webgui: navegarMenu — "${rotulo}" não está sob ${prefixo}. Tenho: ${irmaos.map((i) => i.rotulo).join(' | ')}`);
+    }
+    // ⚠️ item DESABILITADO: o clique é ENGOLIDO — medido no mesmo popup (SAP Easy Access,
+    // "Processar"), o cinza deixa o menu ABERTO e o carimbo igual, enquanto o irmão habilitado
+    // fecha o menu e muda a tela. Sem esta guarda a falha seria a mais silenciosa deste canal:
+    // o percurso esperaria 8 s por filhos que nunca vêm e devolveria "zero filhos".
+    if (!alvo.habilitado) {
+      throw new Error(`webgui: navegarMenu — "${alvo.rotulo}" está DESABILITADO nesta tela (${alvo.id}); o clique não faria nada`);
     }
     const ultimo = n === partes.length - 1;
     if (ultimo && !alvo.submenu && aciona) {
