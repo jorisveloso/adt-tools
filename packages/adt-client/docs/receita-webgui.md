@@ -655,7 +655,7 @@ oItsParams:{…code:'vkey/0/ses[0]',submit:true,type:'GuiOKCodeField'}, oUrParam
 ### O OK-code **leva** o que foi digitado — o que faltava era o `blur` (item 31)
 
 **Medido no s4h 758/250 em 2026-09-04**, cada cenário em sessão nova, com o batch lido do CDP
-(`Network.requestWillBeSent`, não hook no XHR — ver a armadilha abaixo). Alvo: tela de seleção da
+(`Network.requestWillBeSent` — o hook no XHR dá a mesma leitura, item 56). Alvo: tela de seleção da
 SE16 sobre a **T000**, filtro `MTEXT = 'Neduca'` — 1 das 5 linhas, então a contagem do título separa
 os três desfechos sem ambiguidade.
 
@@ -692,14 +692,47 @@ dispara. Bisseção: um `change` sintético **sem** `blur` não basta — o `blu
 
 ⚠️ **Duas armadilhas de MEDIÇÃO, pagas nesta rodada** (valem para qualquer medida neste canal):
 
-1. **Hook no `XMLHttpRequest` não vê todo o tráfego.** Um cenário chegou a mandar `T000` ao
-   servidor com **zero** `value/` capturado pelo hook — a conclusão que sairia dali seria falsa.
-   O que vê tudo é o CDP: `sessao.eventos` filtrado por `Network.requestWillBeSent` com `postData`.
+1. ~~**Hook no `XMLHttpRequest` não vê todo o tráfego.**~~ **Isto estava errado** — ver o § abaixo
+   (item 56): não há canal invisível, o hook viu tudo o que havia. A armadilha verdadeira é
+   **estado do servidor contaminando o cenário seguinte**.
 2. **"Ficou na mesma tela" não é "não executou".** Com um filtro que não casa (`MTEXT='250'`), o
    caminho que sabidamente leva valores (o **botão**) devolve a MESMA tela e a mesma statusbar
    ("Não foi encontrada nenhuma entrada em tabela para chave indicada") do caminho em teste — e
    `preencher` + `comandar` pareceu falhar quando na verdade tinha funcionado. Sem o controle
    positivo e sem um valor de filtro que EXISTE, o assert não distingue as hipóteses.
+
+### O `value/` só sai quando o valor **mudou** — e a SE16 reabre com o valor de ontem (item 56)
+
+A armadilha 1 acima ("hook no XHR não vê todo o tráfego") **era falsa** e foi desmentida por
+medição no s4h 758/250 em **2026-09-05**
+(`sap-accelerate/work/POC_webgui_okcode_valores/medicoes/item56-hook-xhr.md`). Um hook amplo
+(`xhr.send`, `fetch`, `sendBeacon`, `WebSocket.send`, `form.submit`) lido em **todos** os contextos
+de execução deu **exatamente a mesma leitura do CDP** nos dois cenários — inclusive no que
+"vazava": lá o CDP **também** não viu `value/` nenhum. Não há canal invisível. Bate com o fonte:
+`webgui_min.js` tem 7 `XMLHttpRequest`, **zero** `fetch(`, **zero** `sendBeacon`, **zero**
+`.submit()`, e o batch sai por um XHR singleton.
+
+O que realmente acontecia são duas coisas que continuam valendo para qualquer medida aqui:
+
+> **A lei do `value/`:** o renderer publica `value/<SID>` quando o valor **atual** difere do que o
+> servidor mandou naquela dynpro. Valor igual → nada no fio, e está **certo** (o servidor já tem).
+
+Medido com a variável isolada, cinco cenários com previsão declarada antes, cinco bateram: digitar
+o mesmo valor que veio + Enter → **não** publica; digitar valor diferente + Enter → publica;
+digitar `ZZZZ` e **voltar** ao valor original + Enter → **não** publica (é comparação com o estado,
+não "houve digitação"); e o `blur` do `comandar({ publicarValores: true })` obedece à mesma lei.
+
+> **Sessão nova do ITS não é estado limpo.** A SE16 reabre com a **última tabela do usuário já no
+> campo** — `/nex` e uma URL nova não limpam isso. Dois cenários seguidos com o mesmo valor **não
+> são independentes**: o segundo herda o resultado do primeiro, avança a tela sem mandar nada, e
+> parece um vazamento de instrumento. O contrafactual que fecha: **não digitar nada e só dar
+> Enter** chega à mesma tela, com zero `value/` no fio.
+
+Na prática, ao medir este canal: leia o que o servidor mandou no campo
+(`document.getElementById(id).value` logo na abertura) e **use um valor diferente por cenário**.
+O CDP segue sendo o instrumento preferido — não por ver mais tráfego, mas porque é externo à
+página (sobrevive à troca de documento, que mata o `window.__…` do hook) e o `initiator.stack`
+aponta a linha do `webgui_min.js` que originou o POST.
 
 ### Os OUTROS gestos **não** tinham a armadilha — só o `comandar` (item 55)
 
