@@ -13,6 +13,7 @@ import {
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
   itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
+  indiceDoNo, arvoreDosBrutos, arvore, batchExpandirNo, batchAcionarNo, acharNoDaArvore,
 } from './its.mjs';
 
 const SHELL = `<html><head><script>var moin = "FF671392BF705DEF";</script></head><body>
@@ -631,4 +632,62 @@ test('its: acharCaminhoDeMenu desce por rótulo pelos filhos diretos — acento 
   expect(acharCaminhoDeMenu(itens, 'Sistema > Serviços').filhos.map((f) => f.rotulo)).toEqual(['Reporting', 'Batch input']);
   // rótulo que existe em OUTRO ramo não vale: os candidatos são só os filhos diretos
   expect(() => acharCaminhoDeMenu(itens, 'Programa > Reporting')).toThrow(/"Reporting" não está sob wnd\[0\]\/mbar\/menu\[0\]/);
+});
+
+// ---------- a ÁRVORE do SAP Easy Access (item 50) ----------
+// Copiado do delta do SMEN do s4h 758/250 de 05/09/2026, reduzido a 5 nós
+// (POC_webgui_arvore/medicoes/raw/a-smen-boot.xml): o container `STCS` com o `nodeindexes`, e os
+// três controles de cada nó — MG (rótulo), L (ícone) e TV (o texto, com o rótulo no `lsdata[0]`).
+const NO_TV = (n, rotulo) => `<span ct="TV" lsdata='{"0":"${rotulo}","2":false,"7":"INHERIT","14":true,"15":true,"17":{"ctmenu":true,"focusable":"X"}}' id="tree#C105#${n}#1#1#i" role="button">${rotulo}</span>`;
+const NO_MG = (n, rotulo) => `<table ct="MG" lsdata='{"1":true,"4":{"m":{"d":[0],"e":["n","1"]}},"x":0}' id="tree#C105#${n}#1#mg" role="group"><tbody><tr><td>${rotulo}</td></tr></tbody></table>`;
+const NO_L = (n) => `<span ct="L" lsdata='{"6":"LIGHT","7":"100%","8":true,"14":true,"16":"ACTIVATE","19":{"focusable":"X"},"x":0}' id="tree#C105#${n}#ni" lsevents='{"Activate":[{},{"0":"GuiTree","1":"action/1","13":0}],"DoubleClick":[{},{"0":"GuiTree","1":"action/74","2":true,"3":true,"13":2}]}'></span>`;
+const ARVORE_NOS = [[1, 'Favoritos'], [2, 'Produção -> Ordem -> Criar'], [3, 'Menu SAP'], [4, 'Escritório'], [5, 'Agenda']]
+  .map(([n, r]) => `${NO_MG(n, r)}${NO_L(n)}${NO_TV(n, r)}`).join('');
+const ARVORE_CONT = `<span ct="STCS" lsdata='{"6":"tree#C105_hk","10":"SINGLE","11":"SERVER_WEB_SMART","34":{"SID":"wnd[0]/usr/cntlIMAGE_CONTAINER/shellcont/shell/shellcont[0]/shell","Type":"GuiTree","ctmenu":true,"nodeindexes":[0,["Favo",2,-1],["F00003",3,1],["Root",0,-1],["0000000004",1,3],["0000000009",1,4]]},"x":0}' id="tree#C105">${ARVORE_NOS}</span>`;
+const DELTA_ARVORE = `<updates><delta-update><start-script><![CDATA[sap.its.arrSystemParams = {'d-num':'1000',dynpro:'SAPLSMTR_NAVIGATION','t-code':'SMEN'};]]></start-script><start-script><![CDATA[sap.its.aParams = {moin:'A',cuatitle:'SAP Easy Access'};]]></start-script>
+${cdata('steploop0', `<div id="steploop0" ct="PLP">${ARVORE_CONT}</div>`)}
+</delta-update></updates>`;
+
+test('its: indiceDoNo só reconhece o nó da árvore — o ícone, o container e o filler não são nó', () => {
+  expect(indiceDoNo('tree#C105#6#1#1#i')).toBe(6);
+  expect(indiceDoNo('tree#C105#15#1#1#i')).toBe(15);
+  expect([indiceDoNo('tree#C105#6#ni'), indiceDoNo('tree#C105#6#f'), indiceDoNo('tree#C105#6#1#mg'), indiceDoNo('tree#C105'), indiceDoNo(null)])
+    .toEqual([null, null, null, null, null]);
+});
+
+test('its: arvoreDosBrutos cruza o nodeindexes do container com os TV — a CHAVE, o pai e o nível', () => {
+  const a = arvoreDosBrutos(controlesDoDelta(DELTA_ARVORE));
+  expect(a.sid).toBe('wnd[0]/usr/cntlIMAGE_CONTAINER/shellcont/shell/shellcont[0]/shell');
+  expect(a.nos.map((n) => [n.rotulo, n.chave, n.pai, n.nivel])).toEqual([
+    ['Favoritos', 'Favo', -1, 0],
+    ['Produção -> Ordem -> Criar', 'F00003', 1, 1],
+    ['Menu SAP', 'Root', -1, 0],
+    ['Escritório', '0000000004', 3, 1],
+    ['Agenda', '0000000009', 4, 2],
+  ]);
+  // o segundo campo do nodeindexes vem cru: 2 na raiz dos favoritos, 3 no favorito, 0 no Root, 1 no menu
+  expect(a.nos.map((n) => n.categoria)).toEqual([2, 3, 0, 1, 1]);
+  // tela sem árvore não estoura: devolve vazio
+  expect(arvoreDosBrutos(controlesDoDelta(DELTA))).toEqual({ sid: null, id: null, nodeindexes: null, nos: [] });
+});
+
+test('its: arvore lê do último delta sem tocar a rede', () => {
+  expect(arvore({ delta: DELTA_ARVORE }).nos.length).toBe(5);
+  expect(() => arvore({})).toThrow(/sem delta/);
+});
+
+test('its: os batches da árvore endereçam o CONTAINER pelo SID e nomeiam o nó pela CHAVE', () => {
+  const sid = 'wnd[0]/usr/cntlIMAGE_CONTAINER/shellcont/shell/shellcont[0]/shell';
+  expect(batchExpandirNo(sid, '0000000004')).toEqual([{ post: `action/8/${sid}`, content: 'type=node&node_key=0000000004' }]);
+  expect(batchAcionarNo(sid, 'F00003')).toEqual([{ post: `action/2/${sid}`, content: 'type=OnNodeDoubleClick&node_key=F00003' }]);
+});
+
+test('its: acharNoDaArvore acha por chave e por rótulo (sem acento nem caixa), e o erro lista o que existe', () => {
+  const { nos } = arvoreDosBrutos(controlesDoDelta(DELTA_ARVORE));
+  expect(acharNoDaArvore(nos, '0000000004').rotulo).toBe('Escritório');
+  expect(acharNoDaArvore(nos, 'escritorio').chave).toBe('0000000004');
+  expect(acharNoDaArvore(nos, { chave: 'Favo' }).rotulo).toBe('Favoritos');
+  // por objeto NÃO cai no rótulo — { chave } é endereço exato
+  expect(() => acharNoDaArvore(nos, { chave: 'Escritório' })).toThrow(/a árvore não tem/);
+  expect(() => acharNoDaArvore(nos, 'Contabilidade')).toThrow(/Escritório \(0000000004\)/);
 });

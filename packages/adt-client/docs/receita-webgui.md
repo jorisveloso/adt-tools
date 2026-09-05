@@ -860,8 +860,9 @@ canal:
 
 ### O que **ainda não** está medido
 
-- **A árvore do SAP Easy Access (`TV` + `MG`)** — o menu de *usuário*, com `DoubleClick: action/74`
-  — não foi tocada (fila item 50).
+- ~~A árvore do SAP Easy Access (`TV` + `MG`)~~ **medida** (item 50): é outro caminho, com outro
+  vocabulário — § "A ÁRVORE do SAP Easy Access" abaixo. E o `action/74` do `lsevents` dela **não
+  existe** no protocolo.
 - **A árvore inteira também está no DOM da via CDP, invisível?** O navegador recebe o mesmo
   delta-update que traz os 146 itens. Se estiver, a cascata de cliques daqui vira uma leitura só
   (fila item 82).
@@ -902,6 +903,101 @@ As três linhas juntas: o comando é o `4` (o `3` é recusado no mesmo SID), o e
 item, e `action/4` em nó COM submenu é aceito e inócuo — "abrir" é gesto de UI, não de protocolo.
 Só a folha vira POST. A guarda do item desabilitado (`lsdata[5] === false`, item 48) vale igual e
 custa **zero rede**: os 11 cinzas dos 146 já vieram no delta.
+
+## A ÁRVORE do SAP Easy Access — o outro menu, o único que enxerga os FAVORITOS
+
+**Medido no s4h 758/250 em 2026-09-05** (item 50). Bruto, agregado e prova em
+`sap-accelerate/work/POC_webgui_arvore/`; a leitura em `medicoes/item50-arvore.md`.
+
+```js
+import { abrirTransacao, arvore, navegarArvore, expandirNo } from './its.mjs';
+
+const s = await abrirTransacao(cfg, 'SMEN');       // o SAP Easy Access
+arvore(s).nos;   // [{ n: 1, chave: 'Favo', rotulo: 'Favoritos', pai: -1, nivel: 0 }, …] — zero rede
+
+await navegarArvore(s, ['Menu SAP', 'Escritório'], { acionar: false });   // .filhos, um POST
+const r = await navegarArvore(s, ['Menu SAP', 'Escritório', 'Agenda', 'Próprio']);
+r.mudou;   // true — SMEN → SSC1 "Exibir compromissos", 2 561 ms (2 expansões + 1 acionamento)
+
+await navegarArvore(s2, ['Favoritos', 'Produção']);   // → CO01, 386 ms, UM POST
+```
+
+### O container é quem sabe: o `nodeindexes`
+
+A árvore são quatro `ct` que só juntos dizem alguma coisa. O **container** é o `STCS` (`tree#C105`)
+e é o único que importa: no objeto do SID do `lsdata` dele (`Type: 'GuiTree'`) vem o **SID**
+(`wnd[0]/usr/cntlIMAGE_CONTAINER/shellcont/shell/shellcont[0]/shell`) e o campo `nodeindexes` — a
+árvore visível inteira, `[chave, categoria, índiceDoPai]`, 1-based, `-1` na raiz:
+
+```
+[0, ["Favo",2,-1], ["F00002",3,1], ["F00003",3,1], ["Root",0,-1], ["0000000004",1,4], …]
+```
+
+Cada linha visível tem três controles, e **o índice está no id deles**: `MG` (`#<n>#1#mg`, o
+rótulo), `L` (`#<n>#ni`, o ícone) e `TV` (`#<n>#1#1#i`, com o rótulo em `lsdata[0]`).
+`tree#C105#6#1#1#i` ⟺ `nodeindexes[6]` — é assim que rótulo e chave se encontram.
+
+⚠ **O índice `n` é POSICIONAL e a expansão reindexa.** Abrir "Escritório" (6) empurrou "Logística"
+do 8 para o 15. **Só a chave é estável** — guardar o `n` entre dois POSTs é o erro silencioso deste
+vocabulário; `navegarArvore` refaz o percurso por chave a cada passo.
+
+### ⚠ O `lsevents` da árvore MENTE sobre o protocolo
+
+O `TV` publica `DoubleClick → action/74` e o `L` publica `Activate → action/1`. **Nenhum dos dois é
+postável:**
+
+| POST | resposta |
+|---|---|
+| `action/74/tree#C105#3#1#1#i` (o que o nó publica) | **`-102` control not found** |
+| `action/1/tree#C105#6#ni` (idem, no ícone) | `-102` control not found |
+| `action/74/<SID do container>` | **`-101` not supported** |
+
+`-102` × `-101` separa as causas: o id `tree#…` **não é endereço** (é do renderer, o servidor não o
+conhece); o SID do container **é**, mas `action/74` não é comando dele. Lido do próprio Chrome
+(`Network.requestWillBeSent`), o gesto real endereça o **container pelo SID** e nomeia o nó por
+**chave** no `content` — a mesma forma do `action/710` do ALV:
+
+```json
+[{"post":"action/41/<SID>","content":"type=node&node_key=0000000004"},
+ {"post":"action/2/<SID>", "content":"type=OnNodeDoubleClick&node_key=0000000004"},{"get":"state/ur"}]
+```
+
+### Expandir e acionar são o MESMO gesto — quem decide é o nó
+
+| POST | resposta | efeito |
+|---|---|---|
+| `action/2` `OnNodeDoubleClick&node_key=F00003` (folha) | `delta` **15,5 s** (fria) / 386 ms | SMEN → **CO01** |
+| `action/2` `OnNodeDoubleClick&node_key=0000000004` (com filhos) | `delta` 108 ms | **expande**: 15 → 22 nós |
+| `action/8` (o `CellExpand` do CONTAINER) com `type=node&node_key=…` | `delta` 129 ms | **expande**, igual |
+| `action/2` `type=OnNodeExpand` (contra-prova) | `multipart` **`-132`** invalid argument | nada |
+
+O `type` é vocabulário **fechado**; o `action/41` da seleção é dispensável (o duplo clique sozinho
+navegou); e o comando publicado pelo **container** funciona, ao contrário do publicado pelo nó.
+
+⚠ **O acionamento pode ser LENTO** — 15,5 s na primeira vez (transação fria), e um tiro anterior
+estourou o teto de 30 s do `postar`. Por isso `acionarNo`/`navegarArvore` usam `TETO_ARVORE` (120 s).
+
+⚠ **Rótulo com `>` dentro** (o favorito "Produção -> Controle de produção -> …"): o caminho corta em
+`>`, então passe **array** — `navegarArvore(s, ['Favoritos', 'Produção'])`.
+
+⚠ **Não há flag de "tem filhos"** no que se lê: `navegarArvore` descobre expandindo, e uma folha
+gasta um POST inócuo para se revelar folha (fila 84).
+
+### Árvore × barra de menu — quando usar qual
+
+| | barra (`navegarMenu`, item 49) | árvore (`navegarArvore`, item 50) |
+|---|---|---|
+| vem no boot | **inteira** (146 itens na SE38) | **só o nível aberto** (15 nós) |
+| endereço | o SID do item | a **chave** do nó, no container |
+| descer um nível | zero rede | **um POST** por nível fechado |
+| acionar | `action/4/<SID do item>` | `action/2/<SID do container>` + `node_key` |
+| enxerga FAVORITOS | não | **sim — é o único caminho que enxerga** |
+| existe onde | em toda tela | só onde há `GuiTree` (o SMEN) |
+
+O que **ainda não** está medido: a `categoria` do `nodeindexes` (`0`/`1`/`2`/`3` — o padrão é claro,
+o significado não); **colapsar** um nó (`CellCollapse → action/9`, candidato pelo mesmo molde —
+fila 85); a árvore pela via do **navegador** (os ids são os mesmos, o gesto não foi portado —
+fila 86); e o `action/41` **isolado** (selecionar sem acionar).
 
 ## O vocabulário `lsdata` — a tela é um MODELO, não pixel
 
@@ -1188,9 +1284,15 @@ para o `RequestData`, cujo `action/710` só apareceu capturando a rede (item 25)
 afins o comando vem do mapa `RGACTIONS` do renderer, não da tela: ausência de índice `1` ali **não**
 quer dizer que o evento não tenha via — quer dizer que a tela não a declara.
 
-*Ponto aberto:* `action/3` e `action/4` foram medidos nessa família (o `4` é o do MENU — § "O mesmo
-menu pela via HTTP pura", item 49). `action/1`, `7`, `8`, `9`, `25`, `62`,
-`74`, `309`, `810` e `901` aparecem no mapa mas **não** foram postados — a contra-prova está em
+⚠ **Mas o container da ÁRVORE publica, e o que ele publica FUNCIONA** (item 50): o `STCS` do SMEN
+traz `CellExpand → action/8`, `RequestData → action/901`, `CellCollapse → action/9` com o índice
+`1`, e o `action/8` postado no SID dele expandiu o nó. A regra fina é outra: **o container é
+endereçável, o nó não** — o `action/74` que o `TV` publica devolve `-102 control not found`.
+
+*Ponto aberto:* `action/2`, `3`, `4`, `8` e `41` já foram medidos nessa família (o `4` é o do MENU —
+§ "O mesmo menu pela via HTTP pura", item 49; o `2`, o `8` e o `41` são os da ÁRVORE — § "A ÁRVORE
+do SAP Easy Access", item 50). `action/7`, `9`, `25`, `62`, `309`, `810` e `901` aparecem no mapa mas
+**não** foram postados; `action/1` e `74` foram e **não existem** no protocolo (`-102` no id do nó) — a contra-prova está em
 `POC_webgui_lsdata/scripts/derivar.mjs`, à espera de uma janela com o s4h no ar (fila 43). Compor o
 POST a partir do `lsevents` (`acionar(sessao, alvo, { evento })`) é a fila 71.
 
@@ -1456,6 +1558,7 @@ na mesma função faria cada uma virar um `if` de duas pernas. O que é comum ve
 | a barra do botão não se adivinha | `acionar(s, 'btn[8]')` casa `…/btn[8]` no fim do SID da tela; fora dela estoura com a lista | item 20 D3 |
 | OK-code = `value/okcd` + `vkey/0` | `comandar` | item 8 |
 | o menu inteiro já vem no boot; a folha é `action/4/<SID>` | `itensDeMenu`, `navegarMenu` — sem abrir nada | item 49 (146 itens na SE38; SE38 → SA38 em 91 ms) |
+| a árvore do SMEN se endereça por CHAVE, no container | `arvore`, `expandirNo`, `acionarNo`, `navegarArvore` | item 50 (SMEN → SSC1 em 2,5 s; favorito → CO01 em 386 ms) |
 | `/nex` encerra; depois é 400 | `fechar`; `postar` recusa sessão encerrada | item 8; item 20 E |
 
 **Medição nova do item 20: o valor mandado em POST separado PERSISTE.** `preencher` + `enviar()`

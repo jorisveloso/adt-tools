@@ -1146,6 +1146,204 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, ...
   return { ...r, caminho: partes, passos, folha: alvo, mudou: r.titulo !== antes.titulo || depois !== antes.dynpro };
 }
 
+// ---------- a ÁRVORE do SAP Easy Access (item 50) ----------
+//
+// O outro caminho de menu — o que o usuário final descreve, e o único que enxerga os FAVORITOS.
+// Medido no s4h 758/250 em 05/09/2026 (`sap-accelerate/work/POC_webgui_arvore/`).
+//
+// ⚠ O `lsevents` da árvore MENTE sobre o protocolo. O `TV` publica `DoubleClick → action/74` e o
+// `L` publica `Activate → action/1` (o que o item 9 tinha visto); postar qualquer um deles no id
+// do nó devolve **`-102 control not found`** — `tree#C105#6#1#1#i` é endereço do RENDERER, o
+// servidor não o conhece. E `action/74` no SID do container devolve `-101 not supported`.
+// Capturado do próprio Chrome (`Network.requestWillBeSent`), o gesto REAL endereça o CONTAINER
+// pelo SID e nomeia o nó por CHAVE — a mesma forma do `action/710` do ALV:
+//
+//   {"post":"action/41/<SID>","content":"type=node&node_key=0000000004"}            (a seleção)
+//   {"post":"action/2/<SID>", "content":"type=OnNodeDoubleClick&node_key=F00003"}   (o duplo clique)
+//
+// A chave sai do `nodeindexes` que o container publica no `lsdata` (`ct="STCS"`, o objeto com
+// `Type: 'GuiTree'`): a árvore visível INTEIRA numa lista, `[chave, categoria, índiceDoPai]`,
+// 1-based, `-1` = sem pai. Os três controles de cada nó (`MG` o rótulo, `L` o ícone, `TV` o texto)
+// carregam esse índice NO ID — `tree#C105#<n>#1#1#i` ⟺ `nodeindexes[n]` —, e é assim que rótulo e
+// chave se encontram. ⚠ O índice é POSICIONAL: expandir um nó reindexa tudo abaixo dele. Só a
+// **chave** é estável, e é por ela que o percurso se refaz a cada passo.
+//
+// Os quatro braços medidos (uma sessão cada, SMEN do s4h 758/250):
+//
+// | POST | resposta | efeito |
+// |---|---|---|
+// | `action/2` `OnNodeDoubleClick` na FOLHA `F00003` (favorito) | `delta` **15,5 s** | SMEN → **CO01/SAPLCOKO1** |
+// | `action/2` `OnNodeDoubleClick` em `0000000004` ("Escritório", com filhos) | `delta` 108 ms | EXPANDE — 15 → 22 nós |
+// | `action/8` (o `CellExpand` que o container publica) com o mesmo content | `delta` 129 ms | EXPANDE, igual |
+// | `action/2` `type=OnNodeExpand` (contra-prova) | `multipart` **`-132`** invalid argument value | nada |
+//
+// Leitura: o `type` é vocabulário FECHADO (`OnNodeExpand` não existe; `node` e `OnNodeDoubleClick`
+// existem), "abrir" e "acionar" são o MESMO gesto — quem decide é o nó ter filhos ou não —, e o
+// `action/41` da seleção é dispensável (o duplo clique sozinho navegou).
+//
+// ⚠ **O acionamento é LENTO** — a folha do favorito levou 15,5 s, e o primeiro tiro estourou o teto
+// de 30 s do `postar`. Por isso `acionarNo`/`navegarArvore` sobem o teto para `TETO_ARVORE`.
+
+/** O teto do acionamento da árvore — medido 15,5 s numa folha, e 30 s não bastaram uma vez. */
+export const TETO_ARVORE = 120000;
+
+/** PURO: `tree#C105#6#1#1#i` → `6`, o índice do nó no `nodeindexes`; `null` se não é nó de árvore. */
+export const indiceDoNo = (id) => {
+  const m = /^tree#[^#]+#(\d+)#1#1#i$/.exec(String(id ?? ''));
+  return m ? Number(m[1]) : null;
+};
+
+/** PURO: o container da ÁRVORE (`GuiTree`) entre os brutos — `{ id, sid, nodeindexes }` ou `null`. */
+export function containerDaArvore(brutos = []) {
+  for (const c of brutos) {
+    const d = sidDoLsdata(c?.lsdata);
+    if (d?.Type === 'GuiTree' && Array.isArray(d.nodeindexes)) return { id: c.id ?? null, sid: d.SID, nodeindexes: d.nodeindexes };
+  }
+  return null;
+}
+
+/**
+ * PURO: os nós VISÍVEIS da árvore, cruzando o `nodeindexes` do container com os `TV` da tela —
+ * `{ sid, id, nos: [{ n, id, chave, rotulo, pai, nivel, categoria }] }`. Sem árvore na tela,
+ * `{ sid: null, nos: [] }`.
+ *
+ * `pai` é o índice `n` do pai (`-1` na raiz) e `nivel` é a profundidade contada por ele.
+ * `categoria` é o segundo campo do `nodeindexes` — vem `2` na raiz "Favoritos", `3` em cada
+ * favorito, `0` na raiz "Menu SAP" e `1` em todo nó do menu; o significado NÃO está medido.
+ */
+export function arvoreDosBrutos(brutos = []) {
+  const cont = containerDaArvore(brutos);
+  if (!cont) return { sid: null, id: null, nodeindexes: null, nos: [] };
+  const nos = brutos
+    .filter((c) => c.ct === 'TV' && indiceDoNo(c.id) !== null)
+    .map((c) => {
+      const n = indiceDoNo(c.id);
+      const e = Array.isArray(cont.nodeindexes[n]) ? cont.nodeindexes[n] : [];
+      return {
+        n, id: c.id, chave: typeof e[0] === 'string' ? e[0] : null, categoria: e[1] ?? null,
+        pai: typeof e[2] === 'number' ? e[2] : -1,
+        rotulo: typeof c.lsdata?.['0'] === 'string' ? c.lsdata['0'] : (c.texto ?? null),
+      };
+    })
+    .filter((x) => x.chave !== null);
+  const porN = new Map(nos.map((x) => [x.n, x]));
+  for (const no of nos) {
+    let nivel = 0;
+    let p = no.pai;
+    while (p > 0 && porN.has(p) && nivel < 64) { nivel += 1; p = porN.get(p).pai; }
+    no.nivel = nivel;
+  }
+  return { ...cont, nos };
+}
+
+/** A árvore da tela atual, do último delta — SEM tocar a rede. */
+export function arvore(sessao) {
+  if (!sessao?.delta) throw new Error('its: sem delta para ler a árvore — abra a sessão (o boot do SMEN já a traz)');
+  return arvoreDosBrutos(controlesDoDelta(sessao.delta));
+}
+
+/** PURO: expandir um nó — o `CellExpand` que o container publica, endereçado por CHAVE. */
+export const batchExpandirNo = (sid, chave) => [{ post: `action/8/${sid}`, content: `type=node&node_key=${chave}` }];
+
+/** PURO: o duplo clique — abre o nó que tem filhos, ACIONA o que não tem. */
+export const batchAcionarNo = (sid, chave) => [{ post: `action/2/${sid}`, content: `type=OnNodeDoubleClick&node_key=${chave}` }];
+
+/** PURO: acha um nó por CHAVE (`'F00003'`), por rótulo (sem acento nem caixa) ou por `{ chave }`. */
+export function acharNoDaArvore(nos = [], alvo) {
+  const chave = alvo && typeof alvo === 'object' ? alvo.chave ?? null : String(alvo ?? '');
+  const achado = nos.find((x) => x.chave === chave)
+    ?? (alvo && typeof alvo === 'object' ? null : acharItemDeMenu(nos, chave));
+  if (!achado) throw new Error(`its: a árvore não tem "${chave}". Tenho: ${nos.map((x) => `${x.rotulo} (${x.chave})`).join(' | ')}`);
+  return achado;
+}
+
+/**
+ * EXPANDE um nó e devolve `{ ...lerResposta, no, abriu, filhos }`. `abriu: false` é INFORMAÇÃO —
+ * o comando pegou e a árvore ficou igual (o nó já estava aberto, ou é folha).
+ */
+export async function expandirNo(sessao, alvo, opts) {
+  const antes = arvore(sessao);
+  if (!antes.sid) throw new Error('its: esta tela não tem árvore (nenhum GuiTree no delta)');
+  const no = acharNoDaArvore(antes.nos, alvo);
+  const r = await despachar(sessao, batchExpandirNo(antes.sid, no.chave), opts);
+  // ⚠ o índice `n` é posicional e a expansão reindexa: reachar o nó pela CHAVE, sempre
+  const depois = r.forma === 'delta' ? arvore(sessao) : { nos: [] };
+  const agora = depois.nos.find((x) => x.chave === no.chave) ?? null;
+  return { ...r, no, abriu: depois.nos.length > antes.nos.length, filhos: agora ? depois.nos.filter((x) => x.pai === agora.n) : [] };
+}
+
+/**
+ * O duplo clique num nó: `{ ...lerResposta, no, mudou }`. Num nó com filhos ele EXPANDE (e `mudou`
+ * é `false`); numa folha, aciona — foi assim que o favorito "Produção → … → Com material" levou o
+ * SMEN à CO01. O teto sobe para `TETO_ARVORE`: 30 s não bastaram na medição.
+ */
+export async function acionarNo(sessao, alvo, opts) {
+  const a = arvore(sessao);
+  if (!a.sid) throw new Error('its: esta tela não tem árvore (nenhum GuiTree no delta)');
+  const no = acharNoDaArvore(a.nos, alvo);
+  const antes = { titulo: sessao.titulo, dynpro: telaDoDelta(sessao.delta)?.dynpro };
+  const r = await despachar(sessao, batchAcionarNo(a.sid, no.chave), { tetoMs: TETO_ARVORE, ...opts });
+  const depois = sessao.delta ? telaDoDelta(sessao.delta)?.dynpro : null;
+  return { ...r, no, mudou: r.titulo !== antes.titulo || depois !== antes.dynpro };
+}
+
+/**
+ * Vai a uma tela pelo CAMINHO da árvore do SAP Easy Access — o caminho que o usuário funcional
+ * descreve, e o único que enxerga os FAVORITOS:
+ *
+ * ```js
+ * await navegarArvore(s, 'Favoritos > Produção -> Controle de produção -> Ordem -> Criar -> Com material');
+ * await navegarArvore(s, 'Menu SAP > Escritório', { acionar: false });   // só DESCOBRE os filhos
+ * ```
+ *
+ * Ao contrário do menu da barra (`navegarMenu`, item 49), aqui a árvore **não vem inteira**: cada
+ * nível fechado custa um POST de expansão. O percurso se refaz por CHAVE a cada passo — o índice
+ * `n` é posicional e a expansão reindexa tudo abaixo.
+ *
+ * Devolve `{ caminho, passos, folha, expandidos, mudou, ...lerResposta }`; com `{ acionar: false }`
+ * devolve `{ filhos }` do último nó, expandindo-o se ele ainda não tiver filhos visíveis.
+ */
+export async function navegarArvore(sessao, caminho, { acionar: aciona = true, ...opts } = {}) {
+  const partes = partirCaminhoDeMenu(caminho);
+  const passos = [];
+  const expandidos = [];
+  const filhosDe = (a, pai) => (pai ? a.nos.filter((x) => x.pai === pai.n) : a.nos.filter((x) => x.pai === -1));
+  let chave = null;
+  for (const rotulo of partes) {
+    let a = arvore(sessao);
+    if (!a.sid) throw new Error('its: esta tela não tem árvore (nenhum GuiTree no delta) — o SAP Easy Access é o `/nSMEN`');
+    let pai = chave === null ? null : a.nos.find((x) => x.chave === chave);
+    let irmaos = filhosDe(a, pai);
+    let alvo = acharItemDeMenu(irmaos, rotulo);
+    if (!alvo && pai) {                       // o nó pode estar fechado: abrir UMA vez e reler
+      await expandirNo(sessao, { chave: pai.chave }, opts);
+      expandidos.push(pai.chave);
+      a = arvore(sessao);
+      pai = a.nos.find((x) => x.chave === chave);
+      irmaos = filhosDe(a, pai);
+      alvo = acharItemDeMenu(irmaos, rotulo);
+    }
+    if (!alvo) throw new Error(`its: navegarArvore — "${rotulo}" não está sob ${chave ?? 'a raiz'}. Tenho: ${irmaos.map((x) => x.rotulo).join(' | ')}`);
+    passos.push(alvo);
+    chave = alvo.chave;
+  }
+  if (!aciona) {
+    let a = arvore(sessao);
+    let folha = a.nos.find((x) => x.chave === chave);
+    let filhos = filhosDe(a, folha);
+    if (!filhos.length) {                     // um POST: descobrir o que há sob a folha exige abrir
+      await expandirNo(sessao, { chave }, opts);
+      expandidos.push(chave);
+      a = arvore(sessao);
+      folha = a.nos.find((x) => x.chave === chave);
+      filhos = folha ? filhosDe(a, folha) : [];
+    }
+    return { caminho: partes, passos, folha, filhos, expandidos, mudou: false };
+  }
+  const r = await acionarNo(sessao, { chave }, opts);
+  return { ...r, caminho: partes, passos, folha: r.no, expandidos };
+}
+
 /**
  * Encerra: `/nex` (medido: 200 `text/html` "logoff", e o POST seguinte 400). Se a sessão não
  * aceitar o comando, cai no logoff do ICF pelo cookie (`encerrarSessao`), o mesmo da sonda.
