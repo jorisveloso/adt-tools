@@ -129,6 +129,7 @@ mudo — `diagnosticarRot` (puro, testado) classifica pelo trio ROT + `tasklist`
 | `estado` | o que é | o que fazer |
 |---|---|---|
 | `com-sessao` | há sessão **logada** no ROT (`sessaoLogada`) | seguir |
+| `pede-autorizacao` | o popup do pedágio de pé (`#32770` `SAP Logon`, § abaixo) | clicar OK, ou desligar o aviso (`WarnOnAttach=0`) — **não** é credencial nem scripting desligado |
 | `logon-pendente` | tela de logon do servidor: conexão no ROT com usuário vazio, ou janela `SAP_FRONTEND_SESSION` sem sessão logada | a credencial não passou — conferir mandante/usuário/senha; não é scripting desligado |
 | `pede-senha` | o pad abriu `Ligação SAP GUI - logon (…)` | o atalho chegou sem senha aceita (aconteceu sem `-pw`) |
 | `mensagem` | caixa `SAP GUI` com texto (ex.: `ID sistema desconhecido`) | ler o texto — está em `erro` |
@@ -147,6 +148,12 @@ const r = await sessoesAbertas();
 
 O `logon-pendente` acima é **medido**, não construído: `sapshcut -user=NAOEXISTE -pw=…` deixa no pad
 uma janela `SAP_FRONTEND_SESSION` de título `SAP` (a tela de logon do servidor) e essa conexão no ROT.
+
+⚠ **A ordem de leitura importa, e `pede-autorizacao` vem primeiro** (depois só de `com-sessao`):
+com o popup do pedágio de pé, a janela `SAP_FRONTEND_SESSION` da sessão **logada** continua visível
+e o ROT expira — o veredito anterior era `logon-pendente` ("é a TELA DE LOGON"), que mandava
+conferir credencial de uma sessão que já estava logada. O popup também vence o `Err` do `GetObject`
+e a conexão sem usuário no ROT: um popup na tela explica o mudo melhor do que qualquer um dos dois.
 
 `fecharSapGui()` fecha a conexão no fim (`CloseSession` + `CloseConnection`); o SAP Logon pad
 continua aberto. Vale a mesma regra das sessões ADT: **sessão que o script abre, o script fecha.**
@@ -248,11 +255,21 @@ resposta.
 - **O timeout do chamador não resolve — piora:** o `execFile` mata o `cscript` e o popup **fica
   órfão na tela**; a chamada seguinte empilha mais um. Com um clicador em paralelo, `fecharSapGui`
   fechou a conexão em 1,4 s.
-- **O sintoma engana, e o `diagnosticarRot` de hoje engana junto:** com o popup de pé, a janela
-  `SAP_FRONTEND_SESSION` "SAP Easy Access" está **visível** e o ROT expira. `lerJanelas` devolve
-  `sessao`, e `diagnosticarRot` conclui **`logon-pendente` — "é a TELA DE LOGON"** — errado: a sessão
-  está logada; o que falta é o OK. O popup precisa virar estado próprio (`#32770` `SAP Logon` cujo
-  `Static` contém "script"), antes do `sessao` — está na fila (61).
+- **O sintoma engana — e por isso o popup é estado próprio** (item 61, 05/09/2026): com o popup de
+  pé, a janela `SAP_FRONTEND_SESSION` "SAP Easy Access" está **visível** e o ROT expira. `lerJanelas`
+  devolvia `sessao` e `diagnosticarRot` concluía `logon-pendente` — "é a TELA DE LOGON" —, errado: a
+  sessão está logada, o que falta é o OK. Hoje `lerJanelas` responde **`autorizacao`** (predicado
+  `ehPopupAutorizacao`) **antes** de `sessao`, e `diagnosticarRot` responde **`pede-autorizacao`**
+  com a receita do `WarnOnAttach` na explicação.
+  - **O critério é o título, `#32770` `SAP Logon` SEM a versão** — o pad é `SAP Logon 800`, e os dois
+    aparecem no mesmo instante (`"SAP Logon" aos 1325ms; "SAP Logon 800" aos 1326ms`,
+    `medicoes/raw/item60-warnonattach.json`). O `Static` com "script"/"Skript" entra como **reforço**,
+    para o caso de outro idioma mudar o título — o texto foi visto na captura de tela do item 34, mas
+    ainda **não** foi colhido campo a campo por sonda.
+  - **`sessoesAbertas` lê as janelas sempre que há processo** (antes só quando o ROT vinha vazio): o
+    popup convive com uma conexão no ROT, e o `!sessoes.length` o escondia do diagnóstico.
+  - **Ainda pendura até o timeout.** Este item deu ao vazio o NOME certo; falhar cedo (vigiar o popup
+    enquanto o `cscript` roda) e não deixar o popup órfão na tela é outro item da fila.
 - **Diagnóstico rápido, à mão:** listar as janelas top-level do pad e procurar um `#32770` visível
   que não seja o próprio `SAP Logon <versão>` — `sap-accelerate/work/POC_rot_sapgui/scripts/janelas.ps1`
   lista e clica no OK.

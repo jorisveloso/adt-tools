@@ -441,8 +441,26 @@ export function interpretarJanelas(texto) {
 }
 
 /**
+ * PURO: esta janela é o popup do PEDÁGIO — "Um script está tentando acessar SAP GUI" (OK/Cancelar)?
+ *
+ * Medido 05/09/2026 (item 60, bruto `sap-accelerate/work/POC_rot_sapgui/medicoes/raw/item60-warnonattach.json`):
+ * o pedágio é um `#32770` de título **`SAP Logon` sem versão** — o pad é `SAP Logon 800`, e os dois
+ * aparecem lado a lado no mesmo instante (`"SAP Logon" aos 1325ms; "SAP Logon 800" aos 1326ms`).
+ * O título é o critério MEDIDO; o `Static` com "script" (o texto que a captura de tela do item 34
+ * mostrou, ainda não colhido campo a campo) entra como reforço, para o caso de outro idioma
+ * ("Skript") mudar o título.
+ */
+export const ehPopupAutorizacao = (j) =>
+  j?.classe === '#32770' &&
+  (/^SAP Logon$/i.test(String(j.titulo ?? '').trim()) || (j.textos ?? []).some((t) => /s[ck]ript/i.test(t)));
+
+/**
  * PURO: o que as janelas visíveis do SAP GUI dizem — o sensor que o tasklist NÃO tem para o pad.
- * Estados (todos medidos em 04/09/2026, SAP GUI 8.00 PT, S4H 758/250):
+ * Estados (medidos em 04-05/09/2026, SAP GUI 8.00 PT, S4H 758/250):
+ *   `autorizacao` — o popup do pedágio (`ehPopupAutorizacao`). ⚠ Vem ANTES de `sessao`: com o popup
+ *                   de pé a janela 'SAP Easy Access' da sessão LOGADA está visível ao mesmo tempo, e
+ *                   quem responder `sessao` faz o `diagnosticarRot` concluir "é a TELA DE LOGON" —
+ *                   errado, a sessão está logada e o que falta é o OK (item 34/61 da fila).
  *   `sessao`      — há janela `SAP_FRONTEND_SESSION` (título 'SAP Easy Access' logado; 'SAP' na tela
  *                   de logon do servidor, com credencial rejeitada). Quem separa os dois é o ROT.
  *   `pede-senha`  — diálogo `#32770` 'Ligação SAP GUI - logon (S4H, 250, PT, )': o pad quer a senha
@@ -453,6 +471,8 @@ export function interpretarJanelas(texto) {
  *   `nenhuma`     — nada visível.
  */
 export function lerJanelas(janelas = []) {
+  const pedagio = janelas.filter(ehPopupAutorizacao);
+  if (pedagio.length) return { estado: 'autorizacao', janelas: pedagio };
   const sessao = janelas.filter((j) => j.classe === CLASSE_SESSAO);
   if (sessao.length) return { estado: 'sessao', janelas: sessao };
   const dialogos = janelas.filter((j) => j.classe === '#32770');
@@ -518,6 +538,9 @@ export async function janelasSapGui() {
  * usuário vazio, mandante 000 e tcode S000 (medido 04/09/2026, hospedada no saplogon.exe). */
 export const sessaoLogada = (s) => Boolean(s?.usuario);
 
+/** PURO: as janelas de um estado, em uma linha legível — `saplogon.exe:42432 'SAP Logon' [texto]`. */
+const lista = (js) => js.map((j) => `${j.imagem}:${j.pid} '${j.titulo}'${j.textos?.length ? ` [${j.textos.join(' | ')}]` : ''}`).join(', ');
+
 /**
  * PURO: por que o ROT veio VAZIO (ou só com tela de logon). O ROT sozinho não distingue "GUI fechado"
  * de "GUI aberto na tela de logon", e o segundo manda a investigação para RZ11/registro à toa. Quem
@@ -526,14 +549,32 @@ export const sessaoLogada = (s) => Boolean(s?.usuario);
  * ⚠ O `expirou` NÃO distingue nada — medido 04/09/2026 (SAP GUI 8.00, máquina do Joris, alvo S4H):
  *   GUI fechado, `sessoesAbertas()`: `expirou`, 15669 ms; janela parada no logon: `expirou`, 15663 ms.
  *
- * Estados: `com-sessao` · `logon-pendente` (tela de logon de pé — no ROT com usuário vazio, ou janela
+ * Estados: `com-sessao` · `pede-autorizacao` (o popup do pedágio de pé — § O pedágio do cliente) ·
+ * `logon-pendente` (tela de logon de pé — no ROT com usuário vazio, ou janela
  * `SAP_FRONTEND_SESSION`/título de logon sem sessão) · `pede-senha` (o pad abriu o diálogo de senha)
  * · `mensagem` (caixa de mensagem do GUI, com o texto) · `sem-janela` (processo de pé, nenhuma janela
  * de sessão — pad aberto sem sessão, ou GUI subindo) · `gui-fechado` (nenhum SAPgui.exe nem
  * saplogon.exe) · `erro-scripting` (o `GetObject` levantou Err — o ÚNICO que aponta para cliente/servidor).
+ *
+ * ⚠ `pede-autorizacao` é lido ANTES de tudo que não seja `com-sessao` — inclusive antes do `erroVbs`
+ * e das sessões sem usuário. Medido 05/09/2026 (item 34): com o popup de pé o ROT expira E a janela
+ * 'SAP Easy Access' da sessão LOGADA continua visível; a versão anterior concluía `logon-pendente`
+ * ("é a TELA DE LOGON") e mandava investigar credencial — a sessão estava logada, faltava o OK.
  */
 export function diagnosticarRot({ sessoes = [], expirou = false, processos = [], erroVbs = null, janelas = [] } = {}) {
+  const lidas = lerJanelas(janelas);
   if (sessoes.some(sessaoLogada)) return { estado: 'com-sessao', explicacao: null };
+  if (lidas.estado === 'autorizacao') {
+    return {
+      estado: 'pede-autorizacao',
+      explicacao:
+        `o cliente está pedindo autorização: o SAP GUI abriu "Um script está tentando acessar SAP GUI" ` +
+        `(${lista(lidas.janelas)}) e NÃO devolve o engine enquanto ninguém clicar OK. ` +
+        'Não é scripting desligado: clique OK, ou desligue o aviso com ' +
+        String.raw`reg add "HKCU\Software\SAP\SAPGUI Front\SAP Frontend Server\Security" /v WarnOnAttach /t REG_DWORD /d 0 /f ` +
+        '(§ O pedágio do cliente).',
+    };
+  }
   if (erroVbs) return { estado: 'erro-scripting', explicacao: `o GetObject("SAPGUI") falhou — ${erroVbs}` };
   const naoMexer = 'Não é scripting desligado; não mexa em RZ11 nem no registro.';
   if (sessoes.length) {
@@ -548,8 +589,6 @@ export function diagnosticarRot({ sessoes = [], expirou = false, processos = [],
   if (!processos.length) {
     return { estado: 'gui-fechado', explicacao: `${mudo}nenhum SAPgui.exe nem saplogon.exe está rodando — o SAP GUI está fechado` };
   }
-  const lidas = lerJanelas(janelas);
-  const lista = (js) => js.map((j) => `${j.imagem}:${j.pid} '${j.titulo}'${j.textos?.length ? ` [${j.textos.join(' | ')}]` : ''}`).join(', ');
   if (lidas.estado === 'sessao') {
     return { estado: 'logon-pendente', explicacao: `${mudo}há janela de sessão de pé (${lista(lidas.janelas)}) sem sessão logada — é a TELA DE LOGON. ${naoMexer}` };
   }
@@ -666,8 +705,8 @@ export async function abrirSapGui({ sistema, cliente, usuario, senha, idioma = '
  * As conexões/sessões que o SAP GUI local expõe agora — com o motivo, quando vier vazio.
  *
  * Devolve `{ sessoes, estado, erro, processos }`. Sem sessão LOGADA, `estado` diz QUAL vazio é
- * (`gui-fechado` · `logon-pendente` · `pede-senha` · `mensagem` · `sem-janela`, ver `diagnosticarRot`)
- * e `erro` carrega a explicação: nunca mais `{ sessoes: [], erro: null }` mudo.
+ * (`gui-fechado` · `pede-autorizacao` · `logon-pendente` · `pede-senha` · `mensagem` · `sem-janela`,
+ * ver `diagnosticarRot`) e `erro` carrega a explicação: nunca mais `{ sessoes: [], erro: null }` mudo.
  *
  * ⚠ SEM sessão de diálogo aberta, o `GetObject("SAPGUI")` do VBS NÃO volta: a chamada consome o
  * timeout inteiro (medido 04/09/2026: 120157/120186/120142 ms em três chamadas seguidas). Por isso
@@ -714,7 +753,10 @@ saida.Close`;
   if (sessoes.some(sessaoLogada)) return { sessoes, estado: 'com-sessao', erro: erroVbs, processos: null };
   // Vazio (ou só tela de logon) nunca sai mudo: tasklist (há processo?) + janelas (que janela é?).
   const processos = await processosSapGui();
-  const janelas = processos.length && !sessoes.length ? await janelasSapGui() : [];
+  // ⚠ As janelas são lidas SEMPRE que há processo — inclusive com sessão de logon no ROT. Antes o
+  // `!sessoes.length` pulava a leitura, e o popup do pedágio (que convive com uma conexão no ROT)
+  // ficava invisível para o diagnóstico, que respondia `logon-pendente` (item 34/61 da fila).
+  const janelas = processos.length ? await janelasSapGui() : [];
   const { estado, explicacao } = diagnosticarRot({ sessoes, expirou, processos, erroVbs, janelas });
   const prazo = expirou ? ` — prazo de ${timeout} ms` : '';
   return { sessoes, estado, processos, erro: `sem sessão no ROT: ${explicacao}${prazo}` };

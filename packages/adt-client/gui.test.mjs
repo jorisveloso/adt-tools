@@ -4,7 +4,7 @@ import { test, expect } from 'vitest';
 import {
   ACOES, PARAMETROS_SCRIPTING, escVbs, validarPasso, vbsDoPasso, montarVbs,
   interpretarSaidaGui, resultadoDoPasso, interpretarTasklist, linhaTasklist, diagnosticarRot,
-  interpretarJanelas, lerJanelas, sessaoLogada, CLASSE_SESSAO, psJanelas,
+  interpretarJanelas, lerJanelas, sessaoLogada, CLASSE_SESSAO, psJanelas, ehPopupAutorizacao,
 } from './gui.mjs';
 
 const SEP = '\u0001';
@@ -200,6 +200,8 @@ const J = {
   telaLogon: 'saplogon.exe\t42432\tSAP_FRONTEND_SESSION\tSAP\t',
   pedeSenha: 'saplogon.exe\t37016\t#32770\tLigação SAP GUI - logon (S4H, 250, PT, )\tEntrar o nome do usuário e a senha | Nome do usuário: | Senha:',
   mensagem: 'SAPgui.exe\t48000\t#32770\tSAP GUI\tNem todos os dados estão disponíveis p/ligação a SAP GUI: | ID sistema desconhecido | Entrar os dados em falta',
+  // o pedágio (medido 05/09/2026, item 60): MESMO pid do pad, título 'SAP Logon' SEM a versão
+  pedagio: 'saplogon.exe\t42432\t#32770\tSAP Logon\tUm script está tentando acessar SAP GUI',
 };
 
 test('gui: interpretarJanelas lê a saída TAB do PowerShell, com os textos do diálogo', () => {
@@ -227,6 +229,51 @@ test('gui: lerJanelas — a sessão vive no saplogon.exe e se reconhece pela CLA
   // só o pad de pé: não é sessão, não é erro
   expect(de(J.pad).estado).toBe('so-pad');
   expect(de().estado).toBe('nenhuma');
+});
+
+test('gui: o pedágio é estado próprio e vence a sessão — o popup convive com o SAP Easy Access visível (item 34)', () => {
+  const de = (...linhas) => lerJanelas(interpretarJanelas(linhas.join('\n')));
+  // o critério medido é o título SEM versão: o pad ('SAP Logon 800') NÃO é o popup
+  expect(ehPopupAutorizacao({ classe: '#32770', titulo: 'SAP Logon', textos: [] })).toBe(true);
+  expect(ehPopupAutorizacao({ classe: '#32770', titulo: 'SAP Logon 800', textos: ['Connections'] })).toBe(false);
+  // reforço pelo texto, para o caso de outro idioma mudar o título ('Skript')
+  expect(ehPopupAutorizacao({ classe: '#32770', titulo: 'SAP GUI Security', textos: ['A script is trying to attach'] })).toBe(true);
+  expect(ehPopupAutorizacao({ classe: CLASSE_SESSAO, titulo: 'SAP Logon' })).toBe(false);
+
+  // ⚠ o retrato do item 34: popup + sessão LOGADA visível ao mesmo tempo. Quem responder `sessao`
+  // faz o diagnóstico dizer "é a TELA DE LOGON" — e a sessão está logada, o que falta é o OK.
+  expect(de(J.pad, J.logada, J.pedagio).estado).toBe('autorizacao');
+  expect(de(J.pad, J.logada, J.pedagio).janelas.map((j) => j.titulo)).toEqual(['SAP Logon']);
+  expect(de(J.pad, J.logada).estado).toBe('sessao');
+  // e o pedágio não engole o diálogo de senha, que também casa /logon/i
+  expect(de(J.pad, J.pedeSenha).estado).toBe('pede-senha');
+});
+
+test('gui: diagnosticarRot — com o popup de pé o veredito é pede-autorizacao, não logon-pendente (item 34/61)', () => {
+  const pad = [{ pid: 42432, imagem: 'saplogon.exe', titulo: '' }];
+  const js = (...linhas) => interpretarJanelas(linhas.join('\n'));
+
+  // ROT expirou, popup de pé, sessão logada visível: a versão anterior dizia `logon-pendente`
+  const d = diagnosticarRot({ expirou: true, processos: pad, janelas: js(J.pad, J.logada, J.pedagio) });
+  expect(d.estado).toBe('pede-autorizacao');
+  expect(d.explicacao).toMatch(/o cliente está pedindo autorização/);
+  expect(d.explicacao).toMatch(/WarnOnAttach/);
+  expect(d.explicacao).not.toMatch(/TELA DE LOGON/);
+
+  // o popup vence até a conexão sem usuário no ROT (a tela de logon hospedada pelo pad)
+  const comRot = diagnosticarRot({
+    sessoes: [{ id: '/app/con[1]/ses[0]', sistema: 'S4H', mandante: '000', usuario: '', tcode: 'S000' }],
+    processos: pad, janelas: js(J.pad, J.pedagio),
+  });
+  expect(comRot.estado).toBe('pede-autorizacao');
+
+  // ... e vence o Err do GetObject: um popup órfão de chamada anterior explica melhor que o Err
+  expect(diagnosticarRot({ erroVbs: 'The remote server machine does not exist', processos: pad, janelas: js(J.pad, J.pedagio) }).estado)
+    .toBe('pede-autorizacao');
+
+  // mas NÃO vence uma sessão logada que o ROT devolveu: aí a chamada respondeu, não há o que explicar
+  expect(diagnosticarRot({ sessoes: [{ usuario: 'MVJVELOSO' }], processos: pad, janelas: js(J.pad, J.pedagio) }).estado)
+    .toBe('com-sessao');
 });
 
 test('gui: sessaoLogada — a tela de logon entra no ROT com usuário vazio (medido 04/09/2026)', () => {
