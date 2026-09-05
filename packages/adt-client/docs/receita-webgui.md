@@ -1419,9 +1419,10 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   `delta-update`"). ~~O grid sai só como cabeçalho~~ **feito** (item 25): `lerGrid` traz as LINHAS
   do ALV pelo `RequestData` (§ "O ALV: ler as LINHAS do grid"), e ~~pelo navegador só o cabeçalho~~
   **feito** (item 46): o `lerGrid` do `webgui.mjs` lê o BLOCO do DOM sem tocar a rede (§ "Pelo
-  NAVEGADOR"). O que fica em aberto na leitura: **checkbox** por esta via não foi cruzado (nenhum
-  bruto HTTP tem um — o `chkALSOUSUB` só existe no despejo DOM), e no grid faltam **célula
-  editável**, **ordenar/filtrar** e **selecionar linha**.
+  NAVEGADOR"). ~~Célula editável~~ **feita** (item 47): `escreverCelula` pelo navegador, com o ciclo
+  escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
+  na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
+  só existe no despejo DOM), e no grid faltam **ordenar/filtrar** e **selecionar linha**.
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -1540,6 +1541,82 @@ perto do fim do bloco o próprio ITS dispara um `action/710` (`fragments=166,173
 linhas. Mas é o **mesmo pedido** que a via HTTP faz, ao **mesmo preço** — 8,97 KB gzipados por 28
 linhas nos dois canais —, só que em fatias de 28 e a ~2,9 s por rodada: **~222 rodadas, ~11 min**
 para as 1617 linhas, contra 4 pedidos e **2,3 s** do `its.lerGrid`. Para a tabela inteira: via HTTP.
+
+## Escrever numa célula do ALV — e provar que gravou (item 47)
+
+**Medido no s4h 758/250 em 2026-09-05** (fila `adt-client`, item 47; evidência em
+`sap-accelerate/work/POC_webgui_grid_edit/medicoes/item47-escrever-celula.md`). Os itens 25 e 46
+pararam na leitura porque a lista do `RSPARAM` é `editable: false` — não havia laboratório. Ele foi
+construído: **`ZJBV_ALV47` + `ZJBV_ALV47_EDIT`** (`$TMP`, ALV editável num docking container sobre a
+tela de seleção, `FC01` = `check_changed_data` + `MODIFY` + `COMMIT WORK AND WAIT`).
+
+```js
+import { escreverCelula, lerGrid, comandar } from './webgui.mjs';
+
+const e = await escreverCelula(s, null, { linha: 2, coluna: 'NOME', valor: 'E2E-776551' });
+// { id: 'grid#C102#2,2#if', linha: 2, coluna: 2, nomeColuna: 'NOME',
+//   de: 'ITEM47-OK', para: 'E2E-776551', publicado: 'grid#C102#2,2#if', pendente: true, ms: 1280 }
+
+await escreverCelula(s, { id: 'C102' }, { linha: 3, coluna: 3, valor: '815' });  // coluna por índice
+await comandar(s, 'FC01');                       // ← é ISTO que manda; escreverCelula só publica
+```
+
+**A célula editável só vira campo quando alguém clica nela.** Em repouso é o mesmo
+`<span ct="CBS">` da leitura; o clique a troca por um **`<input type="text">` de mesmo id**
+(`grid#<CID>#<r>,<c>#if`). Por isso o gesto é clicar → digitar (nativo), nunca `.value =`.
+
+**Quem publica é o `blur`; quem MANDA é o round-trip seguinte.** O `Change` do `lsevents` da célula
+enfileira, e o próximo post ao servidor leva:
+
+```
+POST …/batch/json  [{ "post": "focus/<SID do grid>", "logic": "ignore" },
+                    { "post": "action/622/<SID do grid>",
+                      "content": "row_index=2&column_id=NOME&value=E2E-776551" },
+                    { "post": "vkey/0/ses[0]" }, { "get": "state/ur" }]
+```
+
+⚠ **A coluna vai pelo NOME** (`column_id=NOME`, o `ColumnIDs`), não pelo índice — daí
+`escreverCelula` aceitar `coluna: 'NOME'` e `coluna: 3` e resolver por `indiceDaColuna`.
+
+### ⚠ O modo de falha é SILENCIOSO — e a mensagem de sucesso mente
+
+Contra-prova pareada, mesma sessão, mesmo valor (`raw/h-contraprova.json`):
+
+| | `action/622` no batch | mensagem do ABAP | a tabela em OUTRA LUW |
+|---|---:|---|---|
+| digitar **sem** publicar (`publicarValores: false`) | **0** | `ITEM47 GRAVOU subrc=0 n=3` | **inalterada** |
+| digitar **com** `blur` | **1** | `ITEM47 GRAVOU subrc=0 n=3` | `NOME = 'CP-POSITIVA'` |
+
+As duas dizem "gravou subrc=0", e só uma gravou. **A mensagem do programa não é prova de que o que
+você digitou chegou** — a prova é o `action/622` ter saído (`publicado` no retorno) e a leitura em
+outra LUW. É a mesma armadilha do campo comum (§ "A caixa de comando"), com um agravante: aqui o
+ABAP roda de qualquer jeito e responde com sucesso.
+
+⚠ **Digitar não valida nada.** O renderer aceita texto em qualquer célula do grid editável e monta o
+`action/622` até para coluna que a tela pinta como protegida (medido no `BCALV_EDIT_01` com `PRICE`,
+cujo `lsdata` não tem as chaves `12`/`16` das demais). Quem recusa é o ABAP, na resposta.
+
+### O que o `lerGrid` do navegador ganhou (e o bug que isso corrigiu)
+
+A célula em edição **quebrava a leitura, calada**: virando `<input>`, o `lsdata[21]` deixa de ser
+objeto e vira **string JSON**, a busca por valor-objeto não acha nada e o `innerText` de um `<input>`
+é vazio — a coluna saía `''` como se o dado não existisse. Corrigido em `jsBlocoDoGrid` (o `21`
+re-parseado + o `el.value`), e a leitura agora **avisa**:
+
+```js
+(await lerGrid(s)).editando   // { linha: 3, coluna: 3, digitado: '815', servidor: '4.747' }
+```
+
+`editando ≠ null` é dado NÃO publicado: `digitado` é o que está na tela, `servidor` é o que o SAP
+tem. Depois do round-trip os dois coincidem — é um assert de graça.
+
+### Onde há ALV editável para medir
+
+Fase A, 14 programas sondados por `SA38` no s4h (`raw/a-cacar.json`): **`BCALV_EDIT_01`, `_03`…`_08`,
+`BCALV_GRID_EDIT`, `BCALV_TEST_GRID_EDIT` e `BCALV_TEST_GRID_EDITABLE`** trazem `editable: true`;
+`BCALV_EDIT_02`, `BCALV_GRID_04` e `BCALV_GRID_DEMO` são somente leitura.
+⚠ **Nenhum deles GRAVA** — fase B, lendo o fonte por ADT: todos mexem só em tabela interna. Servem
+para medir o gesto, **não** o ciclo com LUW; para esse, laboratório próprio.
 
 ## Exportar a lista por ARQUIVO — o ITSDoc (item 45)
 

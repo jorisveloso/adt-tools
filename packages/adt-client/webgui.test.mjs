@@ -13,7 +13,7 @@ import {
   criarPilhaDeDesfazer, transacional,
   SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo,
   pinosDeCertificado, bandeirasDeCertificado, explicarErroDeNavegacao,
-  jsBlocoDoGrid, linhasDoBloco,
+  jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -771,7 +771,9 @@ function domDoGrid(celulas, extras = []) {
   const nos = [
     ...celulas.map((c) => ({ ...c, get: (a) => (a === 'lsdata' ? c.lsdata : null) })),
     ...extras.map((c) => ({ ...c, get: (a) => (a === 'lsdata' ? c.lsdata ?? null : null) })),
-  ].map((n) => ({ id: n.id, innerText: n.texto ?? '', getAttribute: n.get }));
+  ].map((n) => ({ id: n.id, innerText: n.texto ?? '', getAttribute: n.get,
+    // só o nó em EDIÇÃO é `<input>`, e é a PRESENÇA de `value` que o distingue no despejo
+    ...('value' in n ? { value: n.value } : {}) }));
   const grid = { id: 'C102', getAttribute: (a) => (a === 'lsdata' ? LSDATA_GRID : null) };
   return {
     getElementById: (id) => (id === 'C102' ? grid : null),
@@ -839,4 +841,52 @@ test('webgui: as células do bloco viram linhas com os ColumnIDs — e a faixa R
   expect(linhasDoBloco({ 7: { 1: 'x' } }, cols)[0]).toEqual({ _linha: 7, NAME: 'x', USER_VALUE: '',
     DEFAULT_VALUE: '', DEFAULT_USUBS_VALUE: '', DESCR: '' });
   expect(linhasDoBloco({ 7: { 1: 'x', 2: 'y' } }, [])[0]).toEqual({ _linha: 7, 1: 'x', 2: 'y' });
+});
+
+// ---------- o ALV editável: escrever numa célula (item 47) ----------
+//
+// O `lsdata` é o REAL do `BCALV_EDIT_01` no s4h 758/250 (05/09/2026,
+// POC_webgui_grid_edit/medicoes/raw/d-escrever-BCALV_EDIT_01.json): em repouso a célula é
+// `<span ct="CBS">` com o `21` OBJETO; com o foco ela vira `<input>` de mesmo id e o `21` vira
+// STRING JSON — a forma que fazia o `lerGrid` devolver `''` calado.
+const celulaEmEdicao = (r, c, servidor, digitado) => ({
+  id: `grid#C102#${r},${c}#if`, ct: 'CBS', texto: '', value: digitado,
+  lsdata: JSON.stringify({ x: 0, 1: 'FREETEXT', 2: false, 3: 'x_TALB', 5: servidor, 7: true, 12: true,
+    14: 'SERVER', 16: true, 20: false, 21: JSON.stringify({ value: servidor, halign: 'r', maxlen: 10, focusable: 'X' }),
+    23: '', 25: 'FILL_FIXED_LAYOUT' }),
+});
+
+test('webgui: a célula EM EDIÇÃO vira <input> e o 21 vira string — o bloco lê o digitado, não vazio', () => {
+  const doc = domDoGrid([celulaReal(1, 1, 'Autostart'), celulaEmEdicao(1, 3, '385', '333')]);
+  const b = rodarBloco(doc);
+  // sem o conserto esta célula saía '' (nenhum valor-objeto no lsdata + innerText de <input> vazio)
+  expect(b.celulas['1']).toEqual({ 1: 'Autostart', 3: '333' });
+  // e a leitura AVISA que aquilo ainda não foi publicado — o servidor tem outro valor
+  expect(b.editando).toEqual({ linha: 1, coluna: 3, digitado: '333', servidor: '385' });
+});
+
+test('webgui: sem célula em edição, `editando` é null', () => {
+  expect(rodarBloco(domDoGrid([celulaReal(1, 1, 'Autostart')])).editando).toBe(null);
+});
+
+test('webgui: o grid alvo se escolhe por índice, id ou sid — e o erro DIZ o que a tela tem', () => {
+  const grids = [{ id: 'C102', sid: 'wnd[0]/usr/cntlGRID1/shellcont/shell' }, { id: 'C103', sid: 'wnd[1]/x' }];
+  expect(escolherGrid(grids).id).toBe('C102');                       // sem alvo, o primeiro
+  expect(escolherGrid(grids, 1).id).toBe('C103');
+  expect(escolherGrid(grids, { id: 'C103' }).id).toBe('C103');
+  expect(escolherGrid(grids, { sid: 'wnd[1]/x' }).id).toBe('C103');
+  expect(() => escolherGrid(grids, { id: 'C999' }, 'escreverCelula'))
+    .toThrow(/escreverCelula — a tela não tem esse grid \(tem 2: C102, C103\)/);
+  expect(() => escolherGrid([], null, 'lerGrid')).toThrow(/tem 0: nenhum/);
+});
+
+test('webgui: a coluna se endereça pelo NOME do ColumnIDs (é como o action/622 a endereça)', () => {
+  const cols = ['CARRID', 'CONNID', 'FLDATE', 'PRICE', 'CURRENCY', 'PLANETYPE', 'SEATSMAX'];
+  expect(indiceDaColuna(cols, 'SEATSMAX')).toBe(7);
+  expect(indiceDaColuna(cols, 'seatsmax')).toBe(7);                  // o nome não é case-sensitive
+  expect(indiceDaColuna(cols, 3)).toBe(3);                           // o número passa direto
+  expect(() => indiceDaColuna(cols, 'SEATS_MAX')).toThrow(/não tem a coluna "SEATS_MAX" \(tem 7: CARRID, CONNID/);
+  // a coluna 0 é a caixa de seleção da linha, não é dado — pedir 0 é erro de quem chama
+  expect(() => indiceDaColuna(cols, 0)).toThrow(/1-based/);
+  expect(() => indiceDaColuna([], 'X')).toThrow(/tem 0: nenhuma/);
 });

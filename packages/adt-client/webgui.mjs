@@ -1082,6 +1082,15 @@ export async function botoes(sessao) {
  * O valor sai do `lsdata` do span `grid#<CID>#<r>,<c>#if` — o mesmo campo que a via HTTP lê —, com
  * o `innerText` como reserva. A coluna 0 fica de fora: é a caixa de seleção da linha
  * (`SAPTABLECSSELECTIONCELL`), não é dado; a linha 0 é o cabeçalho e não tem span `#if`.
+ *
+ * ⚠️ **A célula EM EDIÇÃO tem outra forma, e ignorá-la fazia o `lerGrid` devolver `''` calado.**
+ * Medido no s4h 758/250 em 05/09/2026 (item 47, `POC_webgui_grid_edit/medicoes/raw/d-escrever-*.json`):
+ * clicar numa célula de grid editável troca o `<span ct="CBS">` por um **`<input>` DE MESMO ID**, e
+ * nele o `lsdata[21]` deixa de ser objeto e vira **string JSON** — a busca por "valor de objeto"
+ * não acha nada, o `innerText` de um `<input>` é vazio, e a coluna saía em branco como se o dado
+ * não existisse. Daí as duas reservas aqui: o `21` re-parseado, e o `el.value` (que é o que a tela
+ * MOSTRA — inclusive o que foi digitado e ainda não publicado). Só a célula com FOCO vira `<input>`,
+ * então é no máximo uma por grid, e ela sai identificada em `editando`.
  */
 export const jsBlocoDoGrid = (cid) => `(() => {
   const p = (s) => { try { return s ? JSON.parse(s) : null; } catch (x) { return null; } };
@@ -1091,6 +1100,7 @@ export const jsBlocoDoGrid = (cid) => `(() => {
   const d = p(grid.getAttribute('lsdata')) || {};
   const sid = Object.values(d).find((v) => v && typeof v === 'object' && v.Type === 'GuiGridView') || {};
   const celulas = {};
+  let editando = null;
   for (const el of document.querySelectorAll('[id^="grid#"]')) {
     const partes = el.id.split('#');
     if (partes.length !== 4 || partes[1] !== cid || partes[3] !== 'if') continue;
@@ -1098,13 +1108,53 @@ export const jsBlocoDoGrid = (cid) => `(() => {
     if (rc.length !== 2 || !/^[0-9]+$/.test(rc[0]) || !/^[0-9]+$/.test(rc[1])) continue;
     if (Number(rc[0]) < 1 || Number(rc[1]) < 1) continue;
     const ls = p(el.getAttribute('lsdata'));
-    const v = ls && Object.values(ls).find((x) => x && typeof x === 'object' && 'value' in x);
-    (celulas[rc[0]] = celulas[rc[0]] || {})[rc[1]] = v ? String(v.value) : (el.innerText || '').trim();
+    let v = ls && Object.values(ls).find((x) => x && typeof x === 'object' && 'value' in x);
+    if (!v && ls) {                       // célula em edição: o 21 vira STRING JSON
+      for (const x of Object.values(ls)) {
+        if (typeof x !== 'string' || x.charAt(0) !== '{') continue;
+        const o = p(x);
+        if (o && 'value' in o) { v = o; break; }
+      }
+    }
+    const emEdicao = 'value' in el;       // <input> — só a célula com foco
+    if (emEdicao) editando = { linha: Number(rc[0]), coluna: Number(rc[1]),
+      digitado: String(el.value), servidor: v ? String(v.value) : null };
+    (celulas[rc[0]] = celulas[rc[0]] || {})[rc[1]] =
+      emEdicao ? String(el.value) : (v ? String(v.value) : (el.innerText || '').trim());
   }
   return { cid, sid: sid.SID || null, colunas: sid.ColumnIDs || [], total: sid.totalRows || 0,
     visiveis: sid.visibleRows || 0, primeiraVisivel: sid.firstVisibleRow, editavel: sid.editable === true,
-    celulas };
+    celulas, editando };
 })()`;
+
+/**
+ * PURO: qual dos grids da tela é o alvo — índice (`0`), `{ id }`, `{ sid }`, ou o primeiro.
+ * Estoura dizendo **o que a tela TEM**: "não achei" sem a lista manda adivinhar.
+ */
+export function escolherGrid(grids = [], alvo = null, rotulo = 'grid') {
+  const g = typeof alvo === 'number' ? grids[alvo]
+    : alvo?.sid ? grids.find((x) => x.sid === alvo.sid)
+    : alvo?.id ? grids.find((x) => x.id === alvo.id)
+    : grids[0];
+  if (!g) throw new Error(`webgui: ${rotulo} — a tela não tem esse grid (tem ${grids.length}: ${grids.map((x) => x.id).join(', ') || 'nenhum'})`);
+  return g;
+}
+
+/**
+ * PURO: a coluna vira ÍNDICE 1-based. Aceita o número (que passa direto) ou o **nome do
+ * `ColumnIDs`** (`'SEATSMAX'`) — que é como o próprio protocolo endereça a escrita
+ * (`action/622 … column_id=SEATSMAX`). Nome fora da lista estoura com a lista inteira.
+ */
+export function indiceDaColuna(colunas = [], coluna) {
+  if (typeof coluna === 'number') {
+    if (!Number.isInteger(coluna) || coluna < 1) throw new Error(`webgui: coluna ${coluna} inválida — o índice é 1-based (a coluna 0 é a caixa de seleção da linha)`);
+    return coluna;
+  }
+  const nome = String(coluna ?? '').toUpperCase();
+  const i = colunas.findIndex((c) => String(c).toUpperCase() === nome);
+  if (i < 0) throw new Error(`webgui: o grid não tem a coluna "${coluna}" (tem ${colunas.length}: ${colunas.join(', ') || 'nenhuma'})`);
+  return i + 1;
+}
 
 /**
  * PURO: as células do bloco viram LINHAS, com os `ColumnIDs` do grid como chave e `_linha` com o
@@ -1131,19 +1181,17 @@ export function linhasDoBloco(celulas = {}, colunas = [], { de = 1, ate = null }
  * `de`/`ate` são 1-based, inclusivos e ABSOLUTOS (o mesmo `_linha` que volta) — recortam o bloco,
  * não pedem nada a mais.
  *
- * Devolve `{ id, sid, colunas, total, bloco: { de, ate, n }, de, ate, linhas, parcial, ms }`.
+ * Devolve `{ id, sid, colunas, total, bloco: { de, ate, n }, de, ate, linhas, parcial, editando, ms }`.
  * ⚠️ **`parcial: true` é a resposta normal, não erro:** significa que a tabela tem mais linhas do
  * que o bloco (`bloco.ate < total`) — as que faltam não estão no DOM e este módulo não vai buscá-las
  * (§ acima). Para a tabela inteira: `its.lerGrid` na via HTTP.
+ * ⚠️ **`editando` ≠ `null` é aviso de dado NÃO PUBLICADO:** aquela célula está em campo de entrada
+ * e o valor da leitura é o que está DIGITADO (`editando.digitado`), que pode divergir do que o
+ * servidor tem (`editando.servidor`) até alguém publicá-lo (§ `escreverCelula`).
  */
 export async function lerGrid(sessao, alvo = null, { de = 1, ate = null } = {}) {
   const t0 = Date.now();
-  const grids = (await lerTela(sessao))?.grids ?? [];
-  const g = typeof alvo === 'number' ? grids[alvo]
-    : alvo?.sid ? grids.find((x) => x.sid === alvo.sid)
-    : alvo?.id ? grids.find((x) => x.id === alvo.id)
-    : grids[0];
-  if (!g) throw new Error(`webgui: lerGrid — a tela não tem esse grid (tem ${grids.length}: ${grids.map((x) => x.id).join(', ') || 'nenhum'})`);
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'lerGrid');
   const b = await avaliar(sessao, jsBlocoDoGrid(g.id));
   if (!b) throw new Error(`webgui: lerGrid — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
   const presentes = Object.keys(b.celulas).map(Number).filter((n) => Number.isFinite(n)).sort((a, x) => a - x);
@@ -1154,7 +1202,91 @@ export async function lerGrid(sessao, alvo = null, { de = 1, ate = null } = {}) 
   const linhas = linhasDoBloco(b.celulas, b.colunas, { de: ini, ate: fim });
   detalhe(`webgui: lerGrid ${g.id} — ${linhas.length} linha(s) do bloco ${bloco.de}..${bloco.ate} de ${total}, sem rede`);
   return { id: g.id, sid: b.sid ?? g.sid, colunas: b.colunas, total, bloco,
-    de: ini, ate: fim, linhas, parcial: bloco.ate !== null && bloco.ate < total, ms: Date.now() - t0 };
+    de: ini, ate: fim, linhas, parcial: bloco.ate !== null && bloco.ate < total,
+    editando: b.editando ?? null, ms: Date.now() - t0 };
+}
+
+// ---------- ESCREVER numa célula do ALV (item 47) ----------
+//
+// Medido no s4h 758/250 em 05/09/2026 (fila `adt-client`, item 47; bruto e leitura em
+// `sap-accelerate/work/POC_webgui_grid_edit/`). O item 25 leu o ALV e o 46 leu o bloco do DOM; os
+// dois pararam na leitura porque o `RSPARAM` é `editable: false`. Achar laboratório foi a fase A
+// (14 programas sondados: `BCALV_EDIT_01/03..08`, `BCALV_GRID_EDIT`, `BCALV_TEST_GRID_EDIT*` são
+// `editable: true`) e nenhum deles GRAVA em banco (fase B, pelo fonte: só tabela interna) — por
+// isso o ciclo com LUW foi medido num laboratório próprio (`ZJBV_ALV47` + `ZJBV_ALV47_EDIT`, $TMP).
+//
+// **A célula editável não é um `<input>` até alguém clicar nela.** Em repouso ela é o mesmo
+// `<span ct="CBS">` da leitura; o clique a troca por um `<input type="text">` **de mesmo id**
+// (`grid#<CID>#<r>,<c>#if`). É por isso que o gesto é clicar → digitar, e não `.value =`.
+//
+// **Quem publica é o `blur`; quem MANDA é o round-trip seguinte.** O `Change` do `lsevents` da
+// célula enfileira `action/622/<SID do grid>` com `content="row_index=<n>&column_id=<NOME>&value=<v>"`
+// — note que a coluna vai pelo NOME (`ColumnIDs`), não pelo índice — e a fila só sai com o próximo
+// post ao servidor (`vkey/0/ses[0]`, um OK-code, um botão). É o mesmo mecanismo do campo comum
+// (item 31), e o `comandar` já dá o `blur` antes de mandar (`publicarValores`).
+//
+// ⚠️ **O modo de falha é SILENCIOSO e foi medido (fase H, `raw/h-contraprova.json`).** Digitar sem
+// publicar e mandar o fcode de gravação:
+//   • NEGATIVA — sem `blur` e com `comandar('FC01', { publicarValores: false })`: **0 `action/622`**
+//     no batch, o ABAP rodou e devolveu a mensagem de sucesso *"ITEM47 GRAVOU subrc=0 n=3"*, e a
+//     tabela lida em OUTRA LUW ficou **idêntica** — o valor nunca saiu do navegador.
+//   • POSITIVA — o mesmo valor com `blur`: **1 `action/622`**, mesma mensagem, e a linha na outra
+//     LUW passou a `CP-POSITIVA`.
+// Ou seja: a mensagem de sucesso do programa NÃO é prova de que o que você digitou chegou. A prova
+// é o `action/622` ter saído (é o que `publicado` devolve) e, depois, a leitura em outra LUW.
+//
+// ⚠️ **Digitar não valida nada.** O renderer aceita texto em QUALQUER célula do grid editável e
+// monta o `action/622` mesmo para coluna que a tela pinta como protegida (medido no `BCALV_EDIT_01`
+// com `PRICE`, cujo `lsdata` não tem as chaves `12`/`16` das demais). Quem recusa é o ABAP, na
+// resposta — então a conferência é sempre depois do round-trip, nunca no DOM.
+
+/**
+ * Escreve numa célula do ALV **desta** tela e PUBLICA o valor (o `blur`), deixando-o na fila do
+ * renderer. `alvo` escolhe o grid como no `lerGrid`; `linha` é o índice ABSOLUTO (o `_linha` que o
+ * `lerGrid` devolve) e `coluna` é o nome do `ColumnIDs` ou o índice 1-based.
+ *
+ * ⚠️ **NÃO manda nada ao servidor** — por isso devolve `pendente: true`. O valor viaja no próximo
+ * round-trip: `comandar(sessao, '<fcode de gravar>')` ou `acionar(sessao, 'btn[11]')`. Quem grava
+ * é o programa ABAP, não este módulo; e a prova de que gravou é ler em outra LUW.
+ *
+ * Devolve `{ id, sid, linha, coluna, nomeColuna, de, para, publicado, pendente, ms }`.
+ */
+export async function escreverCelula(sessao, alvo = null, { linha, coluna, valor } = {}) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'escreverCelula');
+  const b = await avaliar(sessao, jsBlocoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: escreverCelula — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  if (b.editavel !== true) {
+    throw new Error(`webgui: escreverCelula — o grid ${g.id} não é editável (o lsdata dele diz editable=${b.editavel}). ` +
+      'ALV somente-leitura não tem campo de entrada nenhum: o clique não abre input e nada seria publicado.');
+  }
+  const c = indiceDaColuna(b.colunas, coluna);
+  const presentes = Object.keys(b.celulas).map(Number).filter(Number.isFinite).sort((x, y) => x - y);
+  const n = Number(linha);
+  if (!b.celulas[String(n)]) {
+    throw new Error(`webgui: escreverCelula — a linha ${linha} não está no bloco carregado ` +
+      `(${presentes[0] ?? '-'}..${presentes[presentes.length - 1] ?? '-'} de ${b.total}). ` +
+      'Este módulo escreve no que a tela já trouxe; chegar a linha distante é navegação (roda do mouse), não leitura.');
+  }
+  const id = `grid#${g.id}#${n},${c}#if`;
+  const de = b.celulas[String(n)][String(c)] ?? '';
+  const p = await apontar(sessao, { id }, { descer: false });
+  if (!p) throw new Error(`webgui: escreverCelula — a célula ${id} não está apontável na tela`);
+  await clique(sessao, p);
+  await esperarQuieto(sessao, { quietoMs: 800, tetoMs: 8000 });
+  const foco = await avaliar(sessao, `(() => { const a = document.activeElement; return a && a.id === ${JSON.stringify(id)} && 'value' in a ? a.tagName : (a && a.id) || null; })()`);
+  if (foco !== 'INPUT') {
+    throw new Error(`webgui: escreverCelula — o clique em ${id} não abriu campo de entrada (o foco ficou em ${foco ?? 'nada'}). ` +
+      'A célula está protegida, ou o ALV está em "editável e não pronto para entrada" (o botão Exibir/Modificar do ALV alterna isso).');
+  }
+  await avaliar(sessao, `(() => { const a = document.activeElement; if (a && a.select) a.select(); return true; })()`);
+  await tecla(sessao, 'Delete', { assentar: false });
+  await digitar(sessao, valor);
+  const para = await avaliar(sessao, `(document.activeElement || {}).value`);
+  const publicado = await avaliar(sessao, JS_PUBLICAR_FOCO);
+  detalhe(`webgui: escreverCelula ${id} (${b.colunas?.[c - 1] ?? c}) "${de}" → "${para}" — publicado, PENDENTE de round-trip`);
+  return { id, sid: b.sid ?? g.sid, linha: n, coluna: c, nomeColuna: b.colunas?.[c - 1] ?? null,
+    de, para, publicado: publicado ?? null, pendente: true, ms: Date.now() - t0 };
 }
 
 export async function print(sessao, arquivo) {
