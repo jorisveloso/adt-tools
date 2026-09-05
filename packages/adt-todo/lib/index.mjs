@@ -8,11 +8,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   parseFila, proximo, proximoNumero, linhasDoItem, addItem, marcarFeito, anotar, statusDaFila,
+  adiarItem, estadoDoItem,
 } from './fila.mjs';
 import { FILAS_DIR } from './config.mjs';
 
 export {
   parseFila, proximo, proximoNumero, linhasDoItem, addItem, marcarFeito, anotar, statusDaFila,
+  adiarItem, estadoDoItem,
 } from './fila.mjs';
 export { FILAS_DIR } from './config.mjs';
 
@@ -102,6 +104,22 @@ export function anotarItem(pasta = FILAS_DIR, nome, n, rotulo, texto) {
   const novo = anotar(markdown, n, rotulo, texto);
   const caminho = gravar(pasta, nomeDaFila(pasta, nome), novo);
   return { caminho, markdown: novo };
+}
+
+/** Adia um item para o FIM da fila (perde a prioridade de `em andamento`) e grava. */
+export function adiar(pasta = FILAS_DIR, nome, n, motivo) {
+  const nFila = nomeDaFila(pasta, nome);
+  const markdown = lerOuCriar(pasta, nFila);
+  const novo = adiarItem(markdown, n, motivo);
+  const caminho = gravar(pasta, nFila, novo);
+  return { caminho, markdown: novo };
+}
+
+/** Um item da fila, como está no ARQUIVO agora (null se não existe). Não grava nada. */
+export function itemDaFila(pasta = FILAS_DIR, nome, n) {
+  const markdown = ler(pasta, nomeDaFila(pasta, nome));
+  if (markdown === null) return null;
+  return parseFila(markdown).itens.find((i) => i.n === Number(n)) ?? null;
 }
 
 /** Resumo do estado de uma fila. */

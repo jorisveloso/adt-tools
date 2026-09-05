@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  add, next, fechar, anotarItem, status, listarFilas, arquivoDaFila, resumoFila, filaAtiva,
+  add, next, fechar, anotarItem, status, listarFilas, arquivoDaFila, resumoFila, filaAtiva, adiar, itemDaFila,
 } from './index.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adt-todo-test-'));
@@ -116,4 +116,17 @@ test('nome de fila inválido (caracteres ilegais) lança e não cria arquivo', (
 test('nome vazio vira fila ativa; sem fila ativa lança "nenhuma fila" (não grava undefined.md)', () => {
   expect(() => status(tmp, '')).toThrow(/nenhuma fila/);
   expect(listarFilas(tmp).map((f) => f.nome)).not.toContain('undefined');
+});
+
+test('adiar grava o item no fim da fila e itemDaFila lê como está no arquivo', () => {
+  add(tmp, 'fila', 'primeiro');
+  add(tmp, 'fila', 'segundo');
+  anotarItem(tmp, 'fila', 1, 'em andamento', 'meio do caminho');
+  expect(next(tmp, 'fila').n).toBe(1);
+  adiar(tmp, 'fila', 1, 'sessão terminou sem fechar');
+  expect(next(tmp, 'fila').n).toBe(2);
+  const it = itemDaFila(tmp, 'fila', 1);
+  expect(it.notas.map((x) => x.texto)).toEqual(['adiado: meio do caminho', 'adiado: sessão terminou sem fechar']);
+  expect(itemDaFila(tmp, 'fila', 99)).toBeNull();
+  expect(fs.readFileSync(arquivoDaFila(tmp, 'fila'), 'utf8').trim().endsWith('> adiado: sessão terminou sem fechar')).toBe(true);
 });

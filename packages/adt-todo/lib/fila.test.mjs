@@ -6,7 +6,7 @@
 
 import { test, expect } from 'vitest';
 import {
-  parseFila, proximo, proximoNumero, addItem, marcarFeito, anotar, statusDaFila,
+  parseFila, proximo, proximoNumero, addItem, marcarFeito, anotar, statusDaFila, adiarItem, estadoDoItem,
 } from './fila.mjs';
 
 const FILA_EXEMPLO = `# Fila de exemplo
@@ -161,4 +161,38 @@ test('anotar: bloqueado substitui as duas formas (não duplica)', () => {
 test('addItem: bloqueado com "até …" grava o formato de reabertura', () => {
   const { markdown } = addItem('', 'x', { bloqueado: 'até 2026-09-03 20:00: janela SP' });
   expect(markdown).toContain('> bloqueado até 2026-09-03 20:00: janela SP');
+});
+
+// ---------- adiar (o runner do adt-sandcastle) ----------
+
+test('adiarItem move o item para o fim, mantém o número e anota o motivo', () => {
+  const mk = `# Fila\n\n- [ ] 1. A\n- [ ] 2. B\n- [ ] 3. C\n`;
+  const novo = adiarItem(mk, 1, 'sessão estourou');
+  const { itens } = parseFila(novo);
+  expect(itens.map((i) => i.n)).toEqual([2, 3, 1]);
+  expect(itens[2].notas.map((x) => x.texto)).toEqual(['adiado: sessão estourou']);
+  expect(proximo({ itens }).n).toBe(2);
+});
+
+test('adiarItem rebaixa "em andamento" para "adiado" — o item perde a prioridade de retomada', () => {
+  const mk = `- [ ] 1. A\n> em andamento: parou no passo 2\n- [ ] 2. B\n`;
+  expect(proximo(parseFila(mk)).n).toBe(1);
+  const { itens } = parseFila(adiarItem(mk, 1, 'sem fechar'));
+  expect(itens.map((i) => i.n)).toEqual([2, 1]);
+  expect(itens[1].notas.map((x) => x.texto)).toEqual(['adiado: parou no passo 2', 'adiado: sem fechar']);
+  expect(proximo({ itens }).n).toBe(2);
+});
+
+test('adiarItem preserva bloqueio e recusa item feito ou inexistente', () => {
+  const mk = `- [ ] 1. A\n> bloqueado: sem VPN\n- [x] 2. B\n- [ ] 3. C\n`;
+  const { itens } = parseFila(adiarItem(mk, 1));
+  expect(itens.map((i) => i.n)).toEqual([2, 3, 1]);
+  expect(itens[2].notas.map((x) => x.texto)).toEqual(['bloqueado: sem VPN']);
+  expect(() => adiarItem(mk, 2, 'x')).toThrow(/já está fechado/);
+  expect(() => adiarItem(mk, 9, 'x')).toThrow(/não existe/);
+});
+
+test('estadoDoItem expõe o estado derivado', () => {
+  const { itens } = parseFila(`- [x] 1. a\n- [ ] 2. b\n> bloqueado: x\n- [ ] 3. c\n> em andamento: y\n- [ ] 4. d\n`);
+  expect(itens.map((i) => estadoDoItem(i))).toEqual(['feito', 'bloqueado', 'emAndamento', 'aberto']);
 });

@@ -103,6 +103,12 @@ function estadoDe(item, agora) {
   return 'aberto';
 }
 
+/** PURO: o estado de um item — 'feito' | 'bloqueado' | 'emAndamento' | 'aberto'. É o que o runner
+ * do adt-sandcastle lê no ARQUIVO depois de uma sessão para decidir se adia o item. */
+export function estadoDoItem(item, { agora } = {}) {
+  return estadoDe(item, agora ?? Date.now());
+}
+
 /**
  * PURO: qual item rodar. Regras da skill:
  *   · alvo = PRIMEIRO aberto sem `> bloqueado:`;
@@ -222,6 +228,29 @@ export function anotar(markdown, n, rotulo, texto) {
   if (idx >= 0) it.notas[idx] = { texto: entrada };
   else it.notas.push({ texto: entrada });
   serializarNotas(it);
+  return recompor(markdown, itens);
+}
+
+/**
+ * PURO: ADIA um item — move-o para o FIM da fila (a ordem no arquivo é a de execução; o número
+ * fica) e registra `> adiado: <motivo>`. Uma notinha `em andamento:` vira `adiado: <texto>` para
+ * o item PERDER a prioridade de retomada: é isto que faz um item que não conseguiu ser executado
+ * deixar de segurar os outros. O bloqueio, se houver, é preservado. Item feito não se adia.
+ */
+export function adiarItem(markdown, n, motivo) {
+  const { itens } = parseFila(markdown);
+  const idx = itens.findIndex((i) => i.n === n);
+  if (idx < 0) throw new Error(`item ${n} não existe na fila`);
+  const it = itens[idx];
+  if (it.feito) throw new Error(`item ${n} já está fechado — não há o que adiar`);
+  it.notas = it.notas.map((x) => (/^em andamento:/i.test(x.texto)
+    ? { texto: x.texto.replace(/^em andamento:/i, 'adiado:') }
+    : x));
+  const texto = String(motivo ?? '').trim();
+  if (texto) it.notas.push({ texto: `adiado: ${texto}` });
+  serializarNotas(it);
+  itens.splice(idx, 1);
+  itens.push(it);
   return recompor(markdown, itens);
 }
 
