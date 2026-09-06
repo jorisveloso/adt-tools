@@ -1416,6 +1416,190 @@ export async function ordenarGrid(sessao, alvo = null, coluna, { ordem = 'asc', 
   return { id: g.id, sid: g.sid, colunas: indices, nomes, ordem: dir, botao: b.sid, tecla: b.tecla, total, ms: Date.now() - t0 };
 }
 
+// ---------- ESCREVER em LOTE no ALV: colar um bloco (item 125) ----------
+//
+// Medido no s4h 758/250 em 06/09/2026 (fila `adt-client`, item 125; bruto e leitura em
+// `sap-accelerate/work/POC_webgui_grid_paste/medicoes/item125-lote-http.md`), no laboratório do
+// item 47 (`ZJBV_ALV47_EDIT`: ALV editável que PERSISTE, `FC01` grava).
+//
+// O item 79 capturou no navegador o batch que o renderer manda ao COLAR um bloco no ALV. Aqui a
+// pergunta era outra: esse batch, montado À MÃO e postado por esta via, é ACEITO? (compor não é
+// funcionar — o item 50 mediu `action/1` e `action/74` declarados no `lsevents` e inexistentes no
+// protocolo, e o próprio `action/25` do `ClipboardTablePaste` é uma dessas mentiras.) **É aceito**,
+// e sem navegador nenhum:
+//
+//   action/53/<SID do grid>   row_index=<linha 1-based>&column_index=<coluna 1-based>   ← a ÂNCORA
+//   action/770/<SID>          c0=<v>&c1=<v>…&curColIdx=<coluna>&curRowIdx=<0-based RELATIVO>
+//   … um `action/770` por linha …
+//   get state/ur
+//
+// tudo num POST, `content` URL-encoded. **20 linhas × 2 colunas = 40 células em 129 ms, um POST**
+// (fase H2); 3 linhas × 2 em 78 ms (fase G). O `colarBloco` do navegador gasta ~2,6 s nas mesmas
+// 6 células, e 6 × `escreverCelula` gastam 9,7 s (item 79, fase D).
+//
+// O que esta via NÃO precisa, e o navegador manda:
+//   • **`action/50`** (a área selecionada) é dispensável — sem ele o efeito é o mesmo (fases E–I);
+//   • **`focus/<SID>`** idem;
+//   • **`action/53`** só é preciso para MOVER a âncora: sem ele a corrente é a `(1,1)` e o
+//     `curRowIdx`/`curColIdx` endereçam sozinhos a partir dela (fase F1: `curRowIdx=2` sem `53`
+//     escreveu na linha 3). A lib manda o `53` sempre — é ele que torna `linha`/`coluna` um
+//     endereço ABSOLUTO em vez de um deslocamento da corrente, que ninguém sabe onde está.
+//
+// ⚠️ **Estouro embaixo: sem o `action/771` o batch é RECUSADO NO MEIO, e o que passou fica**
+// (fase F3). Ancorado na última linha, dois `770` voltaram `multipart -133 failed to fire action:
+// argument value out of range` — e a PRIMEIRA linha já estava escrita no grid. É o modo de falha
+// mais feio deste protocolo: a resposta diz "não pegou" e metade pegou. Por isso `colarBloco`
+// conta as linhas ele mesmo e intercala `action/771 curRowIdx=0&pasteOption=Append` ANTES de cada
+// linha que passa do fim — medido (fases F4/H1) que depois do Append a corrente vira a linha nova,
+// e por isso o `770` seguinte volta a `curRowIdx=0`. A linha anexada nasce VAZIA fora do bloco: a
+// coluna que não veio no bloco fica em branco (é o `anexadas` do retorno).
+//
+// ⚠️ **Coluna que estoura à direita some SEM AVISO** (fase F5, igual ao navegador): ancorado na
+// última coluna, `c0=917&c1=SOBRA` foi aceito, o `917` aplicado e o `SOBRA` descartado calado.
+// Por isso a recusa é AQUI, antes do POST.
+//
+// ⚠️ **A tela depois do paste NÃO é prova, e colar NÃO grava** — as duas regras do item 79 valem
+// igual nesta via, e a contra-prova pareada refez as duas (fase G): o mesmo bloco 3×2 sem `FC01`
+// deixou `ZJBV_ALV47` intacta em outra LUW; com `comandar(s, 'FC01')` ("ITEM47 GRAVOU subrc=0
+// n=4") a tabela veio `POSA/921`, `POSB/922`, `POSC/923`. **O ABAP recebe igual ao gesto do
+// navegador.**
+//
+// ⚠️ Duas restrições do `colarBloco` do webgui.mjs NÃO valem aqui, porque nascem do renderer em
+// JavaScript e não do protocolo — pela via HTTP não há renderer:
+//   • **bloco de UMA célula funciona** (fases I1/I2): o `770` com um `c0` só escreveu a célula. No
+//     navegador o mesmo gesto é ignorado em silêncio (sem TAB não é "colagem de tabela");
+//   • **`&`, `=`, `;`, `%`, `+` e acento chegam íntegros** (fase I3) — o `encodeURIComponent` do
+//     `content` dá conta.
+// E uma que vale por DECISÃO, não por medida: TAB e quebra dentro de um valor. Medido (fase I4)
+// que pela via HTTP o TAB chega íntegro ao grid e a quebra é ENGOLIDA em silêncio (`p\nq` virou
+// `pq`); na via do navegador os dois partiriam a célula. Como o mesmo bloco não pode significar
+// coisas diferentes em cada via, os dois são recusados aqui.
+
+/**
+ * PURO: o bloco vira MATRIZ de strings. Aceita `[['a', 1], ['b', 2]]` ou o TSV pronto (o `\r\n` do
+ * Excel é normalizado), como o `tsvDoBloco` do webgui.mjs — mas aqui o bloco de UMA célula é
+ * VÁLIDO (medido: o protocolo o aceita; quem o ignorava era o renderer).
+ * Devolve `{ matriz, linhas, colunas, celulas }`.
+ */
+export function matrizDoBloco(valores) {
+  const bruta = typeof valores === 'string'
+    ? String(valores).replace(/\r\n?/g, '\n').split('\n').map((l) => l.split('\t'))
+    : valores;
+  if (!Array.isArray(bruta) || !bruta.length) {
+    throw new Error('its: colarBloco — `valores` é o bloco: array de linhas (cada uma array de células) ou o TSV pronto; '
+      + `veio ${Array.isArray(bruta) ? 'um array vazio' : JSON.stringify(valores)}`);
+  }
+  const matriz = bruta.map((l, i) => {
+    const cels = Array.isArray(l) ? l : [l];
+    if (!cels.length) throw new Error(`its: colarBloco — a linha ${i + 1} do bloco não tem célula nenhuma`);
+    return cels.map((v, j) => {
+      const s = v === null || v === undefined ? '' : String(v);
+      if (/[\t\r\n]/.test(s)) {
+        throw new Error(`its: colarBloco — o valor da linha ${i + 1}, coluna ${j + 1} tem TAB ou quebra `
+          + `(${JSON.stringify(s)}): medido que por HTTP o TAB chega íntegro e a quebra é engolida em silêncio, `
+          + 'e que na via do navegador os dois partiriam a célula em duas — o mesmo bloco não pode significar duas coisas');
+      }
+      return s;
+    });
+  });
+  return { matriz, linhas: matriz.length, colunas: Math.max(...matriz.map((l) => l.length)),
+    celulas: matriz.reduce((n, l) => n + l.length, 0) };
+}
+
+/**
+ * PURO: os passos do paste — a âncora (`action/53`) e um `action/770` por linha, com o
+ * `action/771 Append` intercalado antes de cada linha que passa do fim do ALV (`total`).
+ * `linha`/`coluna` são 1-based e ABSOLUTOS; o `curRowIdx` relativo sai daqui.
+ * Devolve `{ passos, anexadas }`.
+ */
+export function batchColar(sid, { linha, coluna, matriz, total }) {
+  const passos = [{ post: `action/53/${sid}`, content: `row_index=${linha}&column_index=${coluna}` }];
+  let anexadas = 0;
+  matriz.forEach((cels, i) => {
+    if (linha + i > Number(total)) {           // passou do fim: o ALV só cria a linha se a PEDIREM
+      passos.push({ post: `action/771/${sid}`, content: 'curRowIdx=0&pasteOption=Append' });
+      anexadas++;
+    }
+    const conteudo = cels.map((v, j) => `c${j}=${encodeURIComponent(v)}`).join('&');
+    // depois de um Append a corrente é a linha NOVA — daí o `curRowIdx` voltar a 0 (medido)
+    passos.push({ post: `action/770/${sid}`, content: `${conteudo}&curColIdx=${coluna}&curRowIdx=${anexadas ? 0 : i}` });
+  });
+  return { passos, anexadas };
+}
+
+/**
+ * Cola um BLOCO no ALV desta tela a partir da célula (`linha`, `coluna`) — **N células num POST
+ * só, sem navegador**. É o par HTTP puro do `colarBloco` do webgui.mjs, e o único jeito desta via
+ * ESCREVER no grid (até aqui ela só lia).
+ *
+ * `alvo` escolhe o grid como no `lerGrid`; `linha` é o índice ABSOLUTO (o `_linha` do `lerGrid`),
+ * `coluna` é o nome do `ColumnIDs` ou o índice 1-based; `valores` é `[['a', 1], ['b', 2]]` ou o
+ * TSV pronto (o do Excel serve direto).
+ *
+ * ```js
+ * const s = await abrirTransacao(cfg, 'SA38', { parametros: { 'RS38M-PROGRAMM': 'Z…' }, okcode: 'STRT' });
+ * await colarBloco(s, null, { linha: 1, coluna: 'NOME', valores: [['AA', 10], ['BB', 20]] });
+ * await comandar(s, 'FC01');   // ← quem GRAVA é o programa ABAP, no fcode seguinte
+ * ```
+ *
+ * ⚠️ **Mandar não é gravar** e **a tela depois não é prova**: a prova é ler em outra LUW (§ acima).
+ *
+ * Devolve `{ id, sid, linha, coluna, nomeColuna, nLinhas, nColunas, celulas, passos, total,
+ * anexadas, conferidas, divergentes, pendente: false, ms }`. `anexadas` > 0 = o bloco passou do fim
+ * e o ALV criou linha (vazia fora do bloco); `divergentes` lista o que a tela NÃO devolveu como
+ * pedido — só das linhas que voltaram no delta (`conferidas`), que são as da janela visível.
+ */
+export async function colarBloco(sessao, alvo = null, { linha, coluna, valores, tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const bloco = matrizDoBloco(valores);
+  const g = escolherGrid(sessao, alvo, 'colarBloco');
+  if (g.editavel !== true) {
+    throw new Error(`its: colarBloco — o grid ${g.id} não é editável (o lsdata dele diz editable=${g.editavel}). `
+      + 'ALV somente-leitura não aceita o paste: o `action/770` cairia em célula protegida.');
+  }
+  const total = Number(g.linhas ?? 0);
+  const n = Number(linha);
+  if (!Number.isInteger(n) || n < 1 || n > total) {
+    throw new Error(`its: colarBloco — a linha âncora ${linha} está fora do ALV (ele tem ${total} linha(s), 1-based). `
+      + 'A âncora tem de ser uma linha que existe; o bloco pode passar do fim (o ALV anexa).');
+  }
+  const c = indiceDaColuna(g.colunas ?? [], coluna);
+  const nCols = g.colunas?.length ?? 0;
+  if (nCols && c + bloco.colunas - 1 > nCols) {
+    throw new Error(`its: colarBloco — o bloco tem ${bloco.colunas} coluna(s) a partir de `
+      + `${g.colunas[c - 1]} (${c}) e o grid só tem ${nCols}: as ${c + bloco.colunas - 1 - nCols} que sobram seriam `
+      + 'DESCARTADAS em silêncio (medido). Ancore mais à esquerda ou corte o bloco.');
+  }
+  const { passos, anexadas } = batchColar(g.sid, { linha: n, coluna: c, matriz: bloco.matriz, total });
+  const r = await postar(sessao, [...passos, ESTADO], { tetoMs });
+  if (!r.pegou) {
+    throw new Error(`its: colarBloco — o POST não pegou (${r.motivo}). ⚠ O batch é aplicado passo a passo e o que `
+      + 'passou ANTES da recusa FICOU no grid: leia com `lerGrid` antes de tentar de novo, e não mande o fcode de '
+      + 'gravar às cegas.');
+  }
+  // As células que voltaram no delta — a janela visível do grid. Dá para conferir sem outra viagem.
+  const vistas = celulasDoGrid(r.corpo, g.id);
+  const divergentes = [];
+  let conferidas = 0;
+  bloco.matriz.forEach((cels, i) => cels.forEach((v, j) => {
+    const lin = n + i, col = c + j;
+    const ficou = vistas.get(lin)?.[col];
+    if (ficou === undefined) return;
+    conferidas++;
+    if (String(ficou).trim() !== v.trim()) {
+      divergentes.push({ linha: lin, coluna: col, nomeColuna: g.colunas?.[col - 1] ?? null, pedi: v, ficou });
+    }
+  }));
+  const depois = Number(escolherGrid(sessao, alvo, 'colarBloco').linhas ?? 0);
+  detalhe(`its: colarBloco ${g.id} — ${bloco.linhas}×${bloco.colunas} (${bloco.celulas} células) a partir de `
+    + `${n},${g.colunas?.[c - 1] ?? c} num POST de ${passos.length} passo(s)`
+    + (anexadas > 0 ? `; ${anexadas} linha(s) ANEXADA(s) pelo ALV, vazias fora do bloco` : '')
+    + (divergentes.length ? `; ⚠ ${divergentes.length} célula(s) NÃO ficaram como pedido: ${divergentes.map((x) => `${x.linha},${x.nomeColuna ?? x.coluna} "${x.pedi}"→"${x.ficou}"`).join(', ')}` : ''));
+  return { id: g.id, sid: g.sid, linha: n, coluna: c, nomeColuna: g.colunas?.[c - 1] ?? null,
+    nLinhas: bloco.linhas, nColunas: bloco.colunas, celulas: bloco.celulas, passos: passos.length,
+    total: depois, anexadas, conferidas, divergentes, pendente: false, ms: Date.now() - t0 };
+}
+
 // ---------- o ITSDoc: a via de ARQUIVO, nas duas direções (exportar e importar) ----------
 
 /**

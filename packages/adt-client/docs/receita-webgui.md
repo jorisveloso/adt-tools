@@ -3965,11 +3965,94 @@ tratou é o `preventDefault` — sem ele, `colarBloco` estoura em vez de deixar 
 
 ### O que ainda NÃO está medido
 
-- **`action/770` pela via HTTP** (`its.mjs`), sem navegador — seria escrita em lote sem Chrome.
+- ~~**`action/770` pela via HTTP**~~ **medido** (item 125): a via HTTP escreve o bloco **sem
+  navegador nenhum** — § "Escrever em LOTE pela via HTTP", logo abaixo.
 - **Colar com mais de um bloco selecionado**, ou sobre uma seleção de faixa (o `action/50` sugere
   que a área importa; aqui ela sempre foi 1×1).
 - **`LOCAL&COPY_ROW`** e o caminho inverso (copiar do ALV para o clipboard) — o
   `CopyToClipboardRequest` já se sabe sem via HTTP (item 45).
+
+## Escrever em LOTE pela via HTTP — o mesmo bloco SEM navegador (item 125)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 125; evidência em
+`sap-accelerate/work/POC_webgui_grid_paste/medicoes/item125-lote-http.md`). Até aqui a via HTTP
+**lia** o ALV (`lerGrid`) e não escrevia nele: `escreverCelula` e `colarBloco` só existiam no
+navegador. O item 79 capturou o batch que o renderer manda ao colar; a pergunta deste era se esse
+batch, montado **à mão** e postado pelo `its.mjs`, é aceito — porque **compor não é funcionar** (o
+item 50 mediu `action/1` e `action/74` declarados no `lsevents` e inexistentes no protocolo, e o
+`action/25` do `ClipboardTablePaste` é uma dessas mentiras).
+
+É aceito. E o que sobra do batch do renderer é **pouco**:
+
+```
+action/53/<SID do grid>   row_index=<linha 1-based>&column_index=<coluna 1-based>   ← a ÂNCORA
+action/770/<SID>          c0=<v>&c1=<v>…&curColIdx=<coluna>&curRowIdx=<0-based RELATIVO>
+… um `action/770` por linha …
+get state/ur
+```
+
+```js
+import { abrirTransacao, colarBloco, comandar, lerGrid, fechar } from './its.mjs';
+
+const s = await abrirTransacao(cfg, 'SA38', { parametros: { 'RS38M-PROGRAMM': 'Z…' }, okcode: 'STRT' });
+await colarBloco(s, null, { linha: 1, coluna: 'NOME', valores: [['LIBa', 801], ['LIBb', 802]] });
+await colarBloco(s, { id: 'C102' }, { linha: 1, coluna: 'NOME', valores: 'a\t1\r\nb\t2' }); // TSV do Excel
+await comandar(s, 'FC01');       // ← quem GRAVA é o programa ABAP, no fcode seguinte
+```
+
+### O custo, lado a lado
+
+| via | 6 células | requisições |
+|---|---|---|
+| 6 × `escreverCelula` (navegador) | 9748 ms | 0 (tudo pendente) |
+| 1 × `colarBloco` (navegador) | 2578 ms | 1 |
+| **1 × `colarBloco` (HTTP)** | **93 ms** | **1** |
+
+E a escala é a do parse, não a do round-trip: **20 linhas × 2 colunas = 40 células num POST, 129 ms**.
+
+### O que esta via NÃO precisa mandar
+
+`action/50` (a área) e `focus/<SID>` são **decoração**: sem eles o efeito é idêntico. O `action/53`
+também é dispensável — sem ele a âncora é a célula corrente do ALV (a `(1,1)` numa tela recém-aberta)
+e o `curRowIdx`/`curColIdx` endereçam a partir dela (medido: `curRowIdx=2` sem `53` escreveu na
+linha 3). A lib manda o `53` **sempre**, porque é ele que faz `linha`/`coluna` serem endereço
+ABSOLUTO em vez de deslocamento de uma corrente que ninguém sabe onde está.
+
+### ⚠ A recusa no MEIO do batch, e o que já passou
+
+Ancorado na última linha, um bloco de 2 linhas **sem** o `action/771` voltou
+`multipart -133 failed to fire action: argument value out of range` — **e a primeira linha já
+estava escrita no grid**. O batch é aplicado passo a passo: a resposta diz "não pegou" e metade
+pegou. Por isso `colarBloco` conta as linhas ele mesmo e intercala
+`action/771 curRowIdx=0&pasteOption=Append` antes de cada linha que passa do fim; e por isso, se o
+POST ainda assim não pegar, ele estoura mandando **ler o grid antes de tentar de novo** — nunca
+mandar o fcode de gravar às cegas.
+
+Depois de um Append a **corrente vira a linha nova**, e o `770` seguinte volta a `curRowIdx=0` —
+é a regra que o caso misto (âncora dentro, bloco estourando) confirmou. A linha anexada nasce
+**vazia fora do bloco**: a coluna que o bloco não trouxe fica em branco (`anexadas` no retorno).
+
+### O que muda em relação ao `colarBloco` do navegador
+
+| | navegador | HTTP |
+|---|---|---|
+| bloco de **uma** célula | ignorado em silêncio (sem TAB não é colagem de tabela) | **escreve** |
+| `&`, `=`, `;`, `%`, `+`, acento | — | chegam íntegros (o `content` vai URL-encoded) |
+| TAB dentro do valor | parte a célula em duas | chega íntegro — mas a lib **recusa** (ver abaixo) |
+| quebra dentro do valor | parte a linha | **engolida em silêncio** — a lib recusa |
+| âncora | é a célula CORRENTE, e o clique é obrigatório | é o `action/53`, sem clique nenhum |
+| coluna que estoura à direita | descartada calada | descartada calada — recusa antes do POST nas duas |
+
+O TAB é recusado por **decisão**, não por medida: por HTTP ele chegaria íntegro, mas o mesmo bloco
+não pode significar coisas diferentes conforme a via.
+
+### O que continua valendo igual
+
+**Colar não grava** e **a tela depois não é prova** — as duas regras do item 79, refeitas aqui com
+contra-prova pareada: o mesmo bloco 3×2 sem `FC01` deixou `ZJBV_ALV47` intacta em outra LUW; com
+`comandar(s, 'FC01')` (*"ITEM47 GRAVOU subrc=0 n=4"*) a tabela veio com os três valores colados.
+O `divergentes` do retorno sai **sem viagem extra**: o `state/ur` do próprio POST já devolve as
+células da janela visível, e `conferidas` diz quantas deu para conferir.
 
 ## O COMBOBOX (`ct="CB"`) — escolher uma opção é postar a CHAVE (item 114)
 
