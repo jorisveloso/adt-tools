@@ -3091,9 +3091,23 @@ export function acharItemDeMenu(irmaos, rotulo) {
     ?? null;
 }
 
-/** O despejo dos `POMNI` VISÍVEIS — a filtragem por barra é do `itensDeMenu`. */
+/**
+ * O despejo dos `POMNI` VISÍVEIS — a filtragem por barra é do `itensDeMenu`.
+ *
+ * ⚠️ **"Visível" aqui é ESTAR NO VIEWPORT, não ter tamanho.** Medido no s4h 758/250 em 06/09/2026
+ * (item 94, `sap-accelerate/work/POC_webgui_fecharmenu/`, bruto em `medicoes/raw/a-sonda.json`):
+ * ao FECHAR, o renderer não apaga nem esconde o popup — ele o **empurra para fora da tela**,
+ * `rect.y = -100000`, com `display: block` e `visibility: visible` intactos. Os `<tr>` dos itens
+ * continuam medindo 289×32, e `offsetWidth || offsetHeight` — o filtro antigo — continuava
+ * dizendo "6 itens visíveis" com o menu FECHADO (o `aria-expanded` do `cua2sapmenu_btn` já era
+ * `false`). Era esse assert que fazia `fecharMenu` gastar 12–15 s nas 3 tentativas e devolver
+ * `false` depois de ter fechado o menu no PRIMEIRO clique. Quem encolhe é só a raiz do popup
+ * (`mnu…-r` vai a 1×1); o item não sabe de nada. Por isso o teste é do RETÂNGULO contra o
+ * viewport, e não do tamanho.
+ */
 export const JS_ITENS_DE_MENU = `[...document.querySelectorAll('[ct="POMNI"]')]
-  .filter((el) => el.offsetWidth || el.offsetHeight)
+  .filter((el) => { const b = el.getBoundingClientRect();
+    return (b.width || b.height) && b.bottom > 0 && b.right > 0 && b.top < innerHeight && b.left < innerWidth; })
   .map((el) => { let d = null; try { d = JSON.parse(el.getAttribute('lsdata')); } catch { d = null; }
     return { id: el.id || null, lsdata: d, desabilitado: el.getAttribute('aria-disabled') }; })`;
 

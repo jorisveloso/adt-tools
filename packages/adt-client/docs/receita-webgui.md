@@ -1096,7 +1096,7 @@ webgui: navegarMenu — "Criar ligação no desktop" está DESABILITADO nesta te
         (wnd[0]/mbar/menu[1]/menu[3]); o clique não faria nada
 ```
 
-### ⚠ Cinco armadilhas, todas silenciosas
+### ⚠ Seis armadilhas, todas silenciosas
 
 Nenhuma dá erro — cada uma devolve "não tem esse item" ou "zero filhos", que é indistinguível de
 "esse caminho não existe".
@@ -1114,6 +1114,16 @@ Nenhuma dá erro — cada uma devolve "não tem esse item" ou "zero filhos", que
    filhos ora sim ora não. Esperar o **filho aparecer**, nunca um tempo.
 5. **O percurso é CASCATA.** Abrir um irmão fecha o submenu anterior — não dá para varrer um nível
    inteiro e só depois descer.
+6. **Fechar o menu NÃO apaga nem esconde os `POMNI` — empurra o popup para fora da tela.** Medido
+   no s4h 758/250 em 06/09/2026 (item 94, `POC_webgui_fecharmenu/medicoes/item94-fecharmenu.md`):
+   depois do toggle de fechamento, os 6 `<tr>` continuam no DOM medindo 289×32, com
+   `display: block` e `visibility: visible` — só o `rect.y` vai a **-100000** (e a raiz do popup,
+   `mnu…-r`, encolhe para 1×1). Quem afere "menu aberto" por `offsetWidth || offsetHeight` lê
+   SEMPRE aberto: era isso que fazia `fecharMenu` gastar 15,5 s nas 3 tentativas e devolver `false`
+   com o menu já fechado no primeiro clique. O teste certo é o **retângulo contra o viewport** (é o
+   que `JS_ITENS_DE_MENU` faz); a segunda testemunha é o `aria-expanded` do `cua2sapmenu_btn`
+   (`true` aberto, `false` fechado). Com o assert certo, fechar custa **~20 ms** — é DOM puro, sem
+   ida ao servidor.
 
 ### ⚠ O índice `menu[n]` muda por tela — só o rótulo é estável
 
