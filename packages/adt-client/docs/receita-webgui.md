@@ -1377,7 +1377,7 @@ canal:
   acionam (§ "⚠ Inflar o `<xmp>` à mão…").
 - **Por onde sai o acionamento do menu no navegador?** Não é `sap.g4h` (item 129, instrumentado).
   A via HTTP aciona a folha com um `action/4` levando o SID, sem menu nenhum (item 49); se o mesmo
-  POST for alcançável do lado do navegador, a cascata morre — e não por inflação (fila item 131).
+  POST for alcançável do lado do navegador, a cascata morre — e não por inflação (fila item 201).
 - ~~Folha de menu que abre POPUP~~ **medida** (item 83): o `mudou` diz QUE mudou, nunca O QUE —
   quem separa "abriu modal" de "trocou de tela" é o `popup` que a via HTTP agora devolve
   (§ "A folha de menu que abre POPUP" abaixo).
