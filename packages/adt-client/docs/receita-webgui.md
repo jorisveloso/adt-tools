@@ -1669,7 +1669,7 @@ Duas consequências práticas:
 
 ```js
 const t = await lerTela(s);
-t.janela      // { sid: 'wnd[0]', principal: true }   ← principal:false é POPUP (wnd[1])
+t.janela      // { sid: 'wnd[0]', principal: true }   ← a janela ATIVA; principal:false é POPUP (wnd[1])
 t.mensagem    // { tipo: 'ERROR', texto: 'O programa ZZNAOEXISTE9 não existe' } | null
 t.campos      // [{ id, sid, campo, rotulo, dica, valor, maxlen, editavel, visivel }]
 t.radios      // [{ campo, grupo: '%RBG0257', rotulo, selecionado }]
@@ -1679,6 +1679,41 @@ t.botoes      // [{ okcode: 'btn[8]', rotulo: 'Executar', tecla: 'F8', accesskey
 t.grids       // [{ sid, colunas: ['NAME','USER_VALUE',…], linhas: 1617, editavel: false }] — as LINHAS saem do `lerGrid` (§ "O ALV")
 t.okcode      // { sid: 'wnd[0]/tbar[0]/okcd' } — sempre invisível, sempre lá
 ```
+
+### O que o gesto DEVOLVE — e por que `mudou` não é "a ação surtiu efeito"
+
+`comandar`, `acionar` e `clicar(…, { esperarResposta: true })` devolvem, além de `mudou`/`respondeu`,
+o **`{ mensagem, janela }`** — o que o ABAP disse sobre a ação e onde a tela está:
+
+```js
+await comandar(s, 'SHOW')
+// { okcode: 'SHOW', mudou: true, respondeu: true, ms: 1743,
+//   mensagem: { tipo: 'ERROR', texto: 'O programa ZJBV100NAOEXISTEA não existe' },
+//   janela: 'wnd[0]' }                       ← 'wnd[1]' = tem popup na frente
+```
+
+⚠️ **Não leia `mudou` como "a ação pegou".** Medido no s4h 758/250 em 06/09/2026 (item 100,
+`sap-accelerate/work/POC_webgui_mensagem/medicoes/item100-mensagem.md`), o carimbo do DOM
+(`title | nº de elementos | 300 chars do innerText`) inclui a barra de mensagem **por acidente**:
+na MESMA tela SE38, a mensagem NASCER conta como "a tela mudou" (`nEl` 630→632), e o TEXTO dela
+trocar **não conta** (a msgbar está no char 317, o carimbo lê 300) — e depois de um `/n`, quando a
+tela encurta, a msgbar cai no char 58 e passa a contar. Quem responde "a ação surtiu efeito" é a
+`mensagem` ou o dado. (O carimbo estrutural que resolve isso é o item 162 da fila.)
+
+**O AVISO do popup.** Sai em `stderr` quando o mesmo popup continua na frente e a ação não conseguiu
+nada — `!respondeu` **ou** `mudou === false`:
+
+```
+⚠ webgui: comandar(/nSE38) não conseguiu NADA e o popup wnd[1] continua aberto
+  (a conversa com o ABAP nem aconteceu: o modal engoliu o gesto)
+  — popup se responde clicando o botão DELE, não por tecla.
+```
+
+⚠️ **Com modal aberto, este canal é o pior dos dois.** Medido (item 100, fase F, 2/2): com o SPOP do
+`/nend` de pé, `comandar('/nSE38')` devolve `respondeu: false, mudou: false` e paga **21 s** de teto
+— nada sai do navegador. A via HTTP faz o MESMO gesto em 170 ms e descarta o modal (item 58). E
+`acionar(s, 12)` nem tenta: com a modal aberta o `btn[12]` **sai do DOM**. Popup, aqui, se responde
+clicando o botão dele.
 
 Três ganhos que o filtro de DOM anterior não dava, todos medidos:
 

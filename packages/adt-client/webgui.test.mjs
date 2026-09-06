@@ -8,6 +8,7 @@ import {
   autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
+  janelaAtivaDosControles, estadoDaAcaoDe,
   habilitadoDoBotao,
   interpretarSonda, jsComando, JS_PUBLICAR_FOCO, ehTelemetria, roundTrips,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
@@ -1572,4 +1573,63 @@ test('webgui: JS_ARVORE despeja o container, os TV e o `td subct="HIC"` que o de
   const a = arvoreDosBrutos(cru.brutos, new Map(cru.expansao));
   expect(a.nos.map((x) => [x.chave, x.rotulo, x.expansao, x.temFilhos]))
     .toEqual([['0000000004', 'Escritório', 'COLLAPSED', true]]);
+});
+
+
+// ── item 100: a mensagem e a JANELA ATIVA — o par do item 59 nesta via ───────────────────────
+// Brutos REAIS colhidos no s4h 758/250 em 06/09/2026 (fase E,
+// `sap-accelerate/work/POC_webgui_mensagem/medicoes/raw/e-lib.json`): o SPOP "Efetuar logoff" do
+// `/nend` e a msgbar da SE38 recusando um programa inexistente.
+const WND0_PAGE = { id: 'webguiPage0', ct: 'PAGE', visivel: true,
+  lsdata: { 0: 'webguiform0', 15: 'pswnd0', 16: { SID: 'wnd[0]', Type: 'GuiMainWindow' } } };
+const WND0_FORM = { id: 'webguiform0', ct: 'FOR', visivel: true,
+  lsdata: { 2: { SID: 'wnd[0]', Type: 'GuiMainWindow' }, x: 0 } };
+const SPOP_WND1 = { id: 'SAPLSPO1100_1', ct: 'PW_standards', visivel: true,
+  // o innerText real era "Efetuar logoff / Os dados não gravados serão perdidos. / Efetuar o
+  // logoff? / Sim / Não" — quem decide aqui é o lsdata, não ele
+  lsdata: { 4: '553px', 8: 'webguiKeys', 13: { SID: 'wnd[1]', Type: 'GuiModalWindow', ModalNo: 1 }, 16: true } };
+const MSGBAR_VAZIA = { id: 'wnd[0]/sbar_msg', ct: 'MB', visivel: false, texto: null,
+  lsdata: { 1: 'TEXT', 3: 'NONE', 11: { SID: 'wnd[0]/sbar_msg', Type: 'MESSAGEBAR', visibility: 2, messageType: '', applicationText: '' } } };
+const MSGBAR_ERRO = { id: 'wnd[0]/sbar_msg', ct: 'MB', visivel: true,
+  // o innerText trazia o texto + "Exibir detalhes"; o que vale é o applicationText do SID
+  lsdata: { 0: 'O programa ZJBV100NAOEXISTEA não existe', 1: 'ERROR', 7: 'Exibir detalhes',
+    11: { SID: 'wnd[0]/sbar_msg', Type: 'MESSAGEBAR', visibility: 0, messageType: 'Erro',
+      applicationText: 'O programa ZJBV100NAOEXISTEA não existe' } } };
+
+test('webgui: a janela da tela é a ATIVA — com popup na frente, wnd[1] e não wnd[0]', () => {
+  // ⚠ a regressão do item 100: era `dePapel('janela')[0]`, a PRIMEIRA da lista. Medido no s4h em
+  // 06/09/2026 que com o SPOP de pé a lib respondia `{ sid: 'wnd[0]', principal: true }` — dizia
+  // que não havia popup nenhum com o popup na frente. A via HTTP já respondia wnd[1].
+  const comPopup = montarTela([WND0_PAGE, WND0_FORM, MSGBAR_VAZIA, SPOP_WND1]);
+  expect(comPopup.janela).toMatchObject({ sid: 'wnd[1]', principal: false, tipoGui: 'GuiModalWindow' });
+
+  // e sem popup continua sendo a wnd[0] — três controles de janela, todos wnd[0]
+  expect(montarTela([WND0_PAGE, WND0_FORM, MSGBAR_VAZIA]).janela)
+    .toMatchObject({ sid: 'wnd[0]', principal: true });
+  expect(montarTela([]).janela).toBe(null);
+});
+
+test('webgui: a janela ativa é a modal de MAIOR índice, e a invisível não vence a visível', () => {
+  const ctrl = (sid, tipo, visivel) => interpretarControle(
+    { id: sid, ct: 'X', visivel, lsdata: { 0: { SID: sid, Type: tipo } } });
+  const wnd0 = ctrl('wnd[0]', 'GuiMainWindow', true);
+  const wnd1 = ctrl('wnd[1]', 'GuiModalWindow', true);
+  const wnd2 = ctrl('wnd[2]', 'GuiModalWindow', true);
+  expect(janelaAtivaDosControles([wnd0, wnd1, wnd2]).sid).toBe('wnd[2]');
+  expect(janelaAtivaDosControles([wnd2, wnd0, wnd1]).sid).toBe('wnd[2]');  // a ordem não decide
+  // uma modal que o renderer deixou no DOM mas não pinta não está na frente de ninguém
+  expect(janelaAtivaDosControles([wnd0, ctrl('wnd[1]', 'GuiModalWindow', false)]).sid).toBe('wnd[0]');
+  expect(janelaAtivaDosControles([])).toBe(null);
+});
+
+test('webgui: estadoDaAcaoDe devolve o que o ABAP DISSE e onde a tela está', () => {
+  // o `comandar` só devolvia `mudou`/`respondeu`; a explicação estava no DOM e não saía (item 100)
+  expect(estadoDaAcaoDe([WND0_PAGE, MSGBAR_ERRO])).toEqual({
+    mensagem: { tipo: 'ERROR', texto: 'O programa ZJBV100NAOEXISTEA não existe' }, janela: 'wnd[0]' });
+  // ⚠ o tipo é a CONSTANTE (`ERROR`), não o `messageType` do SID — esse vem TRADUZIDO ("Erro")
+  expect(MSGBAR_ERRO.lsdata[11].messageType).toBe('Erro');
+  // msgbar sem mensagem não é mensagem; e o popup aparece na janela
+  expect(estadoDaAcaoDe([WND0_PAGE, MSGBAR_VAZIA, SPOP_WND1]))
+    .toEqual({ mensagem: null, janela: 'wnd[1]' });
+  expect(estadoDaAcaoDe([])).toEqual({ mensagem: null, janela: null });
 });

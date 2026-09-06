@@ -238,7 +238,32 @@ export function jsTelaPronta({ minimoTexto = 200, minimoControles = 5, minimoCam
     [...document.querySelectorAll('input')].filter(e => e.offsetWidth || e.offsetHeight).length >= ${minimoCampos}`;
 }
 
-/** PURO: o carimbo barato da tela — é ele que prova que ela TROCOU (rede quieta não prova nada). */
+/**
+ * PURO: o carimbo barato da tela — é ele que prova que ela TROCOU (rede quieta não prova nada).
+ *
+ * ⚠️ **A BARRA DE MENSAGEM entra aqui POR ACIDENTE, e pelas duas portas.** Medido no s4h 758/250
+ * em 06/09/2026 (item 100, `sap-accelerate/work/POC_webgui_mensagem/medicoes/item100-mensagem.md`).
+ * O carimbo é `title | nº de elementos | 300 chars do innerText`, e a mensagem escapa por ambos:
+ *
+ * | o que aconteceu (mesma tela SE38) | carimbo | por quê |
+ * |---|---|---|
+ * | a mensagem NASCE (`ERROR: O programa … não existe`) | **MUDOU** | `nEl` 630→632: a msgbar ganha 2 elementos |
+ * | só o TEXTO da mensagem muda (programa A → B) | **IGUAL** | a msgbar está no char **317**, fora dos 300 |
+ *
+ * E o char 317 é desta tela: depois de um `/n` a tela encurta e a mensagem cai no char **58** —
+ * DENTRO dos 300 — e aí trocar o texto da mensagem já conta como "a tela mudou" (fase A). Ou seja,
+ * o mesmo evento conta ou não conta conforme o comprimento do cabeçalho da tela. É o oposto da via
+ * HTTP, onde a mensagem ficou FORA do carimbo por decisão medida (`its.mjs`, `carimboDosSids`).
+ *
+ * Pior: o carimbo mexe por gesto que não fez nada. Com o SPOP de pé, cada `F12` liga e desliga
+ * itens do menu ("Renomear…", "Depuração", "Com variante") dentro dos 300 chars e o carimbo
+ * OSCILA entre dois valores — `mudou: true` com `respondeu: false` e o popup ainda lá, 2/2. Em
+ * repouso, porém, ele é estável (4 leituras em 7,5 s = 1 valor, com e sem popup).
+ *
+ * Por isso ninguém deve ler `mudou` como "a ação surtiu efeito": quem responde isso é a
+ * `mensagem` (`estadoDaAcao`) ou o dado. Trocar este carimbo pelo estrutural (SIDs + `lsdata`, sem
+ * MESSAGEBAR, com a janela ativa — o pareado do `carimboDosSids`) é o item 162 da fila.
+ */
 export const JS_CARIMBO = `document.title + '|' + document.querySelectorAll('*').length + '|' +
   ((document.body && document.body.innerText) || '').slice(0, 300)`;
 
@@ -1216,6 +1241,29 @@ export function interpretarControle(bruto) {
 }
 
 /**
+ * PURO: a JANELA ATIVA — a `GuiModalWindow` de MAIOR índice, ou `wnd[0]` quando não há nenhuma.
+ * É o par desta via para o `janelaAtiva` do `its.mjs`, e o que denuncia POPUP ABERTO.
+ *
+ * ⚠️ **Era `dePapel('janela')[0]` — a PRIMEira da lista, que é sempre a `wnd[0]`.** Medido no
+ * s4h 758/250 em 06/09/2026 (item 100, fase C): com o SPOP do `/nend` de pé, o DOM traz QUATRO
+ * controles de janela e `lerTela(s).janela` respondia `{ sid: 'wnd[0]', principal: true }` — a lib
+ * dizia que não havia popup nenhum com o popup na frente. A via HTTP já respondia `wnd[1]`
+ * (`its.test.mjs`: `{ sid: 'wnd[1]', principal: false }`); esta ficou 
+ * cega para o único estado que interessa.
+ */
+export function janelaAtivaDosControles(controles = []) {
+  const janelas = controles.filter((c) => c.papel === 'janela');
+  const vis = janelas.filter((j) => j.visivel);
+  let ativa = null;
+  let melhor = -1;
+  for (const j of (vis.length ? vis : janelas)) {
+    const i = Number(/^wnd\[(\d+)\]/.exec(String(j.sid ?? ''))?.[1] ?? -1);
+    if (i > melhor) { melhor = i; ativa = j; }
+  }
+  return ativa ?? null;
+}
+
+/**
  * PURO: os controles interpretados viram UMA tela.
  *
  * O rótulo de cada campo é costurado aqui: o `L` guarda, em algum índice, o **id do campo que ele
@@ -1237,7 +1285,7 @@ export function montarTela(brutos, { titulo = null } = {}) {
   const mensagem = dePapel('mensagem').find((m) => m.texto) ?? null;
   return {
     titulo,
-    janela: dePapel('janela')[0] ?? null,
+    janela: janelaAtivaDosControles(controles),
     mensagem: mensagem ? { tipo: mensagem.tipo, texto: mensagem.texto } : null,
     statusbar: mensagem ? [mensagem.texto] : [],          // compat com o `lerTela` antigo
     campos: vis(dePapel('campo')).map((c) => ({ ...c, rotulo: rotuloDoId.get(c.id) ?? null })),
@@ -1268,6 +1316,61 @@ export const JS_DESPEJO_CONTROLES = `[...document.querySelectorAll('[ct]')].map(
     texto: (el.innerText || '').trim().slice(0, 120) || null,
     visivel: !!(el.offsetWidth || el.offsetHeight) };
 })`;
+
+/**
+ * PURO: o recorte do despejo que interessa ao VEREDITO de uma ação — a barra de mensagem e as
+ * janelas, nada mais. Roda o `JS_DESPEJO_CONTROLES` inteiro DENTRO da página e só deixa atravessar
+ * o CDP os 4-5 controles que importam (numa SE38 são 5 de 630), então não há segunda regra de
+ * interpretação para sair do lugar: quem lê continua sendo o `interpretarControle`.
+ */
+export const JS_DESPEJO_DA_ACAO = `(${JS_DESPEJO_CONTROLES}).filter((c) => {
+  const s = JSON.stringify(c.lsdata || null);
+  return s.indexOf('MESSAGEBAR') >= 0 || s.indexOf('GuiModalWindow') >= 0 || s.indexOf('GuiMainWindow') >= 0;
+})`;
+
+/** PURO: `{ mensagem, janela }` a partir do recorte do `JS_DESPEJO_DA_ACAO`. */
+export function estadoDaAcaoDe(brutos = []) {
+  const controles = brutos.map(interpretarControle);
+  const m = controles.find((c) => c.papel === 'mensagem' && c.texto) ?? null;
+  return {
+    mensagem: m ? { tipo: m.tipo, texto: m.texto } : null,
+    janela: janelaAtivaDosControles(controles)?.sid ?? null,
+  };
+}
+
+/**
+ * O que o ABAP DISSE e onde a tela está: `{ mensagem, janela }` — o par desta via para o
+ * `mensagemDosSids` + `janelaAtiva` do `its.mjs`.
+ */
+export const estadoDaAcao = async (sessao) => estadoDaAcaoDe(await avaliar(sessao, JS_DESPEJO_DA_ACAO));
+
+/**
+ * O fecho de um gesto: lê a mensagem e a janela, e DÁ O ALARME quando o popup que estava na frente
+ * continua lá depois de uma ação que não conseguiu nada. É o par do aviso do `its.mjs` (item 59) —
+ * e a condição daqui é MAIS LARGA por medição, não por gosto.
+ *
+ * Medido no s4h 758/250 em 06/09/2026 (item 100, fase D, 2/2 reproduções): `F12` dentro do SPOP
+ * "Finalizar sessão" devolveu **`respondeu: false`** (a tecla não saiu do navegador — o modal a
+ * engole, é a trava do item 13) com o popup ainda em `wnd[1]` — e mesmo assim `mudou: true`, porque
+ * o gesto liga e desliga itens do menu ("Renomear…", "Depuração", "Com variante") dentro dos 300
+ * chars que o carimbo lê, alternando entre DOIS valores. Um aviso preso a `mudou === false`, como o
+ * da via HTTP, perderia exatamente o caso que o motivou. Por isso vale `!respondeu` **ou**
+ * `mudou === false`: as duas maneiras de a ação não ter conseguido nada.
+ *
+ * Contra-prova do controle: em repouso o carimbo NÃO anda sozinho — 4 leituras em 7,5 s deram 1
+ * valor só, com e sem o popup aberto. A oscilação é do gesto.
+ */
+export async function fecharGesto(sessao, { gesto, janelaAntes = null, mudou = null, respondeu = null } = {}) {
+  const { mensagem, janela } = await estadoDaAcao(sessao);
+  if (mensagem) detalhe(`webgui: mensagem ${mensagem.tipo ?? '?'}: "${mensagem.texto}"`);
+  if (janela && janela !== 'wnd[0]' && janela === janelaAntes && (respondeu === false || mudou === false)) {
+    aviso(`webgui: ${gesto} não conseguiu NADA e o popup ${janela} continua aberto`
+      + (mensagem ? ` — "${mensagem.texto}"` : '')
+      + (respondeu === false ? ' (a conversa com o ABAP nem aconteceu: o modal engoliu o gesto)' : '')
+      + ' — popup se responde clicando o botão DELE, não por tecla.');
+  }
+  return { mensagem, janela };
+}
 
 /**
  * O que a tela É agora — o modelo, não o innerText: `{ titulo, janela, mensagem, statusbar,
@@ -2869,8 +2972,13 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = f
       + (varios ? `; havia ${p.gestos.length} gestos lá dentro e a escolha foi por TAMANHO — mande no certo com { dentro: '<rótulo>' }: ${p.gestos.map(nomeDoGesto).join(', ')}` : ''));
   }
   const antes = esperarResposta ? await carimbo(sessao) : null;
+  const janelaAntes = esperarResposta ? (await estadoDaAcao(sessao)).janela : null;
   await clique(sessao, p);
-  if (esperarResposta) p.mudou = await esperarMudanca(sessao, antes);
+  if (esperarResposta) {
+    p.mudou = await esperarMudanca(sessao, antes);
+    // o que o ABAP DISSE e onde a tela está — e o alarme do popup que não saiu da frente (item 100)
+    Object.assign(p, await fecharGesto(sessao, { gesto: nomeDoAlvo(alvo), janelaAntes, mudou: p.mudou }));
+  }
   return p;
 }
 
@@ -2879,6 +2987,10 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = f
  * formas do `okcodeDe`: `acionar(s, 'btn[11]')`, `acionar(s, 11)` e `acionar(s, 'Gravar')`.
  * ⚠️ `mudou: false` é INFORMAÇÃO: a tela ficou igual, a ação não pegou (é assim que `btn[15]` e
  * `btn[12]` se denunciam neste canal).
+ *
+ * Vem junto o `{ mensagem, janela }` do `fecharGesto` (item 100): a mensagem é o COMENTÁRIO do
+ * ABAP sobre a ação — foi ela que explicou o falso positivo do item 59 na via HTTP — e `janela` é
+ * a janela ATIVA, que denuncia popup na frente.
  */
 export const acionar = (sessao, okcode, opts = {}) => clicar(sessao, { okcode }, { ...opts, esperarResposta: true });
 
@@ -2985,12 +3097,14 @@ export const JS_PUBLICAR_FOCO = `(() => {
  * Manda um OK-code pela caixa de comando e espera a resposta do ABAP. LEVA junto o que foi
  * `preencher`-ido: antes do OK-code, tira o foco do campo, que é o que faz o renderer publicar o
  * valor (§ acima). `publicarValores: false` volta ao gesto cru, sem o `blur`.
- * Devolve `{ okcode, mudou, respondeu, ms, publicado }` — e `mudou` e `respondeu` são coisas
+ * Devolve `{ okcode, mudou, respondeu, mensagem, janela, ms, publicado }` — e `mudou` e `respondeu` são coisas
  * diferentes (§ `esperarTroca`): `respondeu: false` é "nenhuma conversa com o ABAP aconteceu" (o
  * gesto não saiu do navegador); `respondeu: true, mudou: false` é "houve round-trip e a tela ficou
  * igual" — o caso normal de um repaint de grid que confirma o que já estava no DOM, e que a espera
  * antiga (só carimbo) cobrava o TETO inteiro para descobrir. Se o comando teve EFEITO, quem diz é
- * a mensagem (`lerTela`) ou o dado, nunca esses dois sinais.
+ * a `mensagem` — que agora **sai daqui** (item 100), sem um `lerTela` a mais — ou o dado, nunca
+ * esses dois sinais. `janela` é a janela ATIVA depois do comando (`wnd[1]` = popup na frente), e
+ * sai AVISO alto quando o mesmo popup continua lá e a ação não conseguiu nada.
  *
  * ⚠ `/n` (e `/3`) **encerra a transação**, não vai ao menu: medido no s4h 758/250 em 05/09/2026
  * (item 37, pela via HTTP) que ele cai na tela de fundo da sessão — `SMEN` só quando a sessão já
@@ -3000,12 +3114,14 @@ export async function comandar(sessao, texto, { tetoMs = 25000, publicarValores 
   const js = jsComando(texto);
   const publicado = publicarValores ? await avaliar(sessao, JS_PUBLICAR_FOCO) : null;
   const antes = await carimbo(sessao);
+  const janelaAntes = (await estadoDaAcao(sessao)).janela;
   const desde = sessao.eventos.length;
   const t0 = Date.now();
   const achou = await avaliar(sessao, js);
   if (!achou) throw new Error(`webgui: comandar — a tela não tem o campo ToolbarOkCode (${texto})`);
   const { mudou, respondeu } = await esperarTroca(sessao, antes, { desde, tetoMs });
-  return { okcode: String(texto).trim(), mudou, respondeu, ms: Date.now() - t0, publicado: publicado ?? null };
+  const fecho = await fecharGesto(sessao, { gesto: `comandar(${String(texto).trim()})`, janelaAntes, mudou, respondeu });
+  return { okcode: String(texto).trim(), mudou, respondeu, ...fecho, ms: Date.now() - t0, publicado: publicado ?? null };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
