@@ -1435,6 +1435,34 @@ entrado na transação pelo favorito, o `action/41` responde `multipart` e o `Fa
 **`-103 failed to fire action: not available`**. Em sessão NOVA os mesmos dois POSTs apagam em
 165 ms. Quem gerencia favorito depois de navegar: abra outra sessão.
 
+#### Por que isto é RECEITA e não API (item 92, 06/09/2026)
+
+O gesto de **escrever** favorito (inserir/apagar) apareceu **uma vez**: a fase C2 do item 54. O que
+parece uma segunda e uma terceira vez são os seus próprios ecos — a C3 é a limpeza do favorito que a
+C2 deixou, e o item 91 investiga o `-103` que essa limpeza produziu. Uma dor e os seus ecos, não
+três dores.
+
+E o uso era instrumental: a transação `$TMP` recém-criada não está em menu de área nenhum (fase C1:
+zero `YJBV` nos 15 nós), então **Favoritos era o único ramo da árvore que ela alcançava**. Caminho de
+medição, não requisito.
+
+Contra o que a lib já entrega — números do MESMO item 54, mesmo par de transações:
+
+| para… | pelo favorito | pela via que já existe |
+|---|---|---|
+| entrar numa transação | inserir 129–208 ms + acionar 92–108 ms = **221–316 ms**, escreve estado persistente do usuário, e desfazer exige sessão nova | `comandar(s, '/n<TCODE>')` — **103–119 ms**, sem efeito colateral, e alcança transação que não está em menu nenhum |
+| saber se o tcode existe | recusa no popup (`Transaction … does not exist`) | `readTransaction` (sem GUI, sem escrever) ou o próprio `/n`, com a mesma mensagem |
+| ler / acionar favorito que **já existe** | — | **já é API** desde o item 50: `arvore`, `acharNoDaArvore`, `navegarArvore(['Favoritos', …])`, `acionarNo` |
+
+O que falta de API é exatamente o que ninguém pediu: **escrever** favorito. E escrever cobra em outra
+moeda — favorito é estado persistente do usuário no sistema do cliente; uma API que os cria deixa
+lixo no SAP de quem roda a lib, e a receita acima já mostra que desfazer exige sessão nova.
+
+**O que reabre a decisão:** um uso real, fora de medição, que precise ESCREVER favorito — reproduzir
+o ambiente de um usuário final, ou testar autorização de menu. Isso é hipótese, não dor: não apareceu
+em nenhuma sessão até aqui. Quando aparecer, a receita acima já é a implementação — promover é
+embrulhá-la.
+
 ## O vocabulário `lsdata` — a tela é um MODELO, não pixel
 
 **Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 9). Bruto, agregado e prova em
@@ -2169,7 +2197,7 @@ na mesma função faria cada uma virar um `if` de duas pernas. O que é comum ve
 | o menu inteiro já vem no boot; a folha é `action/4/<SID>` | `itensDeMenu`, `navegarMenu` — sem abrir nada | item 49 (146 itens na SE38; SE38 → SA38 em 91 ms) |
 | a árvore do SMEN se endereça por CHAVE, no container | `arvore`, `expandirNo`, `colapsarNo`, `acionarNo`, `navegarArvore` | item 50 (SMEN → SSC1 em 2,5 s; favorito → CO01 em 386 ms); item 85 (colapsar tira 29,5% do delta) |
 | a FOLHA da árvore se declara antes do POST (`subct="HIC"`) | `expansaoDoHtml`, `arvore(s).nos[].temFilhos` | item 84 (30/31; folha: 1 POST/180 ms → 0/22 ms) |
-| o nó CORRENTE da árvore é `action/41`; sem ele o menu que age sobre o nó recusa | `postar` cru (`action/41/<SID>` + `node_key`) | item 54 (favorito inserido, acionado e apagado só por HTTP) |
+| o nó CORRENTE da árvore é `action/41`; sem ele o menu que age sobre o nó recusa | `postar` cru (`action/41/<SID>` + `node_key`) — **receita por decisão**, item 92 | item 54 (favorito inserido, acionado e apagado só por HTTP) |
 | `/nex` encerra; depois é 400 | `fechar`; `postar` recusa sessão encerrada | item 8; item 20 E |
 
 #### `pegou` × `mudou` — o protocolo aceitou ≠ aconteceu alguma coisa (item 59)
