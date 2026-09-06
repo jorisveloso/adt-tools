@@ -1878,8 +1878,27 @@ não confirmado → a tela **voltou** para a SE16; confirmado → ficou na SE38,
 do `fechar` → o POST do descarte voltou `delta` em **81 ms** (prova de que a sessão ainda estava de
 pé) e só então o `/nex`; descarte que falha → `ok: false` no relatório de `fechar` + aviso em
 stderr; sessão morta com pendência → nada executado, `pendentes: ["rascunho órfão"]`, pilha
-intacta. ⚠ O que **não** foi medido pela via HTTP é uma tela que crie ao entrar (o análogo do FLP
-Designer) — o que está provado aqui é a primitiva, não o comportamento de uma dynpro específica.
+intacta.
+
+### E contra uma dynpro que CRIA AO ENTRAR (item 105)
+
+O item 66 provou a primitiva com gestos reversíveis — nada era criado. **Medido no s4h 758/250 em
+06/09/2026** (`POC_webgui_cria_ao_entrar/medicoes/item105-cria-ao-entrar.md`) contra o análogo do
+FLP Designer: um report `$TMP` cuja `INITIALIZATION` grava em `INDX(ZZ)` e commita — quem só abriu
+a tela já mutou —, dirigido por `comandar(s, '/nYJBV105')` dentro do `transacional`, com o descarte
+na própria tela (`preencher(s,'P_ACAO','DESCARTAR')` + `enter`). Cada assert é um `runClass` em
+**sessão nova** (outra LUW, outro canal):
+
+| etapa | leitura em outra LUW |
+|---|---|
+| depois do `abrir`, antes do descarte | **1 linha** — a tela criou ao entrar |
+| não confirmado → descarte no `finally` (`delta` em **69 ms**) | **0 linhas** |
+| confirmado → descarte desarmado | **1 linha**, com carga nova |
+| pendente do `fechar` (POST **68 ms**, antes do `/nex`) | **0 linhas**, `desfeito: [{ok:true}]` |
+
+E a contra-prova, o roteiro do item 38 repetido aqui: `abrirTransacao` → `comandar('/nYJBV105')` →
+`fechar(s)`, **sem** `transacional`, deixou **1 linha** no banco. `fechar` não é rollback também na
+via HTTP — o `/nex` encerra a sessão, o que o servidor commitou fica.
 
 ## O que este canal NÃO faz
 
