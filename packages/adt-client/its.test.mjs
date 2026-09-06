@@ -18,6 +18,7 @@ import {
   navegarArvore, agregarMudou,
   sidDoControle, controleDoSid, eventosDoControle, batchDoEvento, eventosDoAlvo,
   mensagemDosSids, carimboDosSids, carimboDoDelta, mudouDaTela,
+  opcoesDaLista, combosDoDelta, comboDoSid, chaveDaOpcao, opcoes,
   criarPilhaDeDesfazer, transacional, fechar, prefixoDaRecusa,
 } from './its.mjs';
 
@@ -1285,6 +1286,7 @@ const EXPORT_AS = `<updates><delta-update><control-update id="popup"><content><!
 <input id="M1:46:1::3:17" ct="CB" lsdata='{"x":0,"3":"GS_EXPORT-DESTINATIONSAPLSALV_GUI_CUL_EXPORT_AS","4":"L","5":"Local","7":true,"12":true,"13":"D","21":{"SID":"wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/cmbGS_EXPORT-DESTINATION","Type":"GuiComboBox","focusable":"X"},"29":"M1:46:1::3:1"}' lsevents='{"Select":[{},{"1":"value","2":true,"3":true}],"Validate":[{},{}]}' type="text" data-sap-ls-accesskey="D" accesskey="D" autocomplete="off" tabindex="0" ti="0" title="Caractere&#x20;40&#x20;posi&#xe7;&#xf5;es" class="lsField__input" readonly value="Local" aria-roledescription="Caixa&#x20;de&#x20;listagem&#x20;drop-down" aria-controls="GS_EXPORT-DESTINATIONSAPLSALV_GUI_CUL_EXPORT_AS" aria-readonly="true" aria-haspopup="true" aria-labelledby="M1&#x3a;46&#x3a;1&#x3a;&#x3a;3&#x3a;1"/>
 <div draggable="false" id="M1:48::btn[20]" ct="B" lsdata='{"0":"Exportar para...","2":"TRANSPARENT","4":"Exportar dados","17":"E","18":"SHIFT_F8","21":true,"25":"TOGGLE","27":{"SID":"wnd[1]/tbar[0]/btn[20]","Type":"GuiButton","SubType":"toolbar"}}' lsevents='{"Press":[{},{"1":"action/3","2":true,"3":true}]}' role="button" title="Exportar&#x20;dados" data-sap-ls-accesskey="E" accesskey="E" tabindex="0" ti="0" class="lsButton lsButton--base urNoUserSelect urBtnRadius  lsButton--useintoolbar  lsButton--active  lsButton--focusable  lsButton--up lsButton--design-transparent ">
 <div draggable="false" id="M1:54::btn[12]" ct="B" lsdata='{"0":"Cancelar","2":"TRANSPARENT","4":"Finalizar sem atualização das configurações","17":"C","18":"ESCAPE","21":true,"25":"TOGGLE","27":{"SID":"wnd[1]/tbar[0]/btn[12]","Type":"GuiButton","SubType":"toolbar"}}' lsevents='{"Press":[{},{"1":"action/3","2":true,"3":true}]}' role="button" title="Finalizar&#x20;sem&#x20;atualiza&#xe7;&#xe3;o&#x20;das&#x20;configura&#xe7;&#xf5;es" data-sap-ls-accesskey="C" accesskey="C" tabindex="0" ti="0" class="lsButton lsButton--base urNoUserSelect urBtnRadius  lsButton--useintoolbar  lsButton--active  lsButton--focusable  lsButton--up lsButton--design-transparent ">
+<div id="GS_EXPORT-FORMATSAPLSALV_GUI_CUL_EXPORT_AS" ct="LIB_PS" lsdata='{"x":0,"7":true,"9":"NONE","10":"VISIBLE"}' class="lsListbox lsListbox--hasitems lsListbox--popup" role="listbox" aria-owns="u15540 u15541 " aria-activedescendant="u15540"><div id="GS_EXPORT-FORMATSAPLSALV_GUI_CUL_EXPORT_AS-scrl" class="lsListbox__items"><div class="lsListbox__values"><div id="u15540" class="lsListbox__value" data-itemid="u15540" ct="LIB_I" data-itemindex="0" data-itemkey="xlsx-LEAN-STANDARD" data-itemvalue1="xlsx-LEAN-STANDARD" data-itemvalue2="Microsoft&#x20;Excel&#x20;&#x28;&#x2a;.xlsx&#x29;" role="option">Microsoft Excel (*.xlsx)</div><div id="u15541" class="lsListbox__value" data-itemid="u15541" ct="LIB_I" data-itemindex="1" data-itemkey="csv-LEAN-STANDARD" data-itemvalue1="csv-LEAN-STANDARD" data-itemvalue2="File&#x20;separado&#x20;por&#x20;v&#xed;rgula&#x20;&#x28;&#x2a;.csv&#x29;" role="option">File separado por vírgula (*.csv)</div></div></div></div><div id="GS_EXPORT-DESTINATIONSAPLSALV_GUI_CUL_EXPORT_AS" ct="LIB_PS" lsdata='{"x":0,"7":true,"9":"NONE","10":"VISIBLE"}' class="lsListbox lsListbox--hasitems lsListbox--popup" role="listbox" aria-owns="u15543 " aria-activedescendant="u15543"><div id="GS_EXPORT-DESTINATIONSAPLSALV_GUI_CUL_EXPORT_AS-scrl" class="lsListbox__items"><div class="lsListbox__values"><div id="u15543" class="lsListbox__value" data-itemid="u15543" ct="LIB_I" data-itemindex="0" data-itemkey="L" data-itemvalue1="L" data-itemvalue2="Local" role="option">Local</div></div></div></div>
 ]]></content></control-update></delta-update></updates>`;
 
 const ITSDOC_EXECUTE = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {URL:'/sap(cz1TSUQlM2FBTk9OJTNhbmRjLXM0aGFuYV9TNEhfMDAlM2FvWVhuNmhpaU1RXzRNdHlOc0ZjcVZ6enVlcDhkeTdWZ19yMXpDVXFDLUFUVA==)/bc/gui/sap/its/webgui/145/data/682D70E7D2A8684C~',action:'invoke_itsdoc',Program:'',Operation:'OPEN',CommandLine:'Z:\\\\ITEM73.xlsx',ITSDocMethod:'Execute'};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
@@ -1303,6 +1305,68 @@ test('its: exportAsDoPopup acha os campos do Export As — o desvio do formato P
   // outra modal qualquer não é o Export As — e o nulo não estoura
   expect(exportAsDoPopup(popupDaTela(controlesDoDelta(DELTA)))).toBe(null);
   expect(exportAsDoPopup(null)).toBe(null);
+});
+
+test('its: combosDoDelta lê o cardápio que a tela declara — o input `ct="CB"` + a lista `LIB_PS` (item 114)', () => {
+  const combos = combosDoDelta(EXPORT_AS);
+  expect(combos.map((c) => c.sid)).toEqual([
+    'wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/cmbGS_EXPORT-FORMAT',
+    'wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/cmbGS_EXPORT-DESTINATION',
+  ]);
+  const formato = comboDoSid(combos, combos[0].sid);
+  // a CHAVE corrente sai do lsdata pelo CONTEÚDO (é `data-itemkey` de uma opção), não pelo índice;
+  // o TEXTO é o que a caixa mostra
+  expect(formato).toMatchObject({ chave: 'xlsx-LEAN-STANDARD', texto: 'Microsoft Excel (*.xlsx)' });
+  expect(formato.opcoes).toEqual([
+    { indice: 0, chave: 'xlsx-LEAN-STANDARD', texto: 'Microsoft Excel (*.xlsx)' },
+    { indice: 1, chave: 'csv-LEAN-STANDARD', texto: 'File separado por vírgula (*.csv)' },
+  ]);
+  // a lista de cada combo é a SUA: o corte entre listas irmãs não vaza a opção da vizinha
+  expect(combos[1].opcoes).toEqual([{ indice: 0, chave: 'L', texto: 'Local' }]);
+  expect(opcoesDaLista(EXPORT_AS, 'NAO_EXISTE')).toBe(null);
+  expect(comboDoSid(combos, 'wnd[0]/usr/txtMAX_SEL')).toBe(null);
+  expect(combosDoDelta(DELTA)).toEqual([]);         // tela sem combo nenhum
+});
+
+test('its: chaveDaOpcao traduz texto/índice para a CHAVE — é ela que o servidor aceita (item 114)', () => {
+  const combo = combosDoDelta(EXPORT_AS)[0];
+  expect(chaveDaOpcao(combo, 'csv-LEAN-STANDARD')).toBe('csv-LEAN-STANDARD');          // a chave passa
+  expect(chaveDaOpcao(combo, 'File separado por vírgula (*.csv)')).toBe('csv-LEAN-STANDARD');
+  expect(chaveDaOpcao(combo, '  FILE SEPARADO   POR VÍRGULA (*.CSV) ')).toBe('csv-LEAN-STANDARD');
+  expect(chaveDaOpcao(combo, 1)).toBe('csv-LEAN-STANDARD');                            // pelo índice
+  expect(chaveDaOpcao(combo, 0)).toBe('xlsx-LEAN-STANDARD');
+  // fora da lista estoura AQUI, com o cardápio — em vez do `-107 invalid value` mudo do servidor
+  expect(() => chaveDaOpcao(combo, 'BANANA')).toThrow(/não é opção do combo .*csv-LEAN-STANDARD/s);
+  // combo sem lista no delta: não há contra o que conferir, o valor passa cru
+  expect(chaveDaOpcao({ sid: 'x', opcoes: null }, 'qualquer')).toBe('qualquer');
+});
+
+test('its: preencher num COMBO enfileira a CHAVE, mesmo quando se disse o texto (item 114)', () => {
+  const sessao = { sids: sidsDaResposta(EXPORT_AS), fila: [], delta: EXPORT_AS };
+  const cmb = 'wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/cmbGS_EXPORT-FORMAT';
+  expect(preencher(sessao, { sid: cmb }, 'File separado por vírgula (*.csv)'))
+    .toMatchObject({ sid: cmb, valor: 'csv-LEAN-STANDARD', combo: cmb });
+  expect(sessao.fila).toEqual([
+    { post: `focus/${cmb}`, logic: 'ignore' }, { post: `value/${cmb}`, content: 'csv-LEAN-STANDARD' },
+  ]);
+  // o campo de TEXTO do mesmo popup continua indo como está — a tradução é só do combo
+  sessao.fila = [];
+  expect(preencher(sessao, { campo: 'GS_EXPORT-FILE_NAME' }, 'LISTA')).toMatchObject({ valor: 'LISTA' });
+  expect(sessao.fila[1].content).toBe('LISTA');
+  // opção inexistente estoura na hora de enfileirar, não no POST
+  expect(() => preencher(sessao, { sid: cmb }, 'BANANA')).toThrow(/não é opção do combo/);
+  // `{ cru: true }` desliga a tradução — para MEDIR o que o servidor faz com um valor qualquer
+  sessao.fila = [];
+  expect(preencher(sessao, { sid: cmb }, 'BANANA', { cru: true })).toMatchObject({ valor: 'BANANA' });
+  expect(sessao.fila[1].content).toBe('BANANA');
+});
+
+test('its: opcoes(sessao, alvo) é o cardápio da tela atual; alvo que não é combo estoura com os que são', () => {
+  const sessao = { sids: sidsDaResposta(EXPORT_AS), fila: [], delta: EXPORT_AS };
+  expect(opcoes(sessao, { campo: 'GS_EXPORT-DESTINATION' })).toMatchObject({
+    chave: 'L', texto: 'Local', opcoes: [{ indice: 0, chave: 'L', texto: 'Local' }],
+  });
+  expect(() => opcoes(sessao, { campo: 'GS_EXPORT-FILE_NAME' })).toThrow(/não é um combo .*cmbGS_EXPORT-FORMAT/s);
 });
 
 test('its: pedidoDoItsdoc — o Execute NÃO posta nada: o renderer só devolve o okcode (item 73)', () => {

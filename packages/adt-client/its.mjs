@@ -616,6 +616,125 @@ export function controlesDoDelta(corpo) {
   return brutos;
 }
 
+// ---------- o COMBOBOX que a tela DECLARA (item 114) ----------
+//
+// O `ct="CB"` do ITS não é um `<select>`: é um `<input readonly>` que mostra o TEXTO da opção
+// corrente, e a lista de opções vem SEPARADA — no MESMO delta, como um `<div ct="LIB_PS" id="…">`
+// com um `<div ct="LIB_I" data-itemkey="…" data-itemvalue2="…">` por opção. O elo entre os dois é
+// o `aria-controls` do input, que é o `id` da lista.
+//
+// Medido no s4h 758/250 em 06/09/2026 (item 114, `work/POC_webgui_combo/medicoes/item114-combo.md`),
+// no combo `cmbGS_EXPORT-FORMAT` do popup *Export As* do `btn[43]` — que, ao contrário do combo da
+// via `btn[45]`→radio do item 73, tem DUAS opções, e portanto escolha de verdade a fazer.
+// **O que se posta em `value/<SID>` é a CHAVE (`data-itemkey`), nunca o texto:**
+//   • `csv-LEAN-STANDARD`                    → `delta`, e o combo voltou com `lsdata[4]` = a chave
+//     e `lsdata[5]`/`value` = "File separado por vírgula (*.csv)" — quem traduz é o SERVIDOR;
+//   • "File separado por vírgula (*.csv)"    → `multipart` `-107 failed to set value: invalid value`;
+//   • "BANANA"                               → o MESMO `-107`.
+// O combo VALIDA do outro lado: só chave da lista passa, e o texto que a tela mostra é recusado
+// igual a lixo. Daí `preencher` traduzir texto→chave AQUI (§ `preencher`).
+//
+// E a escolha CHEGA ao ABAP, não fica no eco da tela: com `csv-LEAN-STANDARD` no combo, o ITSDoc do
+// "Exportar para..." virou `DefExt: 'csv'`, `Filter: 'csv file (*.csv)|*.csv|'`, e o arquivo saiu
+// CSV UTF-8 com BOM (156 528 B) em vez do XLSX (assinatura `50 4b 03 04`, 88 061 B) do default.
+//
+// ⚠ Um `value` recusado derruba o batch INTEIRO: o `-107` veio como `multipart`, sem `delta` —
+// o `focus`, o `value` e o `state/ur` do mesmo POST não produziram tela. Nada mudou, e a tela
+// anterior continua valendo.
+// ⚠ O `aria-activedescendant` da lista NÃO acompanha a escolha (medido: continuou no `xlsx` com o
+// combo já em `csv`) — ele é o primeiro item, não o corrente. Quem diz o corrente é o `lsdata`.
+// ⚠ **A opção corrente pode ser MEMÓRIA DO USUÁRIO, não constante da tela.** Medido na mesma POC:
+// depois de EXPORTAR uma vez em `csv`, toda sessão nova abriu o Export As já em `csv` — e voltou a
+// `xlsx` só depois de exportar em `xlsx` de novo (escolher sem exportar não gravou nada). Quem
+// depende do default está dependendo do que aquele usuário fez por último naquele sistema; para ter
+// formato certo, escolha-o (fila `adt-client` item 175).
+
+const RE_INPUT_CB = /<input\b([^>]*\bct="CB"[^>]*)>/g;
+const RE_DIV_LIB_I = /<div\b([^>]*\bct="LIB_I"[^>]*)>/g;
+
+/**
+ * PURO: as OPÇÕES de uma lista do renderer (`<div ct="LIB_PS" id="<lista>">`) — `{ indice, chave,
+ * texto }` por `<div ct="LIB_I">` dentro dela, na ordem do markup. `null` quando o delta não trouxe
+ * aquela lista. A `chave` é o `data-itemkey` (o que se posta); o `texto` é o `data-itemvalue2` (o
+ * que a tela mostra).
+ */
+export function opcoesDaLista(corpo, lista) {
+  const s = String(corpo ?? '');
+  // as listas são IRMÃS no markup (uma por combo): a desta vai do fim da sua tag até a próxima
+  const re = /<div\b([^>]*\bct="LIB_PS"[^>]*)>/g;
+  let m, de = -1, ate = -1;
+  while ((m = re.exec(s))) {
+    if (de >= 0) { ate = m.index; break; }
+    if (decodificarEntidades(atributosDe(m[1]).id ?? '') === lista) de = re.lastIndex;
+  }
+  if (de < 0) return null;
+  const trecho = s.slice(de, ate < 0 ? s.length : ate);
+  return [...trecho.matchAll(RE_DIV_LIB_I)].map((m) => {
+    const a = atributosDe(m[1]);
+    return { indice: Number(a['data-itemindex']), chave: decodificarEntidades(a['data-itemkey'] ?? ''),
+             texto: decodificarEntidades(a['data-itemvalue2'] ?? '') };
+  });
+}
+
+/**
+ * PURO: os COMBOS de um delta — um por `<input ct="CB">`, com o que ele mostra AGORA e o cardápio
+ * inteiro: `{ sid, id, lista, chave, texto, opcoes }`.
+ *
+ * O `texto` é o `value` do input (o que está escrito na caixa). A `chave` sai do `lsdata` **pelo
+ * conteúdo, não por índice**: é o valor que também é `data-itemkey` de alguma opção da lista — a
+ * mesma disciplina do `sidDoLsdata` (o índice do `lsdata` muda de tela para tela). Sem lista no
+ * delta, `opcoes` e `chave` vêm `null`: sobra o texto, e escolher vira chute — que é o que este
+ * item existe para tirar do caminho.
+ */
+export function combosDoDelta(corpo) {
+  const s = String(corpo ?? '');
+  return [...s.matchAll(RE_INPUT_CB)].map((m) => {
+    const a = atributosDe(m[1]);
+    const lista = a['aria-controls'] ? decodificarEntidades(a['aria-controls']) : null;
+    const opcoes = lista ? opcoesDaLista(s, lista) : null;
+    const chaves = new Set((opcoes ?? []).map((o) => o.chave));
+    const ls = jsonDoAtributo(a.lsdata);
+    return {
+      sid: sidDoLsdata(ls)?.SID ?? null,
+      id: a.id ? decodificarEntidades(a.id) : null,
+      lista,
+      chave: Object.values(ls ?? {}).find((v) => typeof v === 'string' && chaves.has(v)) ?? null,
+      texto: decodificarEntidades(a.value ?? ''),
+      opcoes,
+    };
+  });
+}
+
+/** PURO: o combo de um SID, entre os `combosDoDelta` — `null` quando aquele SID não é combo. */
+export const comboDoSid = (combos = [], sid) => combos.find((c) => c.sid === sid) ?? null;
+
+/**
+ * PURO: **o que POSTAR** num combo para escolher `opcao` — sempre uma `chave` da lista.
+ * Aceita a chave (`'csv-LEAN-STANDARD'`), o texto que a tela mostra (`'File separado por vírgula
+ * (*.csv)'`, sem diferenciar caixa nem espaço de sobra) ou o índice (`1`).
+ *
+ * Fora da lista estoura AQUI, com o cardápio — em vez de virar o `-107 invalid value` mudo do outro
+ * lado. Combo SEM lista no delta passa o valor cru: não há contra o que conferir, e recusar seria
+ * afirmar mais do que se mediu.
+ */
+export function chaveDaOpcao(combo, opcao) {
+  const opcoes = combo?.opcoes;
+  const cru = String(opcao ?? '');
+  if (!opcoes?.length) return cru;
+  if (typeof opcao === 'number' && Number.isInteger(opcao)) {
+    const porIndice = opcoes.find((o) => o.indice === opcao);
+    if (porIndice) return porIndice.chave;
+  }
+  const normal = (t) => String(t ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const achada = opcoes.find((o) => o.chave === cru)
+    ?? opcoes.find((o) => normal(o.texto) === normal(cru))
+    ?? opcoes.find((o) => normal(o.chave) === normal(cru));
+  if (achada) return achada.chave;
+  const cardapio = opcoes.map((o) => `${o.indice}: ${o.chave} "${o.texto}"`).join(', ');
+  throw new Error(`its: "${cru}" não é opção do combo ${combo.sid ?? combo.id ?? '?'} — as opções são ${cardapio}`
+    + ' (o que se posta é a CHAVE; o texto da tela o servidor recusa com -107)');
+}
+
 // ---------- o DISPARO que a tela DECLARA (item 71) ----------
 //
 // O `batchAcionar` posta `action/3/<SID>` em TUDO: é o `Press` do botão, e só. Mas cada controle
@@ -1664,11 +1783,40 @@ export async function exportarPlanilha(sessao, { nome = nomePadrao(), arquivo = 
  * (`value/txtMAX_SEL` + `action/3/…/btn[8]` no mesmo POST → "2 acertos"). O alvo é resolvido AGORA
  * contra a tela atual (nome errado estoura aqui, não como `-101` depois). Devolve `{ sid, valor, pendentes }`.
  * `{ janela: 'wnd[0]' }` escopa o alvo quando há popup aberto (por padrão vale a janela ativa).
+ *
+ * **Num COMBO (`GuiComboBox`) o que vai postado é a CHAVE** — o `data-itemkey` da opção —, e não o
+ * que a tela mostra: medido (item 114) que o servidor recusa o TEXTO com `-107 failed to set value:
+ * invalid value`, igual a lixo. Por isso o valor passa antes pelo `chaveDaOpcao` do combo, que
+ * aceita a chave, o texto ou o índice e traduz; opção inexistente estoura AQUI, com o cardápio.
+ * O `valor` devolvido é o que REALMENTE foi enfileirado (a chave), e vem com `combo` junto.
+ * `{ cru: true }` desliga a tradução — para MEDIR combo que a lista do delta não descreve.
  */
-export function preencher(sessao, alvo, valor, { janela = null } = {}) {
+export function preencher(sessao, alvo, valor, { janela = null, cru = false } = {}) {
   const sid = sidDoAlvo(sessao.sids, typeof alvo === 'string' && !/^wnd\[/.test(alvo) ? { campo: alvo } : alvo, { janela });
-  sessao.fila.push(...batchPreencher(sid, valor));
-  return { sid, valor: String(valor ?? ''), pendentes: sessao.fila.length / 2 };
+  const combo = cru ? null : comboDaSessao(sessao, sid);
+  const conteudo = combo ? chaveDaOpcao(combo, valor) : valor;
+  sessao.fila.push(...batchPreencher(sid, conteudo));
+  return { sid, valor: String(conteudo ?? ''), pendentes: sessao.fila.length / 2, ...(combo ? { combo: combo.sid } : {}) };
+}
+
+/** O combo da tela ATUAL que responde por um SID — `null` quando aquele SID não é `GuiComboBox`
+ * (o caso comum: não há por que varrer o delta atrás de lista para um campo de texto). */
+function comboDaSessao(sessao, sid) {
+  if (sessao?.sids?.find((x) => x.sid === sid)?.tipo !== 'GuiComboBox') return null;
+  return comboDoSid(combosDoDelta(sessao.delta ?? ''), sid);
+}
+
+/**
+ * O CARDÁPIO de um combo da tela atual — `{ sid, chave, texto, opcoes: [{ indice, chave, texto }] }`,
+ * do último `delta`, sem tocar a rede. É o que se lê ANTES de escolher; `opcoes: null` = o delta não
+ * trouxe a lista daquele combo, e aí só o `texto` corrente é conhecido.
+ */
+export function opcoes(sessao, alvo, { janela = null } = {}) {
+  const sid = sidDoAlvo(sessao.sids, typeof alvo === 'string' && !/^wnd\[/.test(alvo) ? { campo: alvo } : alvo, { janela });
+  const combo = comboDaSessao(sessao, sid);
+  if (!combo) throw new Error(`its: ${sid} não é um combo (GuiComboBox) — os combos da tela são `
+    + (combosDoDelta(sessao.delta ?? '').map((c) => c.sid).filter(Boolean).join(', ') || '(nenhum)'));
+  return combo;
 }
 
 /** Manda o que está enfileirado, sem ação nenhuma (só `ESTADO`). Devolve o `lerResposta`. */

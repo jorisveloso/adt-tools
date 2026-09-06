@@ -2581,7 +2581,8 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   (§ "`lerGridInteiro`"). ~~Célula editável~~ **feita** (item 47): `escreverCelula` pelo navegador, com o ciclo
   escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
   na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
-  só existe no despejo DOM). ~~Ordenar/filtrar~~ **medido** (item 77): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, e a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
+  só existe no despejo DOM). ~~Combo~~ **medido** (item 114): escolher uma opção é postar a
+  CHAVE, e `preencher` traduz o texto (§ "O COMBOBOX (`ct="CB"`)"). ~~Ordenar/filtrar~~ **medido** (item 77): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, e a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -3281,6 +3282,65 @@ tratou é o `preventDefault` — sem ele, `colarBloco` estoura em vez de deixar 
 - **`LOCAL&COPY_ROW`** e o caminho inverso (copiar do ALV para o clipboard) — o
   `CopyToClipboardRequest` já se sabe sem via HTTP (item 45).
 
+## O COMBOBOX (`ct="CB"`) — escolher uma opção é postar a CHAVE (item 114)
+
+Medido no s4h 758/250 em 06/09/2026, `work/POC_webgui_combo/medicoes/item114-combo.md`.
+
+O `ct="CB"` do ITS **não é um `<select>`**: é um `<input readonly>` que mostra o TEXTO da opção
+corrente, e a lista de opções vem separada — **no mesmo delta** — como um `<div ct="LIB_PS" id="…">`
+com um `<div ct="LIB_I" data-itemkey="…" data-itemvalue2="…">` por opção. O elo entre os dois é o
+**`aria-controls`** do input, que é o `id` da lista.
+
+```js
+const cardapio = opcoes(s, { campo: 'GS_EXPORT-FORMAT' });
+// { sid: '…/cmbGS_EXPORT-FORMAT', chave: 'xlsx-LEAN-STANDARD', texto: 'Microsoft Excel (*.xlsx)',
+//   opcoes: [ { indice: 0, chave: 'xlsx-LEAN-STANDARD', texto: 'Microsoft Excel (*.xlsx)' },
+//             { indice: 1, chave: 'csv-LEAN-STANDARD',  texto: 'File separado por vírgula (*.csv)' } ] }
+
+preencher(s, { campo: 'GS_EXPORT-FORMAT' }, 'File separado por vírgula (*.csv)');
+// enfileira `value/…/cmbGS_EXPORT-FORMAT` com **csv-LEAN-STANDARD** — a lib traduz texto → chave
+```
+
+**O que se posta é a CHAVE.** Uma sessão por candidato, mesmo ponto da tela, `preencher` + `enviar`:
+
+| postado em `value/<SID>` | resposta |
+|---|---|
+| `csv-LEAN-STANDARD` (a chave) | `delta` — e o combo voltou com a chave nova e o TEXTO traduzido pelo servidor |
+| `File separado por vírgula (*.csv)` (o texto **que a tela mostra**) | `multipart` **`-107 failed to set value: invalid value`** |
+| `BANANA` | **o mesmo `-107`** |
+
+O combo valida do outro lado, e a distância entre "quase certo" e "errado" é zero: o rótulo da
+própria tela é recusado com o mesmo código que lixo. Por isso `preencher` num `GuiComboBox` passa o
+valor pelo `chaveDaOpcao` do combo — que aceita a **chave**, o **texto** (sem diferenciar caixa nem
+espaço de sobra) ou o **índice** — e opção inexistente estoura **na hora de enfileirar**, com o
+cardápio, em vez de virar o `-107` mudo. `{ cru: true }` desliga a tradução, para medir.
+
+E a escolha **chega ao ABAP**, não fica no eco da tela: com `csv-LEAN-STANDARD` no combo do
+*Export As*, o ITSDoc virou `DefExt: 'csv'` / `Filter: 'csv file (*.csv)'` e o arquivo saiu CSV
+UTF-8 com BOM (156 528 B), contra o XLSX (`50 4b 03 04`, 88 061 B) do outro.
+
+### ⚠ Quatro armadilhas
+
+1. **Um `value` recusado derruba o batch INTEIRO.** O `-107` veio como `multipart`, sem `delta`: o
+   `focus`, o `value` e o `state/ur` do mesmo POST não produziram tela. Nada mudou — a sessão não
+   fica num meio-termo, e a tela anterior continua valendo.
+2. **A chave corrente sai do `lsdata` pelo CONTEÚDO, não pelo índice** — é o valor que também é
+   `data-itemkey` de alguma opção. (No Export As o índice era `4`, mas índice de `lsdata` muda por
+   tipo de controle; ver *⚠ O índice do SID MUDA por tipo de controle*.)
+3. **O `aria-activedescendant` da lista NÃO acompanha a escolha.** Com o combo já em `csv` no
+   `lsdata`, ele continuava apontando o item do `xlsx`: é o primeiro item, não o corrente.
+4. **A opção corrente pode ser MEMÓRIA DO USUÁRIO, não constante da tela.** Depois de *exportar* uma
+   vez em `csv`, toda sessão nova abriu o Export As já em `csv` — e só voltou a `xlsx` depois de
+   exportar em `xlsx` de novo (escolher sem exportar não gravou nada). Quem depende do default está
+   dependendo do que aquele usuário fez por último naquele sistema.
+
+### O que ainda NÃO está medido
+
+- **Combo editável** (sem `readonly`): os dois medidos são `readonly`. Daí `chaveDaOpcao` só recusar
+  quando há lista no delta — sem lista, o valor passa cru.
+- **Combo cuja lista o delta não traz** (que só a carregue no `ListAccess`).
+- **Combo fora do Export As** — a leitura é do markup do renderer, não do programa, mas medido só lá.
+
 ## Exportar a lista por ARQUIVO — o ITSDoc (item 45)
 
 **O canal TEM via de saída** — não pelo `batch/json`, por um diálogo à parte. Medido no s4h 758/250
@@ -3366,8 +3426,10 @@ const { conteudo, bytes, metodos } = await exportarPlanilha(s, { nome: 'PARAMETR
 Três peças no popup, e `exportAsDoPopup(popupDaTela(...))` devolve as três: `txtGS_EXPORT-FILE_NAME`
 (nome **sem** extensão — quem põe é o `DefExt` do ITSDoc), `cmbGS_EXPORT-FORMAT` e
 `cmbGS_EXPORT-DESTINATION`. No sistema medido os dois combos tinham **uma opção cada**
-(`xlsx-CUSTOM` "Microsoft Excel (*.xlsx)" e `L` "Local") — sistema com mais de uma **não está
-medido**, e é por isso que a função devolve os `valores` de tela.
+(`xlsx-CUSTOM` "Microsoft Excel (*.xlsx)" e `L` "Local"), e é por isso que a função devolve os
+`valores` de tela. ⚠ **Isso vale para ESTA via.** Pelo `btn[43]` o mesmo `cmbGS_EXPORT-FORMAT` traz
+DUAS opções (`xlsx-LEAN-STANDARD` e `csv-LEAN-STANDARD`), e aí há escolha a fazer — ver § *O
+COMBOBOX (`ct="CB"`)*, item 114, inclusive a armadilha de o default ser memória do usuário.
 
 O laço do ITSDoc tem **três** voltas, e a terceira é o método novo: `FileSaveDialog` → `Export` →
 **`Execute`**. O `Execute` (`Operation:'OPEN'`, `CommandLine:'<o arquivo>'`) é "abra no frontend o
