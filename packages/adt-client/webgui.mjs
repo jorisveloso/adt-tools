@@ -3192,3 +3192,358 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, tet
   const mudou = await esperarMudanca(sessao, antes, { tetoMs: tetoAcaoMs });
   return { caminho: partes, passos, folha: alvo, mudou };
 }
+
+// ---------- a ÁRVORE do SAP Easy Access pelo NAVEGADOR (item 86) ----------
+//
+// A mesma árvore que a via HTTP endereça por chave (§ `its.mjs`, item 50), aqui pelo DOM e por
+// GESTO. Medido no s4h 758/250 em 06/09/2026 (`sap-accelerate/work/POC_webgui_arvore/`, bruto em
+// `medicoes/raw/h-nav-arvore.json`, leitura em `medicoes/item86-arvore-navegador.md`).
+//
+// **A LEITURA é a mesma, e é de graça** — o boot do SMEN traz a árvore inteira no DOM, e as três
+// fontes do item 50/84 estão todas lá: o `STCS` com o `nodeindexes` no `lsdata`, os `TV`
+// (`tree#C105#<n>#1#1#i`) com o rótulo, e o `<td subct="HIC">` com o estado de expansão. Por isso
+// as PURAS que cruzam as três (`indiceDoNo`, `containerDaArvore`, `arvoreDosBrutos`,
+// `acharNoDaArvore`) moram AQUI e o `its.mjs` as importa: o que muda entre as vias é só de onde
+// vêm os brutos — do delta HTTP lá, do DOM aqui.
+//
+// ⚠️ **O despejo por `[ct]` NÃO vê a flag de filhos**: o `<td subct="HIC">` não tem `ct` nenhum
+// (item 84). Por isso `JS_ARVORE` varre `[subct="HIC"]` à parte — `lerTela` não a traz.
+//
+// **O GESTO é um só, e é TOGGLE.** Onde a via HTTP tem três comandos (`action/8` expandir,
+// `action/9` colapsar, `action/2` acionar), aqui há o duplo clique sintético — e ele faz os três,
+// pelo mesmo POST. Quatro braços, uma sessão (SMEN do s4h 758/250):
+//
+// | gesto | nó | efeito | tempo |
+// |---|---|---|---|
+// | duplo clique no `TV` | "Escritório" `COLLAPSED` | **EXPANDE** — 15 → 22 nós | 2,6 s |
+// | duplo clique no `TV` | o MESMO nó, agora `EXPANDED` | **COLAPSA** — 22 → 15 nós | 252 ms |
+// | duplo clique no **ícone** (`L`, `tree#C105#<n>#ni`) | `COLLAPSED` | **EXPANDE** — 15 → 22 nós | 272 ms |
+// | duplo clique no `TV` | FOLHA `F00003` (favorito) | SMEN → **CO01** "Criar ordem de produção" | **54 s** |
+//
+// Os três primeiros postam exatamente o que o item 50 capturou (`action/41` da seleção + `action/2`
+// `type=OnNodeDoubleClick&node_key=<chave>`) — o gesto do renderer e o POST da via HTTP são o
+// MESMO protocolo, e por isso `expandirNo`/`colapsarNo` aqui são operações de ESTADO como lá: só
+// gesticulam quando o nó ainda não está como se pede.
+//
+// ⚠️ **Aqui não existe o irmão IDEMPOTENTE.** Na via HTTP o `action/9` num nó já fechado é aceito e
+// não faz nada (item 85); no navegador, repetir o duplo clique num nó fechado o REABRE. `colapsarNo`
+// só gesticula em `EXPANDED`, e é isso que faz repetir ser seguro.
+//
+// ⚠️ **E a RAIZ não fecha por gesto** (`raw/h3-nav-colapsar.json`): o duplo clique em "Menu SAP"
+// (`Root`) e em "Favoritos" (`Favo`) posta o mesmo `action/2`, o servidor responde, e a árvore fica
+// idêntica — enquanto o nó de nível 1 fecha em 253 ms. É o único gesto da árvore que esta via NÃO
+// alcança, e é justamente o que mais encolhe o delta (item 85: `Root` fechada = −29,5%). Para isso
+// existe a via HTTP (`its.colapsarNo`, `action/9`), que fecha a raiz.
+//
+// ⚠️ **CORREÇÃO ao item 50**: "clicar no ícone (`L`) não expande" vale para o clique SIMPLES — o
+// duplo clique no ícone expande igual ao do nó, com o mesmo POST. E o clique simples continua não
+// postando nada (o `action/41` fica enfileirado no renderer e sai junto do próximo gesto que posta),
+// o que é a razão de o veredito daqui sair da ÁRVORE (`assinaturaDaArvore`), e não do carimbo.
+//
+// ⚠️ **O acionamento é LENTO e mais lento que na via HTTP**: 54 s aqui contra 15,5 s no POST direto
+// (mesma folha, transação fria). O teto de 30 s do `esperarMudanca` não bastaria — por isso
+// `TETO_ARVORE`.
+
+/** O teto do acionamento da árvore — medido 54 s numa folha pelo navegador, 15,5 s pelo POST. */
+export const TETO_ARVORE = 120000;
+
+/** PURO: `tree#C105#6#1#1#i` → `6`, o índice do nó no `nodeindexes`; `null` se não é nó de árvore. */
+export const indiceDoNo = (id) => {
+  const m = /^tree#[^#]+#([0-9]+)#1#1#i$/.exec(String(id ?? ''));
+  return m ? Number(m[1]) : null;
+};
+
+/** PURO: o container da ÁRVORE (`GuiTree`) entre os brutos — `{ id, sid, nodeindexes }` ou `null`. */
+export function containerDaArvore(brutos = []) {
+  for (const c of brutos) {
+    const d = sidDoLsdata(c?.lsdata);
+    if (d?.Type === 'GuiTree' && Array.isArray(d.nodeindexes)) return { id: c.id ?? null, sid: d.SID, nodeindexes: d.nodeindexes };
+  }
+  return null;
+}
+
+/**
+ * PURO: os nós VISÍVEIS da árvore, cruzando o `nodeindexes` do container com os `TV` dos brutos —
+ * `{ sid, id, nodeindexes, nos: [{ n, id, chave, rotulo, pai, nivel, categoria }] }`. Sem árvore,
+ * `{ sid: null, nos: [] }`.
+ *
+ * `pai` é o índice `n` do pai (`-1` na raiz) e `nivel` é a profundidade contada por ele.
+ * `categoria` é o segundo campo do `nodeindexes` — vem `2` na raiz "Favoritos", `3` em cada
+ * favorito, `0` na raiz "Menu SAP" e `1` em todo nó do menu. Medido (item 84): a categoria **não**
+ * é a flag de filhos — folha e pasta do menu são as duas `1`.
+ *
+ * Com a `expansao` (`Map n → 'EXPANDED' | 'COLLAPSED' | 'INDENT'`) cada nó ganha `expansao` e
+ * **`temFilhos`** — e é ele que poupa o gesto inócuo na folha.
+ *
+ * ⚠️ É a MESMA pura das duas vias: aqui os brutos vêm do DOM (`JS_ARVORE`), no `its.mjs` do delta.
+ */
+export function arvoreDosBrutos(brutos = [], expansao = null) {
+  const cont = containerDaArvore(brutos);
+  if (!cont) return { sid: null, id: null, nodeindexes: null, nos: [] };
+  const nos = brutos
+    .filter((c) => c.ct === 'TV' && indiceDoNo(c.id) !== null)
+    .map((c) => {
+      const n = indiceDoNo(c.id);
+      const e = Array.isArray(cont.nodeindexes[n]) ? cont.nodeindexes[n] : [];
+      return {
+        n, id: c.id, chave: typeof e[0] === 'string' ? e[0] : null, categoria: e[1] ?? null,
+        pai: typeof e[2] === 'number' ? e[2] : -1,
+        rotulo: typeof c.lsdata?.['0'] === 'string' ? c.lsdata['0'] : (c.texto ?? null),
+        expansao: expansao?.get(n) ?? null,
+        temFilhos: expansao?.has(n) ? expansao.get(n) !== 'INDENT' : null,
+      };
+    })
+    .filter((x) => x.chave !== null);
+  const porN = new Map(nos.map((x) => [x.n, x]));
+  for (const no of nos) {
+    let nivel = 0;
+    let p = no.pai;
+    while (p > 0 && porN.has(p) && nivel < 64) { nivel += 1; p = porN.get(p).pai; }
+    no.nivel = nivel;
+  }
+  return { ...cont, nos };
+}
+
+/** PURO: acha um nó por CHAVE (`'F00003'`), por rótulo (sem acento nem caixa) ou por `{ chave }`. */
+export function acharNoDaArvore(nos = [], alvo) {
+  const chave = alvo && typeof alvo === 'object' ? alvo.chave ?? null : String(alvo ?? '');
+  const achado = nos.find((x) => x.chave === chave)
+    ?? (alvo && typeof alvo === 'object' ? null : acharItemDeMenu(nos, chave));
+  // sem prefixo de módulo de propósito: esta pura serve às DUAS vias (o `its.mjs` a importa)
+  if (!achado) throw new Error(`a árvore não tem "${chave}". Tenho: ${nos.map((x) => `${x.rotulo} (${x.chave})`).join(' | ')}`);
+  return achado;
+}
+
+/**
+ * PURO: o estado da árvore numa string — quantos nós e como cada um está. É o veredito de
+ * "o gesto pegou": o duplo clique numa pasta muda a ÁRVORE sem mudar o título, e o carimbo da tela
+ * não separa isso do repintar do renderer.
+ */
+export const assinaturaDaArvore = (a) =>
+  `${(a?.nos ?? []).length}|${(a?.nos ?? []).map((x) => `${x.chave}:${x.expansao}`).join(',')}`;
+
+/**
+ * O despejo CRU da árvore no DOM: `{ brutos, expansao }` — os `STCS`/`TV` no formato do
+ * `JS_DESPEJO_CONTROLES` (é o que `arvoreDosBrutos` come) e os pares `[n, estado]` dos
+ * `<td subct="HIC">`, que não têm `ct` e por isso não vêm no despejo normal (item 84).
+ */
+export const JS_ARVORE = `(() => {
+  const j = (s) => { try { return JSON.parse(s); } catch (x) { return null; } };
+  const brutos = [...document.querySelectorAll('[ct="STCS"],[ct="TV"]')].map((el) => ({
+    id: el.id || null, ct: el.getAttribute('ct'), lsdata: j(el.getAttribute('lsdata')),
+    texto: (el.innerText || '').trim().slice(0, 120) || null }));
+  const expansao = [...document.querySelectorAll('td[subct="HIC"]')]
+    .map((el) => ({ m: /^tree#[^#]+#([0-9]+)#1$/.exec(el.id || ''), d: j(el.getAttribute('lsdata')) }))
+    .filter((x) => x.m && typeof (x.d || {})['5'] === 'string')
+    .map((x) => [Number(x.m[1]), x.d['5']]);
+  return { brutos, expansao };
+})()`;
+
+/**
+ * A árvore da tela atual, lida do DOM — **zero rede**, ~30 ms. Cada nó traz `chave`, `rotulo`,
+ * `pai`, `nivel`, `expansao` e `temFilhos`; sem `GuiTree` na tela vem `{ sid: null, nos: [] }`.
+ */
+export async function arvore(sessao) {
+  const cru = await avaliar(sessao, JS_ARVORE);
+  return arvoreDosBrutos(cru?.brutos ?? [], new Map(cru?.expansao ?? []));
+}
+
+/**
+ * O DUPLO clique sintético num ponto — o gesto que a árvore entende. Mesma sequência do `clique`,
+ * com o segundo par `clickCount: 2`: é isso que o renderer lê como `OnNodeDoubleClick` (medido no
+ * item 50 pela captura do `postData`).
+ */
+export async function duploClique(sessao, p, { modificadores = 0 } = {}) {
+  const m = { x: p.x, y: p.y, modifiers: modificadores };
+  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseMoved', buttons: 0 });
+  for (const clickCount of [1, 2]) {
+    await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mousePressed', button: 'left', buttons: 1, clickCount });
+    await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseReleased', button: 'left', buttons: 0, clickCount });
+  }
+}
+
+/**
+ * O duplo clique NO NÓ (o `TV` com o rótulo), devolvendo `{ ponto, desde }` — o `desde` é a marca
+ * nos eventos CDP de onde `esperarArvore` conta os round-trips.
+ * ⚠️ `descer: false`: o gesto medido foi no próprio nó.
+ */
+async function gesticularNo(sessao, no) {
+  const ponto = await apontar(sessao, { id: no.id }, { descer: false });
+  if (typeof ponto?.x !== 'number') throw new Error(`webgui: a árvore tem "${no.rotulo}" (${no.chave}) mas ele não está apontável na tela (${no.id})`);
+  const desde = sessao.eventos.length;
+  await duploClique(sessao, ponto);
+  return { ponto, desde };
+}
+
+/**
+ * Espera a ÁRVORE deixar de ser a de `antes` — `{ mudou, respondeu, ms, arvore }`. `mudou: false`
+ * com `respondeu: true` é INFORMAÇÃO: o POST foi e voltou, e a árvore ficou igual (é assim que a
+ * RAIZ se denuncia, § `colapsarNo`, e que uma pasta declarada mas VAZIA se denunciaria).
+ *
+ * ⚠️ **O round-trip é o que impede pagar o teto inteiro** (a mesma lição do `esperarTroca`, item
+ * 80): sem ele, "o gesto não fez nada" custaria os 30 s de teto — foi o que o E2E do item 86 pagou
+ * duas vezes ao tentar colapsar a raiz. A resposta chega ANTES do repaint, então depois dela ainda
+ * se espera `assentarMs` antes de julgar.
+ */
+export async function esperarArvore(sessao, antes, { desde = 0, tetoMs = 30000, assentarMs = 1500 } = {}) {
+  const alvo = assinaturaDaArvore(antes);
+  const t0 = Date.now();
+  const ate = t0 + tetoMs;
+  let atual = antes;
+  const fim = (mudou) => ({ mudou, respondeu: roundTrips(sessao.eventos, desde).respondidos > 0,
+                            ms: Date.now() - t0, arvore: atual });
+  while (Date.now() < ate) {
+    await espera(200);
+    atual = await arvore(sessao);
+    if (assinaturaDaArvore(atual) !== alvo) return fim(true);
+    if (roundTrips(sessao.eventos, desde).respondidos > 0) {
+      const limite = Math.min(Date.now() + assentarMs, ate);
+      while (Date.now() < limite) {
+        await espera(200);
+        atual = await arvore(sessao);
+        if (assinaturaDaArvore(atual) !== alvo) return fim(true);
+      }
+      return fim(false);
+    }
+  }
+  return fim(false);
+}
+
+/**
+ * EXPANDE um nó e devolve `{ no, abriu, filhos, mudou, ms, pulou }`. `abriu: false` sem `pulou` é
+ * INFORMAÇÃO — o gesto pegou e a árvore ficou igual (a pasta é VAZIA).
+ *
+ * **Numa FOLHA não gesticula** (`temFilhos === false`): o duplo clique nela ACIONARIA a transação,
+ * que é o oposto de "abrir" — aqui a guarda não é economia, é segurança. **Num nó já `EXPANDED`
+ * também não**: o gesto é TOGGLE e o fecharia (medido, § acima). Sem a flag na tela
+ * (`temFilhos === null`) o gesto sai.
+ */
+export async function expandirNo(sessao, alvo, { tetoMs = 30000 } = {}) {
+  const antes = await arvore(sessao);
+  if (!antes.sid) throw new Error('webgui: esta tela não tem árvore (nenhum GuiTree no DOM)');
+  const no = acharNoDaArvore(antes.nos, alvo);
+  if (no.temFilhos === false) return { pulou: true, no, abriu: false, mudou: false, filhos: [] };
+  if (no.expansao === 'EXPANDED') {
+    return { pulou: true, no, abriu: false, mudou: false, filhos: antes.nos.filter((x) => x.pai === no.n) };
+  }
+  const { desde } = await gesticularNo(sessao, no);
+  const { mudou, respondeu, ms, arvore: depois } = await esperarArvore(sessao, antes, { desde, tetoMs });
+  // ⚠️ o índice `n` é posicional e a expansão reindexa: reachar o nó pela CHAVE, sempre
+  const agora = depois.nos.find((x) => x.chave === no.chave) ?? null;
+  return { pulou: false, mudou, respondeu, ms, no, abriu: depois.nos.length > antes.nos.length,
+           filhos: agora ? depois.nos.filter((x) => x.pai === agora.n) : [] };
+}
+
+/**
+ * COLAPSA um nó — o MESMO duplo clique, contando com o toggle. Devolve `{ no, fechou, nosAntes,
+ * nosDepois, mudou, respondeu, ms, pulou }`.
+ *
+ * **Só gesticula em `EXPANDED`.** Folha e `COLLAPSED` devolvem `{ pulou: true }` sem tocar em nada:
+ * aqui não há o `action/9` idempotente da via HTTP (item 85) — repetir o gesto num nó fechado o
+ * REABRIRIA, e numa folha ACIONARIA a transação.
+ *
+ * ⚠️ **A RAIZ não fecha por gesto — e este é o limite da via.** Medido (item 86, SMEN do s4h
+ * 758/250, `raw/h3-nav-colapsar.json`): duplo clique em "Menu SAP" (`Root`) e em "Favoritos"
+ * (`Favo`), as duas `EXPANDED`, **posta** (`action/2` `OnNodeDoubleClick`, o mesmo POST dos outros)
+ * e a árvore fica IGUAL — 15 → 15 nós, ainda `EXPANDED`. O mesmo gesto num nó de nível 1
+ * ("Escritório") fecha em 253 ms. Quem precisa encolher a árvore pela raiz — que é onde está o
+ * ganho (29,5% do delta, item 85) — usa a via HTTP: lá o `action/9` fecha a `Root` (22 → 4 nós).
+ * Aqui o resultado sai honesto e RÁPIDO: `{ fechou: false, respondeu: true }` em ~1,7 s, porque o
+ * round-trip fecha a espera (§ `esperarArvore`).
+ */
+export async function colapsarNo(sessao, alvo, { tetoMs = 30000 } = {}) {
+  const antes = await arvore(sessao);
+  if (!antes.sid) throw new Error('webgui: esta tela não tem árvore (nenhum GuiTree no DOM)');
+  const no = acharNoDaArvore(antes.nos, alvo);
+  if (no.expansao !== 'EXPANDED') {
+    return { pulou: true, no, fechou: false, mudou: false, nosAntes: antes.nos.length, nosDepois: antes.nos.length };
+  }
+  const { desde } = await gesticularNo(sessao, no);
+  const { mudou, respondeu, ms, arvore: depois } = await esperarArvore(sessao, antes, { desde, tetoMs });
+  const fechou = depois.nos.length < antes.nos.length;
+  if (respondeu && !fechou) {
+    detalhe(`webgui: colapsarNo — "${no.rotulo}" (${no.chave}) recebeu o duplo clique, o servidor respondeu e a árvore ficou igual`
+      + (no.pai === -1 ? '; é uma RAIZ, e raiz não fecha por gesto nesta via — use o action/9 da via HTTP (its.colapsarNo)' : ''));
+  }
+  return { pulou: false, mudou, respondeu, ms, no, fechou,
+           nosAntes: antes.nos.length, nosDepois: depois.nos.length };
+}
+
+/**
+ * O duplo clique num nó: `{ no, mudou, ms }`. Numa FOLHA ele aciona — foi assim que o favorito
+ * "Produção → … → Com material" levou o SMEN à CO01, em **54 s**; num nó com filhos ele expande (ou
+ * fecha, se já estava aberto), e aí `mudou` também é `true` — a tela mexeu.
+ *
+ * ⚠️ O veredito aqui sai do CARIMBO da tela (é a troca de dynpro que interessa), com o teto em
+ * `TETO_ARVORE`: 30 s não bastariam para a folha fria.
+ */
+export async function acionarNo(sessao, alvo, { tetoMs = TETO_ARVORE } = {}) {
+  const a = await arvore(sessao);
+  if (!a.sid) throw new Error('webgui: esta tela não tem árvore (nenhum GuiTree no DOM)');
+  const no = acharNoDaArvore(a.nos, alvo);
+  const antes = await carimbo(sessao);
+  const t0 = Date.now();
+  await gesticularNo(sessao, no);
+  const mudou = await esperarMudanca(sessao, antes, { tetoMs });
+  return { no, mudou, ms: Date.now() - t0 };
+}
+
+/**
+ * Vai a uma tela pelo CAMINHO da árvore do SAP Easy Access — o caminho que o usuário funcional
+ * descreve, e o único que enxerga os FAVORITOS:
+ *
+ * ```js
+ * await navegarArvore(s, ['Menu SAP', 'Escritório', 'Agenda', 'Próprio']);
+ * await navegarArvore(s, 'Menu SAP > Escritório', { acionar: false });   // só DESCOBRE os filhos
+ * ```
+ *
+ * Ao contrário do menu da barra (`navegarMenu`), a árvore **não vem inteira**: cada nível fechado
+ * custa um gesto (e um round-trip). O percurso se refaz por CHAVE a cada passo — o índice `n` é
+ * posicional e a expansão reindexa tudo abaixo.
+ *
+ * ⚠️ **Rótulo com `>` dentro** (o favorito "Produção -> Controle de produção -> …"): o caminho em
+ * string corta em `>`, então passe **array**.
+ *
+ * Devolve `{ caminho, passos, folha, expandidos, mudou }`; com `{ acionar: false }` devolve os
+ * `filhos` do último nó, expandindo-o se ele ainda não tiver filhos visíveis.
+ */
+export async function navegarArvore(sessao, caminho, { acionar: aciona = true, tetoMs = 30000, tetoAcaoMs = TETO_ARVORE } = {}) {
+  const partes = partirCaminhoDeMenu(caminho);
+  const passos = [];
+  const expandidos = [];
+  const filhosDe = (a, pai) => (pai ? a.nos.filter((x) => x.pai === pai.n) : a.nos.filter((x) => x.pai === -1));
+  let chave = null;
+  for (const rotulo of partes) {
+    let a = await arvore(sessao);
+    if (!a.sid) throw new Error('webgui: esta tela não tem árvore (nenhum GuiTree no DOM) — o SAP Easy Access é o `/nSMEN`');
+    let pai = chave === null ? null : a.nos.find((x) => x.chave === chave);
+    let irmaos = filhosDe(a, pai);
+    let alvo = acharItemDeMenu(irmaos, rotulo);
+    if (!alvo && pai) {                       // o nó pode estar fechado: abrir UMA vez e reler
+      const e = await expandirNo(sessao, { chave: pai.chave }, { tetoMs });
+      if (!e.pulou) expandidos.push(pai.chave);
+      a = await arvore(sessao);
+      pai = a.nos.find((x) => x.chave === chave);
+      irmaos = filhosDe(a, pai);
+      alvo = acharItemDeMenu(irmaos, rotulo);
+    }
+    if (!alvo) throw new Error(`webgui: navegarArvore — "${rotulo}" não está sob ${chave ?? 'a raiz'}. Tenho: ${irmaos.map((x) => x.rotulo).join(' | ')}`);
+    passos.push(alvo);
+    chave = alvo.chave;
+  }
+  if (!aciona) {
+    let a = await arvore(sessao);
+    let folha = a.nos.find((x) => x.chave === chave);
+    let filhos = filhosDe(a, folha);
+    if (!filhos.length && folha?.temFilhos !== false) {   // um gesto — e a FOLHA não paga nenhum
+      await expandirNo(sessao, { chave }, { tetoMs });
+      expandidos.push(chave);
+      a = await arvore(sessao);
+      folha = a.nos.find((x) => x.chave === chave);
+      filhos = folha ? filhosDe(a, folha) : [];
+    }
+    return { caminho: partes, passos, folha, filhos, expandidos, mudou: false };
+  }
+  const r = await acionarNo(sessao, { chave }, { tetoMs: tetoAcaoMs });
+  return { ...r, caminho: partes, passos, folha: r.no, expandidos };
+}

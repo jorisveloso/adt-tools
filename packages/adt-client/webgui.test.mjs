@@ -12,6 +12,7 @@ import {
   interpretarSonda, jsComando, JS_PUBLICAR_FOCO, ehTelemetria, roundTrips,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
   criarPilhaDeDesfazer, transacional,
+  indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore, assinaturaDaArvore, JS_ARVORE,
   SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo,
   pinosDeCertificado, bandeirasDeCertificado, explicarErroDeNavegacao,
   jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
@@ -1430,4 +1431,111 @@ test('webgui: o gesto de colar é um `paste` com DataTransfer — e o preventDef
   expect(rodar(elemento(false)).tratado).toBe(false);
   // a célula que sumiu do DOM entre o clique e o paste sai como erro, não como `undefined`
   expect(rodar(null).erro).toMatch(/sumiu do DOM antes do paste/);
+});
+
+// ---------- a ÁRVORE do SAP Easy Access (item 86) ----------
+//
+// As puras são as MESMAS das duas vias (o `its.mjs` as importa daqui): o que muda é de onde vêm os
+// brutos. Aqui elas são exercitadas no formato do DOM, que é o do `JS_ARVORE`.
+
+/** O `nodeindexes` medido no boot do SMEN (s4h 758/250) — `[chave, categoria, índiceDoPai]`. */
+const NODEINDEXES = [0, ['Favo', 2, -1], ['F00002', 3, 1], ['F00003', 3, 1], ['Root', 0, -1],
+  ['0000000003', 1, 4], ['0000000004', 1, 4]];
+
+const SID_ARVORE = 'wnd[0]/usr/cntlIMAGE_CONTAINER/shellcont/shell/shellcont[0]/shell';
+
+const ROTULOS = { 1: 'Favoritos', 2: 'SAP Fiori Launchpad', 3: 'Produção -> Controle de produção',
+  4: 'Menu SAP', 5: 'Conector para SAP Multi-Bank Connectivity', 6: 'Escritório' };
+
+const BRUTOS_ARVORE = [
+  { id: 'tree#C105', ct: 'STCS', lsdata: { 0: 'árvore', 34: { SID: SID_ARVORE, Type: 'GuiTree', nodeindexes: NODEINDEXES } } },
+  // o filler de cada linha é `TV` também, e NÃO é nó — o `indiceDoNo` é quem separa
+  { id: 'tree#C105#1#f', ct: 'TV', lsdata: { 14: true } },
+  ...Object.entries(ROTULOS).map(([n, rotulo]) => ({ id: `tree#C105#${n}#1#1#i`, ct: 'TV', lsdata: { 0: rotulo } })),
+];
+
+const EXPANSAO_ARVORE = new Map([[1, 'EXPANDED'], [2, 'INDENT'], [3, 'INDENT'], [4, 'EXPANDED'],
+  [5, 'COLLAPSED'], [6, 'COLLAPSED']]);
+
+test('webgui: indiceDoNo só reconhece o nó da árvore — o ícone, o container e o filler não são nó', () => {
+  expect(indiceDoNo('tree#C105#6#1#1#i')).toBe(6);
+  expect(indiceDoNo('tree#C105#15#1#1#i')).toBe(15);
+  expect([indiceDoNo('tree#C105#6#ni'), indiceDoNo('tree#C105#6#f'), indiceDoNo('tree#C105#6#1#mg'),
+    indiceDoNo('tree#C105'), indiceDoNo(null)]).toEqual([null, null, null, null, null]);
+});
+
+test('webgui: containerDaArvore acha o GuiTree pelo VALOR do lsdata, não pelo índice', () => {
+  expect(containerDaArvore(BRUTOS_ARVORE)).toEqual({ id: 'tree#C105', sid: SID_ARVORE, nodeindexes: NODEINDEXES });
+  // um grid não é árvore: sem `nodeindexes` não há container
+  expect(containerDaArvore([{ id: 'g', ct: 'STCS', lsdata: { 34: { SID: 'x', Type: 'GuiGridView' } } }])).toBe(null);
+  expect(containerDaArvore([])).toBe(null);
+});
+
+test('webgui: arvoreDosBrutos cruza o nodeindexes com os TV — a CHAVE, o pai e o nível', () => {
+  const a = arvoreDosBrutos(BRUTOS_ARVORE);
+  expect(a.sid).toBe(SID_ARVORE);
+  expect(a.nos.map((x) => [x.n, x.chave, x.pai, x.nivel, x.categoria])).toEqual([
+    [1, 'Favo', -1, 0, 2], [2, 'F00002', 1, 1, 3], [3, 'F00003', 1, 1, 3],
+    [4, 'Root', -1, 0, 0], [5, '0000000003', 4, 1, 1], [6, '0000000004', 4, 1, 1],
+  ]);
+  expect(a.nos.find((x) => x.n === 6).rotulo).toBe('Escritório');
+  // sem `expansao` o `temFilhos` é `null` — "não sei", que NÃO é "não tem"
+  expect(a.nos.every((x) => x.temFilhos === null && x.expansao === null)).toBe(true);
+  // sem árvore na tela, nada — e não lança
+  expect(arvoreDosBrutos([{ id: 'x', ct: 'B', lsdata: {} }])).toEqual({ sid: null, id: null, nodeindexes: null, nos: [] });
+});
+
+test('webgui: a expansão vira `temFilhos` — INDENT é FOLHA, COLLAPSED/EXPANDED é pasta', () => {
+  const { nos } = arvoreDosBrutos(BRUTOS_ARVORE, EXPANSAO_ARVORE);
+  expect(nos.map((x) => [x.chave, x.expansao, x.temFilhos])).toEqual([
+    ['Favo', 'EXPANDED', true], ['F00002', 'INDENT', false], ['F00003', 'INDENT', false],
+    ['Root', 'EXPANDED', true], ['0000000003', 'COLLAPSED', true], ['0000000004', 'COLLAPSED', true],
+  ]);
+});
+
+test('webgui: acharNoDaArvore acha por chave e por rótulo (sem acento nem caixa), e o erro lista o que existe', () => {
+  const { nos } = arvoreDosBrutos(BRUTOS_ARVORE);
+  expect(acharNoDaArvore(nos, '0000000004').rotulo).toBe('Escritório');
+  expect(acharNoDaArvore(nos, 'escritorio').chave).toBe('0000000004');
+  expect(acharNoDaArvore(nos, { chave: 'Favo' }).rotulo).toBe('Favoritos');
+  // `{ chave }` é EXATO: não cai no casamento por rótulo
+  expect(() => acharNoDaArvore(nos, { chave: 'Escritório' })).toThrow(/a árvore não tem/);
+  expect(() => acharNoDaArvore(nos, 'Contabilidade')).toThrow(/Escritório \(0000000004\)/);
+});
+
+test('webgui: assinaturaDaArvore vê o ESTADO, não só o tamanho — é o veredito do gesto', () => {
+  const a = arvoreDosBrutos(BRUTOS_ARVORE, EXPANSAO_ARVORE);
+  const fechada = arvoreDosBrutos(BRUTOS_ARVORE, new Map([...EXPANSAO_ARVORE, [1, 'COLLAPSED']]));
+  // mesmos 6 nós, um estado diferente: o carimbo da tela não separaria isso
+  expect(a.nos.length).toBe(fechada.nos.length);
+  expect(assinaturaDaArvore(a)).not.toBe(assinaturaDaArvore(fechada));
+  expect(assinaturaDaArvore(a)).toBe(assinaturaDaArvore(arvoreDosBrutos(BRUTOS_ARVORE, EXPANSAO_ARVORE)));
+  expect(assinaturaDaArvore(null)).toBe('0|');
+});
+
+test('webgui: JS_ARVORE despeja o container, os TV e o `td subct="HIC"` que o despejo por [ct] não vê', () => {
+  const el = (id, atributos, texto = '') => ({
+    id, innerText: texto,
+    getAttribute: (nome) => (nome in atributos ? atributos[nome] : null),
+  });
+  const controles = [
+    el('tree#C105', { ct: 'STCS', lsdata: JSON.stringify({ 34: { SID: SID_ARVORE, Type: 'GuiTree', nodeindexes: NODEINDEXES } }) }),
+    el('tree#C105#6#1#1#i', { ct: 'TV', lsdata: JSON.stringify({ 0: 'Escritório' }) }, 'Escritório'),
+    el('tree#C105#6#f', { ct: 'TV', lsdata: 'lixo que não é JSON' }),
+  ];
+  const celulas = [
+    el('tree#C105#6#1', { subct: 'HIC', lsdata: JSON.stringify({ x: 0, 4: 1, 5: 'COLLAPSED' }) }),
+    el('tree#C105#2#1', { subct: 'HIC', lsdata: JSON.stringify({ 5: 'INDENT' }) }),
+    el('tree#C105-mrss-cont-none', { subct: 'HIC', lsdata: null }),   // não é linha de nó
+  ];
+  const doc = { querySelectorAll: (seletor) => (seletor.includes('subct') ? celulas : controles) };
+  const cru = new Function('document', `return ${JS_ARVORE}`)(doc);
+
+  expect(cru.expansao).toEqual([[6, 'COLLAPSED'], [2, 'INDENT']]);
+  expect(cru.brutos.map((b) => b.ct)).toEqual(['STCS', 'TV', 'TV']);
+  expect(cru.brutos[2].lsdata).toBe(null);   // `lsdata` inválido não derruba o despejo
+  // e o cru alimenta as puras sem tradução nenhuma — é o mesmo caminho da via HTTP
+  const a = arvoreDosBrutos(cru.brutos, new Map(cru.expansao));
+  expect(a.nos.map((x) => [x.chave, x.rotulo, x.expansao, x.temFilhos]))
+    .toEqual([['0000000004', 'Escritório', 'COLLAPSED', true]]);
 });

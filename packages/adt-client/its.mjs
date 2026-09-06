@@ -49,6 +49,7 @@ import {
   montarTela, sidDoLsdata, rotuloLimpo, teclaDoBotao, sidsDaTela,
   interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu, filhoDiretoDeMenu, daBarraDeMenu,
   acharCaminhoDeMenu,
+  TETO_ARVORE, indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore,
   criarPilhaDeDesfazer, transacional,
 } from './webgui.mjs';
 
@@ -58,6 +59,11 @@ import {
 // trocar o import. O que é por via é a instância (uma por sessão) e o MOMENTO de rodá-la: ver o
 // `fechar` no fim deste arquivo.
 export { janelaDoSid, criarPilhaDeDesfazer, transacional };
+
+// As puras da ÁRVORE são das duas vias pelo mesmo motivo (item 86): elas só cruzam `nodeindexes`,
+// `TV` e estado de expansão — não sabem de onde os brutos vieram. Ver a seção da árvore no fim
+// deste arquivo (a via HTTP) e a do `webgui.mjs` (a via do navegador).
+export { TETO_ARVORE, indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore };
 
 // ---------- o vocabulário do protocolo (PURO) ----------
 
@@ -1707,23 +1713,11 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, ...
 // ⚠ **O acionamento é LENTO** — a folha do favorito levou 15,5 s, e o primeiro tiro estourou o teto
 // de 30 s do `postar`. Por isso `acionarNo`/`navegarArvore` sobem o teto para `TETO_ARVORE`.
 
-/** O teto do acionamento da árvore — medido 15,5 s numa folha, e 30 s não bastaram uma vez. */
-export const TETO_ARVORE = 120000;
-
-/** PURO: `tree#C105#6#1#1#i` → `6`, o índice do nó no `nodeindexes`; `null` se não é nó de árvore. */
-export const indiceDoNo = (id) => {
-  const m = /^tree#[^#]+#(\d+)#1#1#i$/.exec(String(id ?? ''));
-  return m ? Number(m[1]) : null;
-};
-
-/** PURO: o container da ÁRVORE (`GuiTree`) entre os brutos — `{ id, sid, nodeindexes }` ou `null`. */
-export function containerDaArvore(brutos = []) {
-  for (const c of brutos) {
-    const d = sidDoLsdata(c?.lsdata);
-    if (d?.Type === 'GuiTree' && Array.isArray(d.nodeindexes)) return { id: c.id ?? null, sid: d.SID, nodeindexes: d.nodeindexes };
-  }
-  return null;
-}
+// As PURAS da árvore (`TETO_ARVORE`, `indiceDoNo`, `containerDaArvore`, `arvoreDosBrutos`,
+// `acharNoDaArvore`) moram no `webgui.mjs` e são REEXPORTADAS aqui (item 86): elas cruzam o
+// `nodeindexes` do container com os `TV` e o estado de expansão, e isso é o mesmo nas duas vias —
+// o que muda é de onde vêm os brutos (do delta HTTP aqui, do DOM lá) e o GESTO (POST aqui, duplo
+// clique lá). Só o `expansaoDoHtml` é daqui: no navegador o estado sai do DOM, não de regex.
 
 /**
  * PURO: o ESTADO HIERÁRQUICO de cada linha da árvore — `Map n → 'EXPANDED' | 'COLLAPSED' |
@@ -1743,46 +1737,6 @@ export function expansaoDoHtml(corpo) {
     if (typeof estado === 'string') out.set(Number(m[1]), estado);
   }
   return out;
-}
-
-/**
- * PURO: os nós VISÍVEIS da árvore, cruzando o `nodeindexes` do container com os `TV` da tela —
- * `{ sid, id, nos: [{ n, id, chave, rotulo, pai, nivel, categoria }] }`. Sem árvore na tela,
- * `{ sid: null, nos: [] }`.
- *
- * `pai` é o índice `n` do pai (`-1` na raiz) e `nivel` é a profundidade contada por ele.
- * `categoria` é o segundo campo do `nodeindexes` — vem `2` na raiz "Favoritos", `3` em cada
- * favorito, `0` na raiz "Menu SAP" e `1` em todo nó do menu. Medido (item 84): a categoria **não**
- * é a flag de filhos — folha e pasta do menu são as duas `1`.
- *
- * Com a `expansao` do `expansaoDoHtml` (é o que o `arvore(sessao)` passa), cada nó ganha
- * `expansao` e **`temFilhos`** — e é ele que poupa o POST inócuo na folha (§ `expandirNo`).
- */
-export function arvoreDosBrutos(brutos = [], expansao = null) {
-  const cont = containerDaArvore(brutos);
-  if (!cont) return { sid: null, id: null, nodeindexes: null, nos: [] };
-  const nos = brutos
-    .filter((c) => c.ct === 'TV' && indiceDoNo(c.id) !== null)
-    .map((c) => {
-      const n = indiceDoNo(c.id);
-      const e = Array.isArray(cont.nodeindexes[n]) ? cont.nodeindexes[n] : [];
-      return {
-        n, id: c.id, chave: typeof e[0] === 'string' ? e[0] : null, categoria: e[1] ?? null,
-        pai: typeof e[2] === 'number' ? e[2] : -1,
-        rotulo: typeof c.lsdata?.['0'] === 'string' ? c.lsdata['0'] : (c.texto ?? null),
-        expansao: expansao?.get(n) ?? null,
-        temFilhos: expansao?.has(n) ? expansao.get(n) !== 'INDENT' : null,
-      };
-    })
-    .filter((x) => x.chave !== null);
-  const porN = new Map(nos.map((x) => [x.n, x]));
-  for (const no of nos) {
-    let nivel = 0;
-    let p = no.pai;
-    while (p > 0 && porN.has(p) && nivel < 64) { nivel += 1; p = porN.get(p).pai; }
-    no.nivel = nivel;
-  }
-  return { ...cont, nos };
 }
 
 /** A árvore da tela atual, do último delta (com o `temFilhos` de cada nó) — SEM tocar a rede. */
@@ -1810,15 +1764,6 @@ export const batchColapsarNo = (sid, chave) => [{ post: `action/9/${sid}`, conte
 
 /** PURO: o duplo clique — abre o nó que tem filhos, ACIONA o que não tem. */
 export const batchAcionarNo = (sid, chave) => [{ post: `action/2/${sid}`, content: `type=OnNodeDoubleClick&node_key=${chave}` }];
-
-/** PURO: acha um nó por CHAVE (`'F00003'`), por rótulo (sem acento nem caixa) ou por `{ chave }`. */
-export function acharNoDaArvore(nos = [], alvo) {
-  const chave = alvo && typeof alvo === 'object' ? alvo.chave ?? null : String(alvo ?? '');
-  const achado = nos.find((x) => x.chave === chave)
-    ?? (alvo && typeof alvo === 'object' ? null : acharItemDeMenu(nos, chave));
-  if (!achado) throw new Error(`its: a árvore não tem "${chave}". Tenho: ${nos.map((x) => `${x.rotulo} (${x.chave})`).join(' | ')}`);
-  return achado;
-}
 
 /**
  * EXPANDE um nó e devolve `{ ...lerResposta, no, abriu, filhos }`. `abriu: false` é INFORMAÇÃO —

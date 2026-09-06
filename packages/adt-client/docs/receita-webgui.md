@@ -1340,9 +1340,48 @@ aberto: o servidor guarda a expansão de DENTRO do nó colapsado, e o percurso j
 | existe onde | em toda tela | só onde há `GuiTree` (o SMEN) |
 
 O que **ainda não** está medido: a `categoria` do `nodeindexes` (`0`/`1`/`2`/`3` — item 84 mediu que
-ela NÃO é a flag de filhos; o que ela significa segue aberto); por que uma pasta declarada abre
-vazia; e a árvore pela via do **navegador** (os ids são os mesmos, o gesto não foi portado — fila
-86; e lá a flag exige despejar `[subct="HIC"]` além de `[ct]`).
+ela NÃO é a flag de filhos; o que ela significa segue aberto) e por que uma pasta declarada abre
+vazia.
+
+### A MESMA árvore pelo navegador — um gesto só, e ele não fecha a raiz (item 86)
+
+**Medido no s4h 758/250 em 06/09/2026**; a leitura em `medicoes/item86-arvore-navegador.md`. O
+`webgui.mjs` tem hoje `arvore`, `expandirNo`, `colapsarNo`, `acionarNo` e `navegarArvore` com a
+MESMA assinatura da via HTTP — as puras (`indiceDoNo`, `containerDaArvore`, `arvoreDosBrutos`,
+`acharNoDaArvore`) são literalmente as mesmas funções, e moram no `webgui.mjs`; o `its.mjs` as
+importa. O que muda é de onde vêm os brutos (delta × DOM) e o GESTO:
+
+```js
+import { abrirTransacao, arvore, navegarArvore, colapsarNo } from './webgui.mjs';
+
+const a = await arvore(s);          // 15 nós, ~15 ms, ZERO rede — inclusive `expansao`/`temFilhos`
+await navegarArvore(s, ['Menu SAP', 'Escritório'], { acionar: false });   // os 7 filhos, 611 ms
+await navegarArvore(s, ['Favoritos', 'Produção']);                       // → CO01
+```
+
+⚠ **A flag de filhos exige despejar `[subct="HIC"]` além de `[ct]`** — o `<td>` do estado não tem
+`ct`, então `lerTela` não o traz; quem o lê é o `JS_ARVORE`.
+
+⚠ **Aqui o gesto é UM só e é TOGGLE**: o duplo clique expande o nó fechado, FECHA o aberto e ACIONA
+a folha (54 s no favorito frio, contra 15,5 s no POST). Por isso as guardas de estado deixam de ser
+economia e viram **segurança** — `expandirNo` numa folha acionaria a transação, e num nó aberto o
+fecharia. O ícone (`L`) também expande com duplo clique (o item 50 tinha medido só o clique simples,
+que não posta nada).
+
+⚠ **A RAIZ não fecha por gesto.** `Root` e `Favo`, as duas `EXPANDED`: o duplo clique posta o mesmo
+`action/2` `OnNodeDoubleClick`, o servidor responde, e a árvore fica idêntica — enquanto um nó de
+nível 1 fecha em 253 ms. É a única operação que esta via não alcança, e é a que mais encolhe o delta
+(item 85: fechar a `Root` tira 29,5%). Quem precisa disso usa a via HTTP (`its.colapsarNo`,
+`action/9`). O resultado sai honesto e rápido — `{ fechou: false, respondeu: true }` em 1,8 s —
+porque a espera fecha no **round-trip** (item 80) e não no teto: sem isso eram 30 s por gesto inócuo.
+
+| | HTTP (`its.mjs`) | navegador (`webgui.mjs`) |
+|---|---|---|
+| ler a árvore | do delta, zero rede | do DOM, zero rede (~15 ms) |
+| expandir | `action/8` (toggle) | duplo clique (toggle) |
+| colapsar nó interno | `action/9` (**idempotente**) | duplo clique (toggle) |
+| colapsar a RAIZ | **sim** (22 → 4 nós) | **NÃO** — posta e nada muda |
+| acionar folha | `action/2`, 15,5 s fria | duplo clique, **54 s** fria |
 
 ### `action/41` — a seleção isolada, e os FAVORITOS pela via HTTP (item 54)
 
