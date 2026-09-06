@@ -3204,13 +3204,24 @@ export const MOD = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
  * aciona o Unified Renderer.
  *
  * `modificadores` é o mapa de bits do `MOD` — `MOD.ctrl` para acrescentar à seleção do ALV,
- * `MOD.shift` para a faixa (§ "Selecionar linha e célula no ALV"). Sem ele, clique simples. */
-export async function clique(sessao, p, { modificadores = 0 } = {}) {
+ * `MOD.shift` para a faixa (§ "Selecionar linha e célula no ALV"). Sem ele, clique simples.
+ *
+ * `cliques` é quantos pares press/release saem NO MESMO ponto, com o `clickCount` subindo 1, 2, …
+ * — é o `clickCount` que o renderer lê como duplo clique, não o intervalo entre os pares (medido
+ * no item 50 pela captura do `postData` da árvore, e no item 75 no drill-down do ALV). */
+export async function clique(sessao, p, { modificadores = 0, cliques = 1 } = {}) {
   const m = { x: p.x, y: p.y, modifiers: modificadores };
   await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseMoved', buttons: 0 });
-  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1 });
-  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 });
+  for (let clickCount = 1; clickCount <= cliques; clickCount++) {
+    await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mousePressed', button: 'left', buttons: 1, clickCount });
+    await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseReleased', button: 'left', buttons: 0, clickCount });
+  }
 }
+
+/** O DUPLO clique num PONTO — o `clique` com `cliques: 2`. Quem tem um alvo (`{ id }`, `{ seletor }`)
+ * e não um ponto usa `clicar(s, alvo, { cliques: 2 })`, que espera o alvo, desce ao descendente e
+ * sabe esperar a resposta. */
+export const duploClique = (sessao, p, opts = {}) => clique(sessao, p, { ...opts, cliques: 2 });
 
 /**
  * Clica um alvo (`{ id }`, `{ seletor }` ou `{ okcode }`). Com `{ esperarResposta: true }` devolve
@@ -3222,8 +3233,13 @@ export async function clique(sessao, p, { modificadores = 0 } = {}) {
  * seleção do RSPARAM ficou 65 s cego numa tela que o renderer não terminou de montar (sem o menu
  * suspenso, `document.title` vazio); com `acionar`, o `mudou: false` teria denunciado em 30 s.
  * Quem precisa SABER que a ação pegou usa `acionar` e lê o `mudou`.
+ *
+ * `{ cliques: 2 }` é o DUPLO clique, que em três controles é o gesto — e não um clique repetido:
+ * a célula do ALV (drill-down; o clique simples não gera requisição nenhuma, a seleção é puro
+ * cliente — item 75), o nó da árvore (expande, colapsa e aciona a folha — item 86) e o ícone dela.
+ * Onde o gesto é o duplo, o clique simples não é "meio caminho": ele não sai no fio.
  */
-export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false, descer = true, dentro = null, icone = null } = {}) {
+export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false, descer = true, dentro = null, icone = null, cliques = 1 } = {}) {
   const ate = Date.now() + tetoMs;
   let p = null;
   while (Date.now() < ate && !p) {
@@ -3242,7 +3258,7 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = f
   }
   const antes = esperarResposta ? await carimbo(sessao) : null;
   const janelaAntes = esperarResposta ? (await estadoDaAcao(sessao)).janela : null;
-  await clique(sessao, p);
+  await clique(sessao, p, { cliques });
   if (esperarResposta) {
     p.mudou = await esperarMudanca(sessao, antes);
     // o que o ABAP DISSE e onde a tela está — e o alarme do popup que não saiu da frente (item 100)
@@ -3803,20 +3819,6 @@ export const JS_ARVORE = `(() => {
 export async function arvore(sessao) {
   const cru = await avaliar(sessao, JS_ARVORE);
   return arvoreDosBrutos(cru?.brutos ?? [], new Map(cru?.expansao ?? []));
-}
-
-/**
- * O DUPLO clique sintético num ponto — o gesto que a árvore entende. Mesma sequência do `clique`,
- * com o segundo par `clickCount: 2`: é isso que o renderer lê como `OnNodeDoubleClick` (medido no
- * item 50 pela captura do `postData`).
- */
-export async function duploClique(sessao, p, { modificadores = 0 } = {}) {
-  const m = { x: p.x, y: p.y, modifiers: modificadores };
-  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseMoved', buttons: 0 });
-  for (const clickCount of [1, 2]) {
-    await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mousePressed', button: 'left', buttons: 1, clickCount });
-    await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseReleased', button: 'left', buttons: 0, clickCount });
-  }
 }
 
 /**

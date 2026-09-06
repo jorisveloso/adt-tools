@@ -19,7 +19,7 @@ import {
   jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
   jsFragmentoDoGrid, faltaNaFaixaDoBloco, jsPostarNaPagina, postarNaPagina, extratorDeCelulas,
   estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
-  jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD,
+  jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD, clique, duploClique,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
   FCODES_DE_LINHA,
   tsvDoBloco, jsColarNoGrid,
@@ -1484,6 +1484,43 @@ test('webgui: a caixa de seleção NÃO tem o sufixo #if da célula de dado', ()
 
 test('webgui: os modificadores do clique são o mapa de bits do CDP', () => {
   expect(MOD).toEqual({ alt: 1, ctrl: 2, meta: 4, shift: 8 });
+});
+
+// ---------- o duplo clique como gesto (item 118) ----------
+// O que o renderer lê é o `clickCount` SUBINDO no mesmo ponto — 1 e depois 2 —, não o intervalo
+// entre os pares. Medido no s4h 758/250 em 06/09/2026 na célula do ALV do RSPARAM e no nó da
+// árvore do SMEN (`POC_webgui_duploclique/medicoes/item118-duplo-clique.md`).
+
+const sessaoQueGrava = () => {
+  const emitidos = [];
+  return { emitidos, cmd: async (metodo, params) => { emitidos.push({ metodo, ...params }); } };
+};
+
+test('webgui: o clique simples é mouseMoved + UM par press/release com clickCount 1', async () => {
+  const s = sessaoQueGrava();
+  await clique(s, { x: 10, y: 20 });
+  expect(s.emitidos.map((e) => e.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
+  expect(s.emitidos.map((e) => e.clickCount)).toEqual([undefined, 1, 1]);
+  expect(s.emitidos.every((e) => e.x === 10 && e.y === 20)).toBe(true);
+});
+
+test('webgui: o duplo clique são DOIS pares no mesmo ponto, com clickCount 1 e 2', async () => {
+  const s = sessaoQueGrava();
+  await duploClique(s, { x: 10, y: 20 });
+  expect(s.emitidos.map((e) => e.type)).toEqual(
+    ['mouseMoved', 'mousePressed', 'mouseReleased', 'mousePressed', 'mouseReleased']);
+  expect(s.emitidos.map((e) => e.clickCount)).toEqual([undefined, 1, 1, 2, 2]);
+  // o mouseMoved é UM só: o ponteiro não se move entre os dois cliques
+  expect(s.emitidos.filter((e) => e.type === 'mouseMoved')).toHaveLength(1);
+});
+
+test('webgui: duploClique é o clique com cliques: 2, e os modificadores atravessam', async () => {
+  const a = sessaoQueGrava();
+  const b = sessaoQueGrava();
+  await clique(a, { x: 1, y: 2 }, { cliques: 2, modificadores: MOD.ctrl });
+  await duploClique(b, { x: 1, y: 2 }, { modificadores: MOD.ctrl });
+  expect(a.emitidos).toEqual(b.emitidos);
+  expect(a.emitidos.every((e) => e.modifiers === MOD.ctrl)).toBe(true);
 });
 
 // ---------- ordenar e filtrar o ALV (item 77) ----------

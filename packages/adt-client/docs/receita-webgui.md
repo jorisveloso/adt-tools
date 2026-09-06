@@ -858,6 +858,43 @@ await clicar(s, { id: 'liCatalogo' }, { icone: 'sap-icon://add' }); // a URI int
 - ⚠ **`{ icone }` não serve ao WebGUI/dynpro** — lá não há UI5 na página, e a recusa diz exatamente
   isso. No canal dynpro o endereço é o SID do controle.
 
+### `{ cliques: 2 }` — o DUPLO clique, que em três controles é o gesto (item 118)
+
+**Medido no s4h 758/250 em 06/09/2026** (fila `adt-client`, item 118 —
+`sap-accelerate/work/POC_webgui_duploclique/medicoes/item118-duplo-clique.md`). Em alguns controles
+o duplo clique não é "clicar duas vezes": é **o** gesto, e o clique simples não sai no fio.
+
+```js
+await clicar(s, { id: 'grid#C102#1,1#if' }, { cliques: 2, esperarResposta: true }); // drill-down do ALV
+await duploClique(s, ponto);                                    // o primitivo, quando já se tem o ponto
+```
+
+O que o renderer lê é o **`clickCount` subindo** — 1 no primeiro par press/release, 2 no segundo, no
+MESMO ponto — e não o intervalo entre os pares (a lib não espera nada entre eles e o gesto pega).
+
+| controle | clique simples | duplo clique |
+|---|---|---|
+| célula do ALV | **0 requisições** — a seleção é puro cliente | `action/53` + `action/50` + **`action/2`**, e abre o drill-down |
+| nó da árvore | seleciona | `action/2` — expande, colapsa (toggle) ou ACIONA a folha |
+| campo com match code | põe o cursor | **nada** — nenhum `action/`, nenhum popup |
+
+- **O `action/2` é o mesmo dos dois lados**: o `OnNodeDoubleClick` da árvore (itens 50/86) e o
+  drill-down do ALV são o mesmo código do renderer, mudando só o `content` (`row_index`/
+  `column_index` no grid, o nó na árvore).
+- ⚠ **O F4 NÃO vem por duplo clique neste canal.** Medido no `RS38M-PROGRAMM` da tela de seleção do
+  SA38, com o campo preenchido e vazio: `mudou: false`, `wnd[0]` nas duas, e a única requisição não
+  tinha `postData`. Quem quer o match code usa a tecla F4 ou o botão que aparece com o foco — o
+  comportamento do SAP GUI de desktop não se repete aqui.
+- ⚠ **Na ÁRVORE prefira `expandirNo`/`colapsarNo`/`acionarNo`.** O `clicar(…, { cliques: 2,
+  descer: false })` também dirige a árvore (medido: 15 → 23 nós em 262 ms), mas é o `expandirNo` que
+  lê o estado do nó antes e evita o gesto inócuo — e, na folha, o gesto CARO (acionar a transação,
+  54 s frios).
+- ⚠ **`mudou: true` NÃO quer dizer que o servidor fez algo.** O clique simples na célula do ALV não
+  gerou requisição nenhuma e ainda assim voltou `mudou: true`: pintar a linha selecionada já muda o
+  `JS_CARIMBO` (título + contagem de elementos). O carimbo é o sinal FRACO dos dois lados — ele
+  perde mudança real (§ "⚠ O carimbo é CEGO num repaint de grid") e sobra em repintura de cliente.
+  Quem separa é o round-trip, como `esperarArvore` faz com o `respondeu`.
+
 ## A caixa de comando (OK-code) **pelo navegador**
 
 **Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 13). O canal do navegador também
