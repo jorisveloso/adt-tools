@@ -12,20 +12,36 @@
 //     Só a variante `GZ=1` da URL estava envenenada — `identity` e `br` da MESMA URL vinham
 //     completas (774.788 bytes), e nenhum outro recurso do mesmo diretório (inclusive
 //     library-preload.js de 3 MB) tinha o problema. Não é tamanho, não é o handler, não é o navegador.
-//   • A entrada envenenada é INVISÍVEL na listagem do cache: `get_cache_entries` não trouxe
-//     nenhuma entrada `GZ=1` com o hash da query vazia, e nenhuma entrada com `dsize = 0` —
-//     mesmo assim o ICM servia o corpo vazio. Procurar a entrada ruim na SMICM não acha nada.
+//   • NÃO SE DIAGNOSTICA PELA LISTAGEM — só pelo GET. Medido em 06/09/2026 (item 107):
+//     `get_cache_entries()` devolveu 9.952 linhas em duas medições distintas enquanto o contador
+//     real (`CENTRIES` de `get_cache_statistics()`) ia de 6.336 a 6.204 — 9.952 é teto da API,
+//     não a contagem. E entradas recém-invalidadas seguem listadas, com o mesmo `crea_time`.
+//     Por isso a entrada envenenada "não aparecia": a lista mente, não é que a entrada fosse
+//     especial. Quem responde a verdade é o GET — é o que `medirRecurso` faz.
 //   • CONTRA-PROVA: depois de `ICM_CACHE_INVALIDATE_ONE` na URL, o MESMO GET gzip voltou com
 //     774.788 bytes. É o cache do ICM, e a invalidação é a cura.
 //   • A resposta boa carrega o header `sap-isc-etag`; a vazia não carrega nenhum ETag.
 //   • O GATILHO (o que envenena) NÃO foi reproduzido: download abortado no meio, 10 GETs gzip
 //     concorrentes e mistura de encodings em paralelo, todos partindo do cache limpo, não
 //     produziram entrada vazia. Segue aberto — ver fila adt-client.
+//   • Duas hipóteses a mais caíram em 06/09/2026 (item 107), por contador:
+//     — CACHE CHEIO / EVICTION: `NOSWAPS = 0` num cache com 45 dias de entradas vivas (do
+//       `crea_time` mais antigo ao mais novo), `CENTRIES` 6.204 de 10.000 e `CUSED` 179 MB de
+//       419 MB. O ICM nunca evictou nada — o veneno não veio de eviction.
+//     — LIMITE DE MEMÓRIA POR ENTRADA: a maior entrada do cache tem 3.069.030 bytes
+//       (`sap/m/library-preload.js` GZ=0) e está íntegra — 14× a entrada envenenada de 213 KB.
+//     Sobra a gravação interrompida do lado do SERVIDOR (os testes anteriores abortaram do lado
+//     do CLIENTE), que precisa de um handler ICF controlado para ser medida.
+//   • Duplicata na MESMA chave é NORMAL, não é sintoma: 1.159 chaves duplicadas no cache, 265
+//     delas com `dsize` divergente entre as cópias. O "único sinal próximo" do item 67 (duas
+//     entradas GZ=1 com a mesma chave) não era sinal de nada.
 //
 // ⚠️ Carimbar a URL com `?jbv=<timestamp>` também restaura, mas NÃO é a defesa: cada carimbo
 // distinto cria uma ENTRADA NOVA no cache do ICM (medidas 8 entradas de ~213 KB, expiração de
-// 7 dias, uma por timestamp) num cache que estava com 9.952 de 10.000 entradas. Carimbar por
-// tempo a cada carga de página queima a capacidade do cache do cliente. Curar > disfarçar.
+// 7 dias, uma por timestamp). O cache medido NÃO estava cheio (`CENTRIES` 6.204 de 10.000 — o
+// "9.952 de 10.000" do item 67 era o teto da API lido como contagem), mas o carimbo segue não
+// sendo a defesa: ele não CURA a entrada ruim, só desvia dela, e deixa lixo de 7 dias para trás
+// a cada carga de página. Curar > disfarçar.
 
 import { deployAndRun } from './classrun.mjs';
 import { deleteObject } from './adt-client.mjs';
