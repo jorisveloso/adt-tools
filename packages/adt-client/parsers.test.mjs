@@ -11,6 +11,8 @@ import { resolverTipo, codigoDaLibKey, normalizar } from './tipos/index.mjs';
 import {
   parseUnitResult, parseDataPreview, parseCoverage, activationMessages, assertReadOnly, assertZY,
 } from './adt-client.mjs';
+import { buildSecuritySessionCureSource } from './adt-client.mjs';
+import { parseCuraSessoes } from './rfc-soap.mjs';
 
 // Resposta típica do information system search.
 const XML_BUSCA = `<?xml version="1.0" encoding="utf-8"?>
@@ -322,4 +324,35 @@ test('guard-rail: só Z/Y é aceito para criar ou alterar', () => {
   expect(() => assertZY('ZTB_PEDIDO')).not.toThrow();
   expect(() => assertZY('ycl_x')).not.toThrow();
   expect(() => assertZY('MARA')).toThrow(/GUARD-RAIL/);
+});
+
+// ---------- cura de sessões de segurança (item 89) ----------
+// Resposta REAL do S4H 758/250, 2026-09-06 (medicoes/raw/i89-cura-resposta.xml da POC_sessoes_icf):
+// 10 pings SOAP envenenaram, a cura abortou 15 de 15 em 422 ms e deixou 0 não usadas.
+const XML_CURA = `<?xml version="1.0" encoding="UTF-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><urn:YJBV_POC_FM_SECCURA.Response xmlns:urn="urn:sap-com:document:sap:rfc:functions"><EV_ALVOS>15</EV_ALVOS><EV_ANTES>20</EV_ANTES><EV_ANTES_NU>15</EV_ANTES_NU><EV_CORRENTE>gP+4ZqDN74Nu6uzMHGr2lBEJXdaptBHxgAAAUFaDdG8=</EV_CORRENTE><EV_DEPOIS>5</EV_DEPOIS><EV_DEPOIS_NU>0</EV_DEPOIS_NU><EV_ERRO>0</EV_ERRO><EV_MSG></EV_MSG><EV_OK>15</EV_OK></urn:YJBV_POC_FM_SECCURA.Response></SOAP-ENV:Body></SOAP-ENV:Envelope>`;
+
+test('parseCuraSessoes lê os contadores da resposta real do wrapper de cura', () => {
+  const c = parseCuraSessoes(XML_CURA);
+  expect(c).toMatchObject({
+    antes: 20, antesNaoUsadas: 15, alvos: 15, abortadas: 15, erros: 0,
+    depois: 5, depoisNaoUsadas: 0, ok: true,
+  });
+  expect(c.corrente).toBe('gP+4ZqDN74Nu6uzMHGr2lBEJXdaptBHxgAAAUFaDdG8=');
+  expect(c.msg).toBe(null); // EV_MSG vazio não vira string vazia
+});
+
+test('parseCuraSessoes: erro no ABORT derruba o ok', () => {
+  expect(parseCuraSessoes(XML_CURA.replace('<EV_ERRO>0<', '<EV_ERRO>3<')).ok).toBe(false);
+});
+
+// O gotcha 2 de tipos/functionModule.mjs (assinatura source-based) vale para este wrapper também:
+// sem ele os parâmetros não registram e a chamada só quebra em RUNTIME.
+test('buildSecuritySessionCureSource: assinatura sem ponto após o nome, ponto só no último parâmetro', () => {
+  const src = buildSecuritySessionCureSource('YJBV_POC_FM_SECCURA');
+  expect(src.startsWith('FUNCTION yjbv_poc_fm_seccura\n')).toBe(true);
+  expect(src).not.toMatch(/^FUNCTION \S+\./m);
+  expect(src).toMatch(/VALUE\(ev_msg\) TYPE string\.\n/); // o ponto fecha a assinatura no ÚLTIMO param
+  // o filtro que torna a limpeza segura: só as MINHAS e só as NÃO USADAS
+  expect(src).toMatch(/WHERE userid = sy-uname/);
+  expect(src).toMatch(/co_session_unused/);
 });

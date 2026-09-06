@@ -169,3 +169,47 @@ export async function callBapi(cfg, bapi, params = {}) {
     xml,
   };
 }
+
+/**
+ * PURO: lê os contadores do wrapper de cura de sessões de segurança (`buildSecuritySessionCureSource`).
+ * Separado da chamada para ser testável offline contra a resposta REAL do canal.
+ */
+export function parseCuraSessoes(xml) {
+  const n = (t) => { const v = xmlField(xml, t); return v === null || v === '' ? null : Number(v); };
+  const erros = n('EV_ERRO');
+  return {
+    antes: n('EV_ANTES'),
+    antesNaoUsadas: n('EV_ANTES_NU'),
+    alvos: n('EV_ALVOS'),
+    abortadas: n('EV_OK'),
+    erros,
+    depois: n('EV_DEPOIS'),
+    depoisNaoUsadas: n('EV_DEPOIS_NU'),
+    corrente: xmlField(xml, 'EV_CORRENTE') || null,
+    msg: xmlField(xml, 'EV_MSG') || null,
+    ok: erros === 0,
+  };
+}
+
+/**
+ * Cura, por canal STATELESS, o esgotamento de sessões de segurança HTTP não usadas do próprio
+ * usuário — o estado em que o canal stateful (ADT/classrun) passa a nascer sem `SAP_SESSIONID` e
+ * toda requisição com esse cookie dá 400 (item 28 da fila). Exige o wrapper RFC criado por
+ * `deployFunctionModule(conexao, { group, name, source: buildSecuritySessionCureSource(name) })`.
+ *
+ * É o único caminho de cura que atravessa a quebra: `ABORT_SECURITY_SESSION` por classrun não vale,
+ * porque classrun É ADT, e ADT é justo o canal que morreu. Sem isto, curar custa esperar os 30 min
+ * do `http/security_session_timeout`.
+ *
+ * `pouparCorrente: true` deixa viva a sessão desta própria chamada. O default é `false` porque
+ * abortá-la foi medido inofensivo (S4H 758/250, 2026-09-06: HTTP 200, resposta completa, requisição
+ * seguinte normal) e limpa 100%. `dryRun: true` só conta os alvos, sem abortar nada.
+ */
+export async function curarSessoesDeSeguranca(cfg, { fm, dryRun = false, pouparCorrente = false } = {}) {
+  if (!fm) throw new Error('curarSessoesDeSeguranca exige { fm } — o nome do wrapper RFC criado com buildSecuritySessionCureSource');
+  const { xml, status } = await callFunction(cfg, fm, {
+    IV_DRY_RUN: dryRun ? 'X' : '',
+    IV_POUPAR_CORRENTE: pouparCorrente ? 'X' : '',
+  });
+  return { ...parseCuraSessoes(xml), status, xml };
+}

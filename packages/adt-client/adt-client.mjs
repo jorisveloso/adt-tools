@@ -651,3 +651,103 @@ export function buildBdcWrapperSource(name) {
 
 ENDFUNCTION.`;
 }
+
+// ---------- wrapper RFC da CURA de sessões de segurança (mesma família do wrapper de BDC) ----------
+// Gera o source de um wrapper RFC que aborta as sessões de segurança HTTP NÃO USADAS do próprio
+// usuário (`CL_HTTP_SECURITY_SESSION_ADMIN=>ABORT_SECURITY_SESSION` filtrado por `userid = sy-uname`
+// e `timeout_check = CO_SESSION_UNUSED`). Existe porque cada requisição STATELESS autenticada deixa
+// uma sessão não usada por 30 min que o logoff NÃO remove (medido no item 53): passado o teto por
+// usuário, o canal stateful (ADT/classrun) para de nascer com SAP_SESSIONID — e aí a cura por
+// classrun não alcança, porque classrun É ADT. Este wrapper é RFC, então o SOAP a alcança.
+//
+// `iv_poupar_corrente` protege o contexto da PRÓPRIA chamada, identificado por
+// `GET_CURRENT_SESSION_CONTEXT` — necessário só porque, chamado por SOAP, o próprio requisitante é
+// uma sessão *não usada* (por classrun ele é *usada*, e o filtro nunca o alcançava). Medido no S4H
+// 758/250 em 2026-09-06 que abortar o próprio contexto **não** quebra a resposta (HTTP 200, 287 ms,
+// e a requisição seguinte entra normal): o default é `' '` — limpeza 100%, sem resíduo.
+// Chame-o depois com `rfc-soap.curarSessoesDeSeguranca(cfg, { fm })`.
+// Assinatura SEM ponto após o nome (gotcha 2 de tipos/functionModule.mjs).
+export function buildSecuritySessionCureSource(name) {
+  const n = String(name).toLowerCase();
+  return `FUNCTION ${n}
+  IMPORTING
+    VALUE(iv_dry_run) TYPE char1 DEFAULT ' '
+    VALUE(iv_poupar_corrente) TYPE char1 DEFAULT ' '
+  EXPORTING
+    VALUE(ev_antes) TYPE i
+    VALUE(ev_antes_nu) TYPE i
+    VALUE(ev_alvos) TYPE i
+    VALUE(ev_ok) TYPE i
+    VALUE(ev_erro) TYPE i
+    VALUE(ev_depois) TYPE i
+    VALUE(ev_depois_nu) TYPE i
+    VALUE(ev_corrente) TYPE security_context_id
+    VALUE(ev_msg) TYPE string.
+
+  DATA lv_corrente TYPE security_context_id.
+  DATA lt TYPE security_context_tab.
+  DATA lt2 TYPE security_context_tab.
+  CLEAR: ev_antes, ev_antes_nu, ev_alvos, ev_ok, ev_erro,
+         ev_depois, ev_depois_nu, ev_corrente, ev_msg.
+
+  TRY.
+      DATA(ls_cur) = cl_http_security_session_admin=>get_current_session_context( ).
+      lv_corrente = ls_cur-id.
+    CATCH cx_root INTO DATA(lx_cur).
+      ev_msg = |sem contexto corrente: { lx_cur->get_text( ) }|.
+  ENDTRY.
+  ev_corrente = lv_corrente.
+
+  TRY.
+      lt = cl_http_security_session_admin=>list_security_session_contexts( client = '*' ).
+    CATCH cx_root INTO DATA(lx_list).
+      ev_msg = |list falhou: { lx_list->get_text( ) }|.
+      RETURN.
+  ENDTRY.
+
+  LOOP AT lt INTO DATA(ls) WHERE userid = sy-uname.
+    ev_antes = ev_antes + 1.
+    IF ls-timeout_check = cl_http_security_session=>co_session_unused.
+      ev_antes_nu = ev_antes_nu + 1.
+      IF iv_poupar_corrente = 'X' AND ls-id = lv_corrente.
+        CONTINUE.
+      ENDIF.
+      ev_alvos = ev_alvos + 1.
+    ENDIF.
+  ENDLOOP.
+
+  IF iv_dry_run <> 'X'.
+    LOOP AT lt INTO ls WHERE userid = sy-uname.
+      IF ls-timeout_check <> cl_http_security_session=>co_session_unused.
+        CONTINUE.
+      ENDIF.
+      IF iv_poupar_corrente = 'X' AND ls-id = lv_corrente.
+        CONTINUE.
+      ENDIF.
+      TRY.
+          cl_http_security_session_admin=>abort_security_session(
+            context_id = ls-id client = ls-client ).
+          ev_ok = ev_ok + 1.
+        CATCH cx_root INTO DATA(lx).
+          ev_erro = ev_erro + 1.
+          IF ev_msg IS INITIAL. ev_msg = lx->get_text( ). ENDIF.
+      ENDTRY.
+    ENDLOOP.
+    COMMIT WORK AND WAIT.
+  ENDIF.
+
+  TRY.
+      lt2 = cl_http_security_session_admin=>list_security_session_contexts( client = '*' ).
+    CATCH cx_root.
+      RETURN.
+  ENDTRY.
+
+  LOOP AT lt2 INTO DATA(ls2) WHERE userid = sy-uname.
+    ev_depois = ev_depois + 1.
+    IF ls2-timeout_check = cl_http_security_session=>co_session_unused.
+      ev_depois_nu = ev_depois_nu + 1.
+    ENDIF.
+  ENDLOOP.
+
+ENDFUNCTION.`;
+}
