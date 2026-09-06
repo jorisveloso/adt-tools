@@ -5,6 +5,7 @@ import {
   ACOES, PARAMETROS_SCRIPTING, escVbs, validarPasso, vbsDoPasso, montarVbs,
   interpretarSaidaGui, resultadoDoPasso, interpretarTasklist, linhaTasklist, diagnosticarRot,
   interpretarJanelas, lerJanelas, sessaoLogada, CLASSE_SESSAO, psJanelas, ehPopupAutorizacao,
+  psCancelarDialogos, interpretarCancelamentos, IDCANCEL, vbsFecharConexao,
 } from './gui.mjs';
 
 const SEP = '\u0001';
@@ -201,19 +202,21 @@ test('gui: psJanelas blinda o encoding nos DOIS eixos — stdout UTF-8 e P/Invok
 
 // Janelas medidas em 04/09/2026 (SAP GUI 8.00 PT, S4H 758/250), no formato que o PowerShell emite.
 const J = {
-  pad: 'saplogon.exe\t42432\t#32770\tSAP Logon 800\tConnections | Footer',
+  pad: 'saplogon.exe\t42432\t#32770\tSAP Logon 800\tConnections | Footer\t591234',
   logada: 'saplogon.exe\t42432\tSAP_FRONTEND_SESSION\tSAP Easy Access\t',
   telaLogon: 'saplogon.exe\t42432\tSAP_FRONTEND_SESSION\tSAP\t',
   pedeSenha: 'saplogon.exe\t37016\t#32770\tLigação SAP GUI - logon (S4H, 250, PT, )\tEntrar o nome de usuário e a senha | Nome do usuário: | Senha:',
   mensagem: 'SAPgui.exe\t48000\t#32770\tSAP GUI\tNem todos os dados estão disponíveis p/ligação a SAP GUI: | ID sistema desconhecido | Entrar os dados em falta',
   // o pedágio (medido 05/09/2026, item 60): MESMO pid do pad, título 'SAP Logon' SEM a versão
-  pedagio: 'saplogon.exe\t42432\t#32770\tSAP Logon\tUm script está tentando acessar SAP GUI',
+  pedagio: 'saplogon.exe\t42432\t#32770\tSAP Logon\tUm script está tentando acessar SAP GUI\t3868398',
 };
 
 test('gui: interpretarJanelas lê a saída TAB do PowerShell, com os textos do diálogo', () => {
   const js = interpretarJanelas([J.pad, J.mensagem, ''].join('\r\n'));
   expect(js).toHaveLength(2);
-  expect(js[0]).toEqual({ imagem: 'saplogon.exe', pid: 42432, classe: '#32770', titulo: 'SAP Logon 800', textos: ['Connections', 'Footer'] });
+  expect(js[0]).toEqual({ imagem: 'saplogon.exe', pid: 42432, classe: '#32770', titulo: 'SAP Logon 800', textos: ['Connections', 'Footer'], hwnd: 591234 });
+  // o hwnd é o ENDEREÇO para agir (cancelarPedagio); linha antiga sem ele continua lida, com null
+  expect(js[1].hwnd).toBe(null);
   expect(js[1].imagem).toBe('SAPgui.exe');
   expect(js[1].textos).toEqual(['Nem todos os dados estão disponíveis p/ligação a SAP GUI:', 'ID sistema desconhecido', 'Entrar os dados em falta']);
   expect(interpretarJanelas('')).toEqual([]);
@@ -253,6 +256,55 @@ test('gui: o pedágio é estado próprio e vence a sessão — o popup convive c
   expect(de(J.pad, J.logada).estado).toBe('sessao');
   // e o pedágio não engole o diálogo de senha, que também casa /logon/i
   expect(de(J.pad, J.pedeSenha).estado).toBe('pede-senha');
+});
+
+test('gui: cancelar o órfão do pedágio NEGA o acesso — o OK é intocável (item 101)', () => {
+  // o gesto é por ID de controle, não por rótulo: 'Cancelar'/'Cancel'/'Abbrechen' mudam, o 2 não
+  expect(IDCANCEL).toBe(2);
+  const ps = psCancelarDialogos([3868398, 12345]);
+  expect(ps).toContain('GetDlgItem(h, 2)');
+  expect(ps).toContain('[CSap]::Cancelar(3868398)');
+  expect(ps).toContain('[CSap]::Cancelar(12345)');
+  // BM_CLICK por PostMessage: o diálogo roda o laço modal na thread do pad, e um Send penduraria
+  // o PowerShell junto — o que já é o defeito que este item ataca
+  expect(ps).toContain('PostMessage(b, 0x00F5');
+  expect(ps).not.toContain('SendMessage');
+  // ⚠ a trava dura: clicar OK AUTORIZARIA o script — é o aviso de segurança do cliente
+  expect(ps).toContain('if(rot.ToUpperInvariant() == "OK") return');
+  expect(ps).not.toContain('GetDlgItem(h, 1)');
+  // e só toca em #32770: se a janela virou outra coisa entre o sensor e o gesto, não clica
+  expect(ps).toContain('if(Cls(h) != "#32770")');
+  expect(ps).toContain('if(!IsWindow(h))');
+  // o hwnd é numérico na geração — nada de string do chamador virando código PowerShell
+  expect(psCancelarDialogos(['9; Remove-Item x'])).toContain('[CSap]::Cancelar(NaN)');
+});
+
+test('gui: interpretarCancelamentos lê o que aconteceu com cada órfão', () => {
+  const r = interpretarCancelamentos([
+    '3868398\tcancelado\tCancelar\tSAP Logon',
+    '12345\tsumiu\t\t',
+    '999\trecusado-ok\tOK\tSAP Logon',
+    '',
+  ].join('\r\n'));
+  expect(r).toHaveLength(3);
+  expect(r[0]).toEqual({ hwnd: 3868398, resultado: 'cancelado', botao: 'Cancelar', titulo: 'SAP Logon' });
+  expect(r[1].resultado).toBe('sumiu');
+  expect(r[2]).toMatchObject({ resultado: 'recusado-ok', botao: 'OK' });
+  expect(interpretarCancelamentos('')).toEqual([]);
+});
+
+test('gui: o VBS de fecharSapGui separa "Err no GetObject" de "engine com 0 conexões" (item 101)', () => {
+  const vbs = vbsFecharConexao(0);
+  // os dois vazios eram um "@nada sem conexao" só — e pedem reações opostas
+  expect(vbs).toContain('"@erro"');
+  expect(vbs).toContain('"@sem-conexao"');
+  expect(vbs).not.toContain('"@nada"');
+  // o Children.Count também pode LANÇAR (engine mudo): terceiro caminho, não silêncio
+  expect(vbs).toContain('engine sem Children.Count');
+  // e o fechamento continua o mesmo gesto, na conexão pedida
+  expect(vbsFecharConexao(2)).toContain('app.Children.ElementAt(2)');
+  expect(vbs).toContain('conn.CloseSession "ses[0]"');
+  expect(vbs).toContain('conn.CloseConnection');
 });
 
 test('gui: diagnosticarRot — com o popup de pé o veredito é pede-autorizacao, não logon-pendente (item 34/61)', () => {

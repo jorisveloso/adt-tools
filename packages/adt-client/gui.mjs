@@ -427,15 +427,24 @@ export const CLASSE_SESSAO = 'SAP_FRONTEND_SESSION';
 
 /**
  * PURO: a saída do PowerShell de `janelasSapGui` (uma janela por linha, campos separados por TAB:
- * imagem, pid, classe, título, textos dos Static de um diálogo) vira `[{ imagem, pid, classe, titulo, textos }]`.
+ * imagem, pid, classe, título, textos dos Static de um diálogo, hwnd) vira
+ * `[{ imagem, pid, classe, titulo, textos, hwnd }]`.
+ *
+ * O `hwnd` é o último campo porque é o endereço para AGIR na janela (`cancelarPedagio`): sem ele o
+ * sensor sabe que o popup existe e não sabe em qual clicar — com dois diálogos de pé, título e pid
+ * são iguais nos dois.
  */
 export function interpretarJanelas(texto) {
   const janelas = [];
   for (const linha of String(texto).split(/\r?\n/)) {
     if (!linha.trim()) continue;
-    const [imagem, pid, classe, titulo, textos = ''] = linha.split('\t');
+    const [imagem, pid, classe, titulo, textos = '', hwnd = ''] = linha.split('\t');
     if (!imagem || !pid || !classe) continue;
-    janelas.push({ imagem, pid: Number(pid), classe, titulo: titulo ?? '', textos: textos ? textos.split(' | ') : [] });
+    janelas.push({
+      imagem, pid: Number(pid), classe, titulo: titulo ?? '',
+      textos: textos ? textos.split(' | ') : [],
+      hwnd: hwnd.trim() ? Number(hwnd) : null,
+    });
   }
   return janelas;
 }
@@ -529,7 +538,7 @@ public class JSap { public delegate bool EnumProc(IntPtr h, IntPtr l);
  public static List<string> List(Dictionary<uint,string> pids){ var r=new List<string>(); EnumWindows((h,l)=>{ uint pid; GetWindowThreadProcessId(h,out pid);
    if(pids.ContainsKey(pid) && IsWindowVisible(h)){ string t=Uma(Txt(h)); if(t.Length==0) return true; string c=Cls(h); var st=new List<string>();
      if(c=="#32770"){ EnumChildWindows(h,(ch,l2)=>{ if(Cls(ch)=="Static"){ foreach(string ln in Txt(ch).Split('\\n')){ string s=Uma(ln); if(s.Length>0) st.Add(s); } } return true; }, IntPtr.Zero); }
-     r.Add(pids[pid]+"\\t"+pid+"\\t"+c+"\\t"+t+"\\t"+string.Join(" | ",st)); } return true; }, IntPtr.Zero); return r; } }
+     r.Add(pids[pid]+"\\t"+pid+"\\t"+c+"\\t"+t+"\\t"+string.Join(" | ",st)+"\\t"+h.ToInt64()); } return true; }, IntPtr.Zero); return r; } }
 '@
 $pids = New-Object 'System.Collections.Generic.Dictionary[uint32,string]'
 Get-Process -Name ${processos.join(',')} -ErrorAction SilentlyContinue | % { $pids[[uint32]$_.Id] = "$($_.ProcessName).exe" }
@@ -544,6 +553,91 @@ export async function janelasSapGui() {
   const r = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psJanelas()],
     { windowsHide: true, timeout: 20000 }).catch((e) => ({ stdout: e.stdout || '' }));
   return interpretarJanelas(r.stdout);
+}
+
+// ---------- O órfão do pedágio: limpar a tela NEGANDO, nunca autorizando ----------
+//
+// Quando a chamada é abortada com o popup de pé, o `cscript` morre e o diálogo FICA na tela — e a
+// chamada seguinte empilha mais um (item 34: três sondas, três órfãos). Quem sujou limpa; a questão
+// é COM QUAL BOTÃO.
+//
+// ⚠ Esta lib clica **Cancelar** e NUNCA OK. O popup é o aviso de segurança do cliente ("Um script
+// está tentando acessar SAP GUI"): o OK AUTORIZA o acesso — um clique automático nele burlaria o
+// aviso que o desktop do cliente ligou de propósito, e é decisão de quem administra o desktop, não
+// desta lib (quem quer o canal sem pedágio tem `WarnOnAttach=0`, § da receita, que é uma decisão
+// explícita e registrada). O Cancelar NEGA — que é exatamente o que já aconteceu de fato: a chamada
+// que pediu o acesso já morreu no abort. O efeito é só limpar a tela.
+// ⚠ E o Enter também autoriza: o diálogo rouba o foco e o botão default é o OK (item 62, medido —
+// `SendKeys {ENTER}` destravou a chamada). Por isso o clique aqui é por MENSAGEM ao controle, sem
+// foreground e sem teclado: um `SendKeys` desta lib poderia cair em qualquer janela do desktop.
+
+/** IDCANCEL — o id do "Cancelar" num diálogo padrão. O 1 (IDOK) NÃO é usado aqui, de propósito. */
+export const IDCANCEL = 2;
+
+/**
+ * O PowerShell que clica o **Cancelar** (IDCANCEL) de cada hwnd dado. Uma linha por hwnd, campos
+ * por TAB: `hwnd, resultado, textoDoBotao, titulo`. Resultados:
+ *   `cancelado` · `sumiu` (a janela já não existe) · `nao-e-dialogo` (classe mudou — não toca) ·
+ *   `sem-cancelar` (o diálogo não tem IDCANCEL) · `recusado-ok` (o controle 2 é um OK — ver acima).
+ *
+ * O botão é achado por `GetDlgItem(h, 2)`, não pelo texto: o rótulo muda com o idioma do GUI
+ * ('Cancelar', 'Cancel', 'Abbrechen') e o id não. O texto sai na saída só para a evidência.
+ * `PostMessage` (não `SendMessage`): o diálogo roda o laço modal na thread do pad, e um Send
+ * pendurava o PowerShell junto se o pad estivesse ocupado.
+ */
+export const psCancelarDialogos = (hwnds) => `
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Runtime.InteropServices;
+public class CSap {
+ [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+ [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
+ [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+ static string Txt(IntPtr h){ var t=new StringBuilder(256); GetWindowText(h,t,256); return t.ToString().Replace("\\r"," ").Replace("\\n"," ").Replace("\\t"," ").Trim(); }
+ static string Cls(IntPtr h){ var c=new StringBuilder(256); GetClassName(h,c,256); return c.ToString(); }
+ public static string Cancelar(long bruto){
+   IntPtr h = new IntPtr(bruto);
+   if(!IsWindow(h)) return bruto+"\\tsumiu\\t\\t";
+   string tit = Txt(h);
+   if(Cls(h) != "#32770") return bruto+"\\tnao-e-dialogo\\t\\t"+tit;
+   IntPtr b = GetDlgItem(h, ${IDCANCEL});
+   if(b == IntPtr.Zero) return bruto+"\\tsem-cancelar\\t\\t"+tit;
+   string rot = Txt(b).Replace("&","");
+   // trava dura: se o controle ${IDCANCEL} for um OK, NÃO clica — clicar autorizaria o script
+   if(rot.ToUpperInvariant() == "OK") return bruto+"\\trecusado-ok\\t"+rot+"\\t"+tit;
+   PostMessage(b, 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
+   return bruto+"\\tcancelado\\t"+rot+"\\t"+tit;
+ } }
+'@
+${hwnds.map((h) => `[CSap]::Cancelar(${Number(h)})`).join('\n')}`;
+
+/** PURO: a saída de `psCancelarDialogos` vira `[{ hwnd, resultado, botao, titulo }]`. */
+export function interpretarCancelamentos(texto) {
+  const linhas = [];
+  for (const bruta of String(texto).split(/\r?\n/)) {
+    if (!bruta.trim()) continue;
+    const [hwnd, resultado, botao = '', titulo = ''] = bruta.split('\t');
+    if (!hwnd || !resultado) continue;
+    linhas.push({ hwnd: Number(hwnd), resultado, botao, titulo });
+  }
+  return linhas;
+}
+
+/**
+ * Limpa os popups do pedágio da tela clicando **Cancelar** em cada um (nega o acesso; ver o ⚠ acima).
+ * Sem `janelas`, lê as janelas na hora. Devolve `{ cancelados, resultados, restantes }` — `restantes`
+ * é lido DEPOIS, para não dizer "limpei" sem olhar.
+ */
+export async function cancelarPedagio({ janelas = null, conferir = true } = {}) {
+  const alvos = (janelas ?? await janelasSapGui()).filter((j) => ehPopupAutorizacao(j) && j.hwnd);
+  if (!alvos.length) return { cancelados: 0, resultados: [], restantes: null };
+  const r = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCancelarDialogos(alvos.map((j) => j.hwnd))],
+    { windowsHide: true, timeout: 20000 }).catch((e) => ({ stdout: e.stdout || '' }));
+  const resultados = interpretarCancelamentos(r.stdout);
+  const restantes = conferir ? (await janelasSapGui()).filter(ehPopupAutorizacao) : null;
+  return { cancelados: resultados.filter((x) => x.resultado === 'cancelado').length, resultados, restantes };
 }
 
 /** PURO: a sessão do ROT tem alguém logado? A tela de logon do servidor TAMBÉM entra no ROT — com
@@ -728,7 +822,7 @@ export async function abrirSapGui({ sistema, cliente, usuario, senha, idioma = '
  * usuário VAZIO, mandante 000 e tcode S000 (medido 04/09/2026: `/app/con[1]/ses[0] S4H/000 '' S000`).
  * `sessoes` a lista, mas `estado` só é `com-sessao` com alguém logado (`sessaoLogada`).
  */
-export async function sessoesAbertas({ timeout = 15000 } = {}) {
+export async function sessoesAbertas({ timeout = 15000, ...vigia } = {}) {
   const vbs = `Option Explicit
 Dim app, i, j, conn, sess, fso, saida, S
 S = Chr(1)
@@ -750,7 +844,11 @@ For i = 0 To app.Children.Count - 1
   Next
 Next
 saida.Close`;
-  const { texto, expirou } = await rodarVbs(vbs, { timeout });
+  const { texto, expirou, pedagio } = await rodarVbs(vbs, { timeout, ...vigia });
+  // O vigia viu o popup e abortou: o vazio já tem nome, e sem gastar o prazo (item 101).
+  if (pedagio) {
+    return { sessoes: [], estado: 'pede-autorizacao', processos: null, pedagio, erro: `sem sessão no ROT: ${erroDoPedagio(pedagio)}` };
+  }
   const sessoes = [];
   let erroVbs = null;
   for (const linha of texto.split(/\r?\n/)) {
@@ -774,8 +872,28 @@ saida.Close`;
   return { sessoes, estado, processos, erro: `sem sessão no ROT: ${explicacao}${prazo}` };
 }
 
-/** Escreve o VBS num arquivo temporário, roda por cscript e devolve o que o VBS gravou. */
-async function rodarVbs(vbsTemplate, { timeout = 120000 } = {}) {
+/** Espera `ms` — mas acorda assim que `pronto()`, para o vigia não atrasar o caminho feliz. */
+const dormirAte = async (ms, pronto) => {
+  const ate = Date.now() + ms;
+  while (!pronto() && Date.now() < ate) await new Promise((r) => setTimeout(r, 50));
+};
+
+/**
+ * Escreve o VBS num arquivo temporário, roda por cscript e devolve o que o VBS gravou.
+ *
+ * ⚠ **O vigia do pedágio** (item 101, 06/09/2026). Sem ele, TODA chamada deste canal esperava o
+ * prazo inteiro com o popup de autorização de pé — o `GetObject("SAPGUI")` não volta enquanto
+ * ninguém clicar (§ O pedágio do cliente, da receita). Enquanto o `cscript` roda, este laço olha as
+ * janelas (`janelasSapGui` + `ehPopupAutorizacao`); achando o popup, **aborta a chamada** e devolve
+ * `pedagio` — o chamador falha com nome (`pede-autorizacao`) em segundos, não no timeout.
+ *   • O primeiro poll é aos `primeiroPollMs` (2 s) e a espera acorda no fim do cscript: no caminho
+ *     feliz (com `WarnOnAttach=0`, 0,76–0,87 s medidos no item 60) o vigia **não chega a olhar** —
+ *     custa zero. O popup aparece em 0,48–0,73 s (item 62), então aos 2 s ele já está de pé.
+ *   • `limparPedagio` (default) clica **Cancelar** no órfão — ver o ⚠ de `cancelarPedagio`.
+ */
+async function rodarVbs(vbsTemplate, {
+  timeout = 120000, vigiarPedagio = true, primeiroPollMs = 2000, intervaloPollMs = 1500, limparPedagio = true,
+} = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'jbv-gui-'));
   const arqVbs = path.join(base, 'passos.vbs');
   const arqOut = path.join(base, 'saida.txt');
@@ -784,8 +902,31 @@ async function rodarVbs(vbsTemplate, { timeout = 120000 } = {}) {
   let stdout = '';
   let stderr = '';
   let expirou = false;
+  let pedagio = null;
+  let terminou = false;
+  const inicio = Date.now();
+  const abortar = new AbortController();
+  const tarefa = exec(CSCRIPT, ['//nologo', arqVbs], { timeout, windowsHide: true, signal: abortar.signal })
+    .then((r) => { terminou = true; return r; }, (e) => { terminou = true; throw e; });
+
+  // O vigia: enquanto o cscript roda, olha as janelas. Ver `vigiarPedagio` no cabeçalho do módulo.
+  const vigia = vigiarPedagio ? (async () => {
+    await dormirAte(primeiroPollMs, () => terminou);
+    while (!terminou) {
+      const janelas = await janelasSapGui();
+      if (terminou) return;
+      const popups = janelas.filter(ehPopupAutorizacao);
+      if (popups.length) {
+        pedagio = { janelas: popups, ms: Date.now() - inicio };
+        abortar.abort();
+        return;
+      }
+      await dormirAte(intervaloPollMs, () => terminou);
+    }
+  })() : Promise.resolve();
+
   try {
-    const r = await exec(CSCRIPT, ['//nologo', arqVbs], { timeout, windowsHide: true });
+    const r = await tarefa;
     stdout = r.stdout;
     stderr = r.stderr;
   } catch (e) {
@@ -794,10 +935,27 @@ async function rodarVbs(vbsTemplate, { timeout = 120000 } = {}) {
     // ⚠ O timeout do execFile MATA o cscript e deixa o arquivo de saída VAZIO — que é
     // indistinguível de "rodou e não achou nada". Sem esta bandeira, `sessoesAbertas` devolvia
     // `{ sessoes: [], erro: null }` depois de 120 s de espera cega (medido 04/09/2026).
-    expirou = e.killed === true || e.signal != null;
+    // O abort do vigia também mata o cscript: ali o vazio tem nome (`pedagio`), não é estouro de prazo.
+    expirou = !pedagio && (e.killed === true || e.signal != null);
   }
+  await vigia.catch(() => {});
+  // Quem sujou limpa: o popup abortado fica órfão e a chamada seguinte empilha mais um (item 34).
+  if (pedagio && limparPedagio) pedagio.limpeza = await cancelarPedagio({ janelas: pedagio.janelas }).catch((e) => ({ erro: e.message }));
   const texto = fs.existsSync(arqOut) ? fs.readFileSync(arqOut, 'utf16le') : '';
-  return { texto, stdout, stderr, expirou, arqVbs, arqOut, pasta: base };
+  return { texto, stdout, stderr, expirou, pedagio, arqVbs, arqOut, pasta: base };
+}
+
+/** O que dizer quando o vigia abortou por pedágio — a explicação do diagnóstico + o que se fez com o órfão. */
+function erroDoPedagio(pedagio) {
+  const { explicacao } = diagnosticarRot({ janelas: pedagio.janelas });
+  const limpeza = pedagio.limpeza
+    ? pedagio.limpeza.erro
+      ? ` Órfão na tela: a limpeza falhou (${pedagio.limpeza.erro}).`
+      : ` O popup órfão foi CANCELADO (${pedagio.limpeza.cancelados} de ${pedagio.janelas.length}` +
+        `${pedagio.limpeza.restantes?.length ? `, ${pedagio.limpeza.restantes.length} de pé ainda` : ''}) — ` +
+        'cancelar NEGA o acesso, que é o que já valia: a chamada morreu no abort.'
+    : ` O popup ficou ÓRFÃO na tela (limparPedagio: false) — a chamada seguinte empilha mais um.`;
+  return `${explicacao} Abortado aos ${(pedagio.ms / 1000).toFixed(1)} s, sem esperar o prazo inteiro.${limpeza}`;
 }
 
 /**
@@ -806,12 +964,21 @@ async function rodarVbs(vbsTemplate, { timeout = 120000 } = {}) {
  * ⚠ Isto NÃO prova gravação. A tela pode aceitar tudo e não gravar nada, sem mensagem (medido na
  * SU3). Toda escrita por este canal fecha com `readTable` em OUTRA LUW.
  */
-export async function rodarGui(passos, { conexaoGui = 0, sessaoGui = 0, timeout = 120000, manterArquivos = false } = {}) {
+export async function rodarGui(passos, { conexaoGui = 0, sessaoGui = 0, timeout = 120000, manterArquivos = false, ...vigia } = {}) {
   if (!Array.isArray(passos) || !passos.length) throw new Error('rodarGui: informe uma lista de passos (ver ACOES)');
   const vbs = montarVbs(passos, '${SAIDA}')
     .replace('${CONEXAO}', String(conexaoGui))
     .replace('${SESSAO}', String(sessaoGui));
-  const r = await rodarVbs(vbs, { timeout });
+  const r = await rodarVbs(vbs, { timeout, ...vigia });
+  // ⚠ Sem o vigia isto era o pior vazio do canal: o cscript morria no prazo, o arquivo saía VAZIO e
+  // `rodarGui` devolvia `{ resultados: [null, …] }` SEM erro — a tela nunca foi tocada (item 101).
+  if (r.pedagio) {
+    if (!manterArquivos) fs.rmSync(r.pasta, { recursive: true, force: true });
+    const e = new Error(`GUI Scripting: ${erroDoPedagio(r.pedagio)}`);
+    e.estado = 'pede-autorizacao';
+    e.pedagio = r.pedagio;
+    throw e;
+  }
   const saida = interpretarSaidaGui(r.texto);
   saida.resultados = passos.map((_, i) => resultadoDoPasso(saida, i));
   saida.vbs = r.arqVbs;
@@ -918,17 +1085,32 @@ export async function medirComSat({ tipo, alvo, passosDentro = [] }, opts = {}) 
  * API instant trace devolvem quando chamadas de dentro do classrun. */
 export const mediuDeVerdade = (resultado) => resultado.total > 1 && resultado.amostra.some((l) => l.NETTO > 0);
 
-/** Fecha a conexão do SAP GUI (todas as sessões dela). Chamar no `finally` de quem abriu. */
-export async function fecharSapGui({ conexaoGui = 0 } = {}) {
-  const vbs = `Option Explicit
-Dim app, conn, fso, saida, S
+/**
+ * PURO: o VBS que fecha a conexão `conexaoGui`. Cada vazio tem um rótulo PRÓPRIO — a versão
+ * anterior escrevia "@nada sem conexao" tanto quando o `GetObject` levantava Err quanto quando o
+ * engine vinha com 0 conexões, e as duas coisas pedem reações opostas (investigar × não fazer nada).
+ */
+export const vbsFecharConexao = (conexaoGui = 0) => `Option Explicit
+Dim app, conn, fso, saida, S, n
 S = Chr(1)
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set saida = fso.CreateTextFile("${'${SAIDA}'}", True, True)
 On Error Resume Next
 Set app = GetObject("SAPGUI").GetScriptingEngine
-If Err.Number <> 0 Or app.Children.Count = 0 Then
-  saida.WriteLine "@nada" & S & "sem conexao"
+If Err.Number <> 0 Then
+  saida.WriteLine "@erro" & S & Err.Description
+  saida.Close
+  WScript.Quit 1
+End If
+n = -1
+n = app.Children.Count
+If Err.Number <> 0 Then
+  saida.WriteLine "@erro" & S & "engine sem Children.Count: " & Err.Description
+  saida.Close
+  WScript.Quit 1
+End If
+If n = 0 Then
+  saida.WriteLine "@sem-conexao" & S & "o engine respondeu com 0 conexoes — nada a fechar"
   saida.Close
   WScript.Quit 0
 End If
@@ -937,6 +1119,30 @@ conn.CloseSession "ses[0]"
 conn.CloseConnection
 saida.WriteLine "@fechada" & S & Err.Number & S & Err.Description
 saida.Close`;
-  const { texto } = await rodarVbs(vbs);
-  return { fechada: texto.includes('@fechada'), texto: texto.trim() };
+
+/**
+ * Fecha a conexão do SAP GUI (todas as sessões dela). Chamar no `finally` de quem abriu.
+ *
+ * Devolve `{ fechada, estado, texto }` — e `estado` distingue os vazios, que a versão anterior
+ * colapsava num "@nada sem conexao" só (item 101):
+ *   `fechada`          — a conexão foi fechada;
+ *   `erro-scripting`   — o `GetObject("SAPGUI")` levantou Err (não há entrada no ROT, ou o engine
+ *                        não veio): APONTA para cliente/servidor, e merece investigação;
+ *   `sem-conexao`      — o engine veio, com ZERO conexões: não há o que fechar, e está tudo bem;
+ *   `pede-autorizacao` — o popup do pedágio de pé (o vigia abortou, ver `rodarVbs`).
+ * Confundir os dois primeiros é o que fazia "o GUI já estava fechado" esconder um erro de scripting.
+ */
+export async function fecharSapGui({ conexaoGui = 0, ...vigia } = {}) {
+  const vbs = vbsFecharConexao(conexaoGui);
+  const { texto, pedagio, expirou } = await rodarVbs(vbs, vigia);
+  if (pedagio) return { fechada: false, estado: 'pede-autorizacao', pedagio, erro: erroDoPedagio(pedagio), texto: '' };
+  const limpo = texto.trim();
+  const estado = limpo.includes('@fechada') ? 'fechada'
+    : limpo.includes('@sem-conexao') ? 'sem-conexao'
+    : limpo.includes('@erro') ? 'erro-scripting'
+    : expirou ? 'expirou' : 'mudo';
+  const erro = estado === 'erro-scripting' ? `o GetObject("SAPGUI") falhou — ${limpo.split(SEP).slice(1).join(' ')}`
+    : estado === 'expirou' ? 'o cscript não respondeu no prazo e nada foi gravado'
+    : estado === 'mudo' ? 'o VBS terminou sem gravar linha nenhuma' : null;
+  return { fechada: estado === 'fechada', estado, erro, texto: limpo };
 }

@@ -129,7 +129,7 @@ mudo — `diagnosticarRot` (puro, testado) classifica pelo trio ROT + `tasklist`
 | `estado` | o que é | o que fazer |
 |---|---|---|
 | `com-sessao` | há sessão **logada** no ROT (`sessaoLogada`) | seguir |
-| `pede-autorizacao` | o popup do pedágio de pé (`#32770` `SAP Logon`, § abaixo) | clicar OK, ou desligar o aviso (`WarnOnAttach=0`) — **não** é credencial nem scripting desligado |
+| `pede-autorizacao` | o popup do pedágio de pé (`#32770` `SAP Logon`, § abaixo) — a chamada **aborta em ~3,3 s** e o órfão é cancelado | clicar OK à mão, ou desligar o aviso (`WarnOnAttach=0`) — **não** é credencial nem scripting desligado |
 | `logon-pendente` | tela de logon do servidor: conexão no ROT com usuário vazio, ou janela `SAP_FRONTEND_SESSION` sem sessão logada | a credencial não passou — conferir mandante/usuário/senha; não é scripting desligado |
 | `pede-senha` | o pad abriu `Ligação SAP GUI - logon (…)` | o atalho chegou sem senha aceita (aconteceu sem `-pw`) |
 | `mensagem` | caixa `SAP GUI` com texto (ex.: `ID sistema desconhecido`) | ler o texto — está em `erro` |
@@ -274,9 +274,9 @@ resposta.
   diálogo e pendurou — igual em +30 s e +120 s. **Não existe permissão persistida**: nem por pad,
   nem por processo, nem por tempo. Cinco OKs seguidos não compraram um segundo de graça. Quem quiser
   o canal sem pedágio tem um caminho só: `WarnOnAttach=0` (§ abaixo).
-- **O timeout do chamador não resolve — piora:** o `execFile` mata o `cscript` e o popup **fica
-  órfão na tela**; a chamada seguinte empilha mais um. Com um clicador em paralelo, `fecharSapGui`
-  fechou a conexão em 1,4 s.
+- **O timeout do chamador não resolvia — piorava:** o `execFile` matava o `cscript` e o popup ficava
+  **órfão na tela**; a chamada seguinte empilhava mais um. Isto foi **resolvido em 06/09/2026** pelo
+  vigia — § *A lib não paga mais o pedágio de espera*, abaixo.
 - **O sintoma engana — e por isso o popup é estado próprio** (item 61, 05/09/2026): com o popup de
   pé, a janela `SAP_FRONTEND_SESSION` "SAP Easy Access" está **visível** e o ROT expira. `lerJanelas`
   devolvia `sessao` e `diagnosticarRot` concluía `logon-pendente` — "é a TELA DE LOGON" —, errado: a
@@ -292,8 +292,8 @@ resposta.
     **principal** do pad também é `#32770`, o que faz do título o único separador.
   - **`sessoesAbertas` lê as janelas sempre que há processo** (antes só quando o ROT vinha vazio): o
     popup convive com uma conexão no ROT, e o `!sessoes.length` o escondia do diagnóstico.
-  - **Ainda pendura até o timeout.** Este item deu ao vazio o NOME certo; falhar cedo (vigiar o popup
-    enquanto o `cscript` roda) e não deixar o popup órfão na tela é outro item da fila.
+  - **Já não pendura:** aquele item deu ao vazio o NOME certo, e o vigia (item 101, § abaixo) faz o
+    nome chegar em ~3,3 s em vez de no fim do prazo.
 - **Diagnóstico rápido, à mão:** listar as janelas top-level do pad e procurar um `#32770` visível
   que não seja o próprio `SAP Logon <versão>` — `sap-accelerate/work/POC_rot_sapgui/scripts/janelas.ps1`
   lista e clica no OK.
@@ -378,6 +378,43 @@ Um Enter humano em ~2 s dá exatamente esse número.
 ausência de popup. Enquanto ninguém olha as janelas, "respondeu rápido" e "alguém destravou" são o
 mesmo dado. Com uma pessoa na máquina, o canal GUI **não tem medição limpa** — o teclado dela entra
 no experimento.
+
+### A lib não paga mais o pedágio de espera — o vigia (item 101)
+
+Medido 06/09/2026 (`sap-accelerate/work/POC_rot_sapgui/medicoes/item101-vigia.md`; scripts
+`item101-vigia-aborta.mjs` e `item101-custo-vigia.mjs`, com o pedágio **religado** e devolvido a `0`
+no fim). Enquanto o `cscript` roda, `rodarVbs` olha as janelas (`janelasSapGui` +
+`ehPopupAutorizacao`); achando o popup, **aborta a chamada** e o chamador falha com o nome certo:
+
+| chamada, com o pedágio LIGADO | antes | agora |
+|---|---|---|
+| `sessoesAbertas` | 15 s (o prazo inteiro) + 1 órfão | **5,6 s**, abort aos **3,4 s**, `estado: 'pede-autorizacao'`, tela limpa |
+| `rodarGui` | 120 s e `{ resultados: [null, …] }` **sem erro** | **5,3 s**, lança com `e.estado = 'pede-autorizacao'` |
+| `fecharSapGui` | 120 s + 1 órfão | **5,7 s**, `{ fechada: false, estado: 'pede-autorizacao' }` |
+
+- **Custa zero no caminho feliz.** Primeiro poll aos **2 s**, e a espera acorda no fim do `cscript`:
+  com `WarnOnAttach=0` a chamada termina em 0,76–0,87 s e o vigia **não chega a olhar**. Seis pares
+  alternados: **2607 ms** com vigia × **2638 ms** sem (`vigiarPedagio: false`) — a diferença é ruído.
+- **O órfão é CANCELADO, nunca autorizado.** `cancelarPedagio()` manda `BM_CLICK` por `PostMessage`
+  em `GetDlgItem(hwnd, 2)` — o **IDCANCEL**, achado por id (o rótulo muda de idioma; o id não).
+  ⚠ **Clicar OK autorizaria o script** — é o aviso de segurança do cliente, e desligá-lo é decisão de
+  quem administra o desktop (`WarnOnAttach=0`, § acima), não da lib. Cancelar **nega**, que é o que já
+  valia: a chamada morreu no abort. O código tem trava dura: controle `2` com rótulo `OK` ⇒
+  `recusado-ok`, sem clique. E nada de `SendKeys {ENTER}` — o Enter aciona o botão **default**, o OK.
+- **Opções:** `vigiarPedagio` (default `true`), `primeiroPollMs` (2000), `intervaloPollMs` (1500),
+  `limparPedagio` (default `true`) — passam por `sessoesAbertas`, `rodarGui` e `fecharSapGui`. Com
+  `limparPedagio: false` o órfão **fica** na tela e a chamada seguinte empilha mais um: é o
+  comportamento antigo, agora escolhido de propósito.
+- **Não medido:** o mesmo com **sessão logada** de pé (a corrida foi com o pad sem sessão). O caminho
+  de código é o mesmo — o vigia olha janelas, não o ROT.
+
+### `fecharSapGui` já não colapsa dois vazios (item 101)
+
+O VBS escrevia `"@nada" & "sem conexao"` tanto quando o `GetObject` levantava `Err` quanto quando o
+engine vinha com `Children.Count = 0` — e as duas coisas pedem reações opostas. Agora
+`vbsFecharConexao` tem rótulo por caminho e a função devolve `estado`:
+`fechada` · `erro-scripting` (o `GetObject` falhou — investigar) · `sem-conexao` (engine com 0
+conexões — não há o que fechar) · `pede-autorizacao` · `expirou` · `mudo`.
 
 ## Dirigir a tela: passos declarativos
 
