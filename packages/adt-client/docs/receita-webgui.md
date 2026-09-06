@@ -3476,7 +3476,7 @@ ordenação de uma coluna (item 77), **isto reordena a tabela interna do ABAP**:
   barra, e é outra coisa — a precedência é a das colunas **na tela**, não a da lista, e a direção é
   do BOTÃO (`btn[28]`/`btn[40]`), uma só para todos os critérios. **Direção por critério, e ordem de
   precedência escolhida, só pelo diálogo.**
-- **O menu de contexto da célula** (`CellContextMenu`) — outra porta para os mesmos fcodes.
+- ~~**O menu de contexto da célula** (`CellContextMenu`)~~ — medido no item 122, § abaixo.
 - **`ColumnResize`** e o arrasto de coluna.
 
 ### O mesmo sort por HTTP PURO — um POST, e o botão se acha pelo ÍCONE (item 115)
@@ -3525,6 +3525,129 @@ mesma ordem (`ztta/short_area` na primeira linha, `_CPARG0` na última).
 nenhum ícone de sort entra no delta — não há o `head<ordem>o<filtro>.png` do navegador. Quem quer
 saber a ordem corrente lê os dados. E **o filtro (`btn[29]`, `s_b_filt`) por esta via não está
 medido**.
+
+## O MENU DE CONTEXTO do ALV — a porta que funciona sem barra (item 122)
+
+O `lsevents` do grid publica `CellContextMenu` desde o item 25, e até aqui nenhum gesto o tinha
+aberto. Ele importa porque a via da barra (`ordenarGrid`, `filtrarGrid`, item 77) depende de a barra
+do ALV **ter** o botão — e há ALV sem barra nenhuma. Medido no s4h 758/250 em 06/09/2026
+(`POC_webgui_grid_ctxmenu`, fases A–G; laboratório `ZJBV_ALV47_EDIT` e a lista do `RSPARAM`;
+leitura em `medicoes/item122-menu-contexto.md`).
+
+```js
+import { menuDoGrid, fecharMenuDoGrid, acionarNoMenuDoGrid } from 'adt-client/webgui';
+
+const m = await menuDoGrid(s, null, { coluna: 'NAME' });   // linha 0 (o default) = CABEÇALHO
+m.itens.map((i) => i.fcode);      // ['LOCAL&COPY','COL_INV','COL0','OPTIMIZE',…,'SORT_ASC','SORT_DSC',…]
+await fecharMenuDoGrid(s);        // ⚠ `menuDoGrid` deixa o menu ABERTO
+
+await acionarNoMenuDoGrid(s, null, 'SORT_DSC', { coluna: 'NAME' });          // pelo FCODE
+await acionarNoMenuDoGrid(s, null, 'OPTIMIZE', { linha: 2, coluna: 'NOME' }); // pela CÉLULA
+await acionarNoMenuDoGrid(s, null, 'Ordenar ord.crescente', { coluna: 'NOME' }); // ou pelo rótulo
+```
+
+### O gesto é o botão DIREITO pelo CDP — e só ele
+
+| gesto | abriu? |
+|---|---|
+| `Input.dispatchMouseEvent` `button: 'right'` (o `cliqueDireito`) | **sim** |
+| `el.dispatchEvent(new MouseEvent('contextmenu', …))` | **não** — `defaultPrevented: true, passou: false` |
+
+O sintético o próprio renderer cancela. É a mesma razão pela qual `clique` precisa do `mouseMoved`
+e do `buttons`: o gesto tem de entrar pela fila de eventos do navegador, não pelo DOM.
+
+### O menu vem por ROUND-TRIP, e o gesto de abrir já carrega a COLUNA
+
+```
+focus/wnd[0]/shellcont/shell
+action/53/…  row_index=2&column_index=2                     ← a célula corrente
+action/50/…  top_left_…=2&…&reference_row_index=2           ← o bloco selecionado
+action/12/…                                                 ← o CellContextMenu
+get state/ur/wnd[0]/shellcont/shell/mnu   (logic: inverse)  ← o menu, do servidor
+```
+
+No **cabeçalho** saem ainda `action/246 column_index=2`, `action/346` e `action/46 columns=;2;`.
+Por isso o sort daqui **não precisa** da marca pendente que `ordenarGrid` tem de fazer antes
+(§ `marcarColuna`): a coluna viaja no próprio gesto de abrir.
+
+### O vocabulário é o do menu da barra — mais o FCODE no SID
+
+O menu é um `POMN` de SID `<sid do grid>/mnu` com itens `POMNI`, e o `Select` do `POMN` é o mesmo
+`action/4` do item 49 — com um `LinkedControlId` a mais, que é o **id do grid**:
+
+```json
+{"Select":[{},{"1":"action/4","2":true,"15":true,"LinkedControlId":"C102"}]}
+```
+
+É o **único endereço estável**: o id do DOM (`menu_1_1`) e os dos itens (`u2EB53`, `u3D774`…)
+mudam a cada abertura — e por isso `jsMenuDoGrid` casa pelo `LinkedControlId`.
+
+`interpretarItemDeMenu` (itens 26/48) lê os itens **inteiros**: rótulo no `lsdata[1]`, cinza no
+`lsdata[5]`, início de grupo no `[4]`, SID no `[18]`. Só o `nivel` sai errado (`-1`) — ele conta
+`/menu[` no id, e aqui o id não é o caminho. `itensDoMenuDoGrid` reusa a pura, tira o `nivel` e põe
+no lugar o que só existe aqui:
+
+> o **FCODE do ALV vem no SID**: `wnd[0]/shellcont/shell/mnu/menu&SORT_DSC` → `SORT_DSC` — o mesmo
+> vocabulário do `jsBotaoDaBarra`, e é o que deixa comparar as duas portas fcode a fcode.
+
+### São DOIS menus, e o do CABEÇALHO é o que ordena
+
+`ZJBV_ALV47_EDIT`, cuja barra já tem 23 fcodes:
+
+| | célula (10 itens) | cabeçalho (16 itens) |
+|---|---|---|
+| comuns | `LOCAL&CUT` `LOCAL&COPY` `LOCAL&PASTE` `OPTIMIZE` `CDF` `FIND` `FIND_MORE` `FILTER` `XXL` | idem |
+| só nele | `DETAIL` | `COL_INV` `COL0` `CFI` **`SORT_ASC` `SORT_DSC` `SUMC` `SUBTOT`** |
+
+Ordenar, totalizar e subtotalizar **não estão no menu da célula**. E oito desses fcodes não estão
+na barra deste ALV — `OPTIMIZE`, `CDF`, `CFI`, `COL_INV`, `FILTER`, `SUMC`, `SUBTOT`, `XXL`.
+
+### A prova: o `RSPARAM`, onde a barra do ALV não existe
+
+| | barra (item 77) | menu de contexto (item 122) |
+|---|---|---|
+| `JS_FCODES_DA_BARRA` | `[]` — **zero** | — |
+| `ordenarGrid(… 'NAME', { ordem: 'desc' })` | estoura: *"esta tela não tem barra de ALV nenhuma"* | — |
+| menu do cabeçalho | — | 12 fcodes, com `SORT_ASC`/`SORT_DSC`/`FILTER` |
+| `acionarNoMenuDoGrid(… 'SORT_DSC', { coluna: 'NAME' })` | — | 1 `action/4`; `lerColunas` → `NAME:desc`, e as 1617 linhas vão de `Autostart…` para `ztta/short_area…` |
+
+Listas como a do `RSPARAM` ordenam pela barra da **aplicação** (item 116) — o menu de contexto é a
+via que dispensa saber qual botão daquela barra faz o quê.
+
+### ⚠ FECHAR não é o que parece — e foi o que quebrou a primeira versão
+
+O renderer **não remove nem esconde** o menu: ele o **move para `y = -100000`** (e some o
+`<id>-lsPopupMenuElement`). Quem testar "visível" por `offsetWidth/offsetHeight` vê menu aberto
+para sempre — foi assim que duas fases da POC concluíram, errado, que nada o fechava. O critério é
+o `rect.top`, e é o que `jsMenuDoGrid` devolve em `aberto`.
+
+Com o critério certo: **o `Escape` fecha e não posta nada** (`acoes: []`) — o renderer consome a
+tecla. `fecharMenuDoGrid` usa o `Escape` **com a guarda** de só mandá-lo enquanto o menu estiver
+aberto, porque com o menu fechado o mesmo `Escape` cancela a TRANSAÇÃO (§ `fecharMenu`).
+
+**Clicar "fora" não serve.** Foi a primeira implementação — um "ponto inerte" escolhido por não ter
+`ct` nos ancestrais próximos. Ele caiu no `<div id="<cid>-mrss-cont-left">`, a margem à esquerda do
+ALV, e o clique postou `action/304` + `action/3` e **trocou a dynpro**: o grid sumiu. Adivinhar
+região morta num renderer que não declara o que é acionável é apostar — a pura foi **removida** da
+lib, não corrigida.
+
+### ⚠ `mudou: false` não quer dizer que falhou
+
+`OPTIMIZE` ("Largura otimizada"), pela célula, encolheu as colunas de `46/206/116` para `33/84/45`
+**sem POST nenhum**: alguns itens o renderer resolve no cliente. Quem precisa saber o efeito olha o
+efeito (`lerColunas`, `lerGrid`, a largura), não o `mudou`.
+
+### O que ainda NÃO está medido
+
+- **Os itens que abrem DIÁLOGO** (`FILTER`, `COL0`, `XXL`, `FIND`, `DETAIL`): o gesto volta com a
+  janela de pé e fechá-la é de quem chamou. ⚠ O `FILTER` do menu **não é** o `MB_FILTER` da barra
+  — fcodes diferentes, e não se sabe se o diálogo é o mesmo que `filtrarGrid` dirige.
+- **`SUMC`/`SUBTOT`** (Total/Subtotais) e os primos `MB_SUM`/`MB_SUBTOT` da barra — nenhum dos
+  quatro foi acionado.
+- **O mesmo menu por HTTP puro** (`its.mjs`): o comando é o `action/4` com o SID do item, e o SID
+  traz o fcode — em tese posta sem navegador, como `its.navegarMenu` faz com o menu da barra.
+- **O submenu**: nenhum item medido tinha `lsdata[6]`/`aria-haspopup`.
+- **A tecla `ContextMenu` (VK 93)** como gesto alternativo — nunca medida em estado limpo.
 
 ## Escrever numa célula do ALV — e provar que gravou (item 47)
 

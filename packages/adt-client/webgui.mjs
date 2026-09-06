@@ -3573,6 +3573,204 @@ export async function ordenarGridPorVarias(sessao, alvo = null, criterios = [], 
   return { id: g.id, sid: g.sid, criterios: pedidos, total: t.total, linhas: t.linhas, colunas, ms: Date.now() - t0 };
 }
 
+// ---------- o MENU DE CONTEXTO da célula e da coluna (item 122) ----------
+//
+// A OUTRA porta para os fcodes do ALV, e a única quando **não há barra**. O `lsevents` do grid
+// publica `CellContextMenu` desde o item 25 e nenhum gesto o tinha aberto. Medido no s4h 758/250 em
+// 06/09/2026 (`POC_webgui_grid_ctxmenu`, fases A–E; laboratório `ZJBV_ALV47_EDIT` e a lista do
+// `RSPARAM`):
+//
+//   • **o gesto é o botão DIREITO pelo CDP** — e só ele. O `contextmenu` sintético
+//     (`dispatchEvent`) volta `defaultPrevented: true, passou: false`: o renderer o cancela sem
+//     abrir nada (§ `cliqueDireito`).
+//   • **o menu vem por ROUND-TRIP, não do DOM.** O gesto posta um batch de quatro:
+//     `focus`, `action/53` (`row_index`/`column_index` — a célula corrente), `action/50` (o bloco
+//     selecionado) e `action/12` — este é o `CellContextMenu` —, e puxa o menu num
+//     `get state/ur/<sid do grid>/mnu`. Do cabeçalho saem ainda `action/246` (`column_index`) e
+//     `action/346`: **é o gesto que carrega a COLUNA**, e por isso o sort do menu não precisa da
+//     marca pendente que `ordenarGrid` tem de fazer.
+//   • **o vocabulário é o MESMO do menu da barra** (itens 26/49): um `POMN` de SID
+//     `<sid do grid>/mnu` com itens `POMNI`, e o `Select` do `POMN` é `action/4` — com um
+//     `LinkedControlId` a mais, que é o **id do grid** e o endereço estável do menu (o id do DOM,
+//     `menu_1_1`, e os dos itens, `u2EB53`…, são voláteis). `interpretarItemDeMenu` lê os itens
+//     inteiros — rótulo, `lsdata[5]` de desabilitado, início de grupo —, e só o `nivel` sai
+//     errado (`-1`): ele conta `/menu[` no id, e aqui o id não é o caminho.
+//   • **o FCODE do ALV vem no SID de cada item** (`…/mnu/menu&SORT_DSC`) — é o mesmo vocabulário
+//     do `jsBotaoDaBarra`, e é o que deixa comparar as duas portas fcode a fcode.
+//   • **o menu do CABEÇALHO é outro, e maior**: no laboratório, 16 itens contra 10 da célula, e é
+//     ele que traz `SORT_ASC`/`SORT_DSC`/`SUMC`/`SUBTOT`/`COL_INV`/`CFI`.
+//   • ⚠️ **fechar não é o que parece.** O renderer não remove nem esconde o nó: ele o **move para
+//     `y = -100000`** (e some o `<id>-lsPopupMenuElement`). Quem testar "visível" por
+//     `offsetWidth/offsetHeight` vê menu aberto para sempre — foi o que aconteceu nas fases B e C.
+//     O critério é o `rect.top`. Quem o fecha, sem postar nada, é o `Escape` — com o menu aberto o
+//     renderer consome a tecla (§ `fecharMenuDoGrid`, e por que o clique "fora" NÃO serve).
+//     Acionar um item também fecha.
+//
+// A prova de que isto não é um segundo caminho para o mesmo lugar — a lista do `RSPARAM`:
+//
+// | | barra (item 77) | menu de contexto (este) |
+// |---|---|---|
+// | `JS_FCODES_DA_BARRA` | `[]` — **zero** | — |
+// | `ordenarGrid(s, null, 'NAME', { ordem: 'desc' })` | estoura: "esta tela não tem barra de ALV nenhuma" | — |
+// | menu do cabeçalho | — | 12 fcodes, entre eles `SORT_ASC`, `SORT_DSC`, `FILTER`, `OPTIMIZE` |
+// | `acionarNoMenuDoGrid(s, null, 'SORT_DSC', { coluna: 'NAME' })` | — | 1 `action/4`; `lerColunas` → `NAME:desc`, e as 1617 linhas viram de `Autostart…` para `ztta/short_area…` |
+//
+// E no laboratório com barra, `OPTIMIZE` ("Largura otimizada") — que a barra **não** tem — encolheu
+// as colunas de `46/206/116` para `33/84/45` **sem POST nenhum**: alguns itens do menu o renderer
+// resolve no cliente. Por isso `acionarNoMenuDoGrid` devolve `mudou` e não o exige.
+
+/** PURO: o FCODE do ALV escondido no SID de um item do menu de contexto (`…/mnu/menu&SORT_DSC`). */
+export const fcodeDoItemDeMenu = (sid) => (/\/mnu\/menu&(.+)$/.exec(String(sid ?? '')) || [])[1] ?? null;
+
+/**
+ * PURO: a expressão JS que acha o menu de contexto DAQUELE grid — o `POMN` cujo `Select` declara
+ * `LinkedControlId: <cid>`, que é o único endereço estável (o id do DOM muda a cada abertura).
+ * `aberto` sai do `rect.top`: fechado, o renderer o joga para `y = -100000`.
+ */
+export const jsMenuDoGrid = (cid) => `(() => {
+  const p = (s) => { try { return s ? JSON.parse(s) : null; } catch (x) { return null; } };
+  for (const m of document.querySelectorAll('[ct="POMN"]')) {
+    const ev = p(m.getAttribute('lsevents'));
+    const lig = ev && ev.Select && ev.Select[1] && ev.Select[1].LinkedControlId;
+    if (lig !== ${JSON.stringify(String(cid))}) continue;
+    const r = m.getBoundingClientRect();
+    const d = p(m.getAttribute('lsdata')) || {};
+    const sid = Object.values(d).find((v) => v && typeof v === 'object' && v.SID);
+    return { id: m.id, sid: sid ? sid.SID : null, comando: ev.Select[1]['1'] || null,
+      aberto: r.top > -1000, top: Math.round(r.top),
+      itens: [...m.querySelectorAll('[ct="POMNI"]')].map((e) => ({
+        id: e.id, desabilitado: e.getAttribute('aria-disabled'),
+        lsdata: p(e.getAttribute('lsdata')) })) };
+  }
+  return null;
+})()`;
+
+/** PURO: os itens do menu de contexto como a lib os entrega — o `interpretarItemDeMenu` do menu da
+ * barra, mais o `fcode`, e sem o `nivel` (que só faz sentido no menu em árvore). */
+export const itensDoMenuDoGrid = (menu) => (menu?.itens ?? []).map((bruto) => {
+  const { nivel, ...i } = interpretarItemDeMenu(bruto);
+  return { ...i, fcode: fcodeDoItemDeMenu(i.sid) };
+});
+
+/** PURO: qual item do menu é o `pedido` — o FCODE primeiro (exato, é o endereço), o rótulo depois
+ * (pelo `acharItemDeMenu`, que ignora acento e caixa e aceita prefixo). */
+export function acharNoMenuDoGrid(itens, pedido) {
+  const alvo = String(pedido ?? '').trim();
+  return (itens ?? []).find((i) => i.fcode === alvo) ?? acharItemDeMenu(itens, alvo);
+}
+
+/**
+ * ABRE o menu de contexto do ALV e devolve o que ele oferece — **sem acionar nada**.
+ *
+ * ```js
+ * await menuDoGrid(s, null, { coluna: 'NAME' });            // no CABEÇALHO da coluna
+ * await menuDoGrid(s, null, { linha: 2, coluna: 'NOME' });  // na CÉLULA
+ * ```
+ *
+ * `linha: 0` (o default) é o cabeçalho — o mesmo endereçamento do grid, onde a linha 0 é o `<th>`.
+ * Devolve `{ id, cid, sid, comando, linha, coluna, nome, itens: [{ rotulo, fcode, sid, habilitado,
+ * inicioDeGrupo, id }], ms }`.
+ *
+ * ⚠️ **Deixa o menu ABERTO na tela** — é o preço de olhar sem acionar. Feche com
+ * `fecharMenuDoGrid`; um menu aberto cobre células e atrapalha o gesto seguinte.
+ * ⚠️ Custa um round-trip: o menu vem do servidor (§ acima), não do DOM.
+ */
+export async function menuDoGrid(sessao, alvo = null, { linha = 0, coluna = 1, tetoMs = 15000 } = {}) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'menuDoGrid');
+  const b = await avaliar(sessao, jsBlocoDoGrid(g.id));
+  const c = indiceDaColuna(b?.colunas ?? [], coluna);
+  const n = Number(linha);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`webgui: menuDoGrid — linha "${linha}" não existe (0 é o cabeçalho)`);
+  const id = n === 0 ? idDoCabecalho(g.id, c) : idDaCelula(g.id, n, c);
+  const p = await apontar(sessao, { id });
+  if (!p?.x) throw new Error(`webgui: menuDoGrid — ${n === 0 ? 'o cabeçalho' : 'a célula'} ${id} não está apontável na tela`
+    + (n > (b?.visiveis ?? 0) ? ` (o bloco na tela tem ${b?.visiveis} linha(s); use \`posicionarGrid\` antes)` : ''));
+  await cliqueDireito(sessao, p);
+  const ate = Date.now() + tetoMs;
+  let m = null;
+  while (Date.now() < ate) {
+    m = await avaliar(sessao, jsMenuDoGrid(g.id));
+    if (m?.aberto && m.itens.length) break;
+    await espera(250);
+  }
+  if (!m?.aberto || !m.itens.length)
+    throw new Error(`webgui: menuDoGrid — o botão direito em ${id} não abriu menu nenhum em ${tetoMs} ms`
+      + (m ? ` (o POMN de ${g.id} está em y=${m.top} com ${m.itens.length} item(ns))` : ` (nenhum POMN ligado a ${g.id})`));
+  const itens = itensDoMenuDoGrid(m);
+  const nome = (b?.colunas ?? [])[c - 1] ?? null;
+  detalhe(`webgui: menuDoGrid ${g.id} — ${n === 0 ? `cabeçalho da coluna ${c}` : `célula ${n},${c}`} (${nome ?? '?'}): `
+    + `${itens.length} item(ns) — ${itens.map((i) => i.fcode ?? i.rotulo).join(', ')}`);
+  return { id: m.id, cid: g.id, sid: m.sid, comando: m.comando, linha: n, coluna: c, nome, itens, ms: Date.now() - t0 };
+}
+
+/**
+ * FECHA o menu de contexto sem acionar item nenhum. Devolve `true` se fechou.
+ *
+ * ⚠️ **O gesto é o `Escape`, e é a exceção do "nunca com Escape" do `fecharMenu`.** Medido: com o
+ * menu de contexto ABERTO o renderer consome a tecla para fechá-lo e **não posta nada** (`acoes:
+ * []`); com ele fechado, o mesmo `Escape` cancelaria a transação. Por isso a guarda: esta função
+ * relê o estado do menu e só manda a tecla enquanto ele estiver aberto.
+ *
+ * ⚠️ **Clicar "fora" não serve.** Foi a primeira tentativa e ela derrubou a tela: não há ponto
+ * inerte confiável — a margem à esquerda do ALV é o `<div id="<cid>-mrss-cont-left">`, que não tem
+ * `ct` nenhum e, clicado, postou `action/304` + `action/3` e trocou a dynpro (medido na fase G).
+ * Adivinhar região morta num renderer que não declara o que é acionável é apostar.
+ */
+export async function fecharMenuDoGrid(sessao, alvo = null, { tentativas = 3 } = {}) {
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'fecharMenuDoGrid');
+  for (let t = 0; t < tentativas; t += 1) {
+    const m = await avaliar(sessao, jsMenuDoGrid(g.id));
+    if (!m?.aberto) return true;
+    await tecla(sessao, 'Escape', { assentar: false });
+    await espera(500);
+  }
+  return !(await avaliar(sessao, jsMenuDoGrid(g.id)))?.aberto;
+}
+
+/**
+ * ACIONA um fcode do ALV pelo MENU DE CONTEXTO — a porta que funciona onde a barra não existe.
+ *
+ * ```js
+ * await acionarNoMenuDoGrid(s, null, 'SORT_DSC', { coluna: 'NAME' });   // pelo CABEÇALHO
+ * await acionarNoMenuDoGrid(s, null, 'OPTIMIZE', { linha: 2, coluna: 2 });
+ * await acionarNoMenuDoGrid(s, null, 'Ordenar ord.crescente', { coluna: 'NOME' });
+ * ```
+ *
+ * O `pedido` é o FCODE (o endereço; `SORT_ASC`, `FILTER`, `SUMC`) ou o rótulo na língua da tela.
+ * Devolve `{ fcode, rotulo, cid, linha, coluna, nome, mudou, aberto, itens, ms }`.
+ *
+ * ⚠️ **`mudou: false` não quer dizer que falhou** — medido: `OPTIMIZE` não posta nada, o renderer
+ * resolve no cliente (as colunas encolhem sem round-trip). Quem precisa saber o efeito olha o
+ * efeito (`lerColunas`, `lerGrid`), não o `mudou`.
+ * ⚠️ Item DESABILITADO estoura antes do clique — o cinza é engolido em silêncio, como no menu da
+ * barra (item 48).
+ * ⚠️ Vários itens ABREM DIÁLOGO em vez de agir (`FILTER`, `COL0`, `XXL`, `FIND`): o gesto volta com
+ * a janela nova de pé, e fechá-la é de quem chamou.
+ */
+export async function acionarNoMenuDoGrid(sessao, alvo = null, pedido, { linha = 0, coluna = 1, tetoMs = 40000 } = {}) {
+  const t0 = Date.now();
+  const m = await menuDoGrid(sessao, alvo, { linha, coluna });
+  const item = acharNoMenuDoGrid(m.itens, pedido);
+  if (!item) {
+    await fecharMenuDoGrid(sessao, { id: m.cid });
+    throw new Error(`webgui: acionarNoMenuDoGrid — "${pedido}" não está no menu ${linha === 0 ? 'do cabeçalho' : 'da célula'} `
+      + `de ${m.cid}; ele tem: ${m.itens.map((i) => `${i.fcode} ("${i.rotulo}")`).join(', ')}`);
+  }
+  if (!item.habilitado) {
+    await fecharMenuDoGrid(sessao, { id: m.cid });
+    throw new Error(`webgui: acionarNoMenuDoGrid — "${item.rotulo}" (${item.fcode}) está DESABILITADO neste menu; o clique não faria nada`);
+  }
+  const antes = await carimbo(sessao);
+  await clicar(sessao, { id: item.id });
+  const mudou = await esperarMudanca(sessao, antes, { tetoMs }).catch(() => false);
+  await espera(400);
+  const depois = await avaliar(sessao, jsMenuDoGrid(m.cid));
+  detalhe(`webgui: acionarNoMenuDoGrid ${m.cid} — ${item.fcode} ("${item.rotulo}") na coluna ${m.coluna} (${m.nome ?? '?'}), mudou=${mudou}`);
+  return { fcode: item.fcode, rotulo: item.rotulo, cid: m.cid, linha: m.linha, coluna: m.coluna,
+    nome: m.nome, mudou, aberto: depois?.aberto === true, itens: m.itens, ms: Date.now() - t0 };
+}
+
 // ---------- INSERIR e APAGAR linha do ALV (item 78) ----------
 //
 // O terceiro par de gestos do ALV editável, e o que separa este dos dois anteriores é **quando o
@@ -4004,6 +4202,21 @@ export async function clique(sessao, p, { modificadores = 0, cliques = 1 } = {})
  * e não um ponto usa `clicar(s, alvo, { cliques: 2 })`, que espera o alvo, desce ao descendente e
  * sabe esperar a resposta. */
 export const duploClique = (sessao, p, opts = {}) => clique(sessao, p, { ...opts, cliques: 2 });
+
+/**
+ * O clique com o botão DIREITO num PONTO — o gesto do menu de contexto (§ `menuDoGrid`, item 122).
+ *
+ * ⚠️ **Só o CDP serve.** Medido (s4h 758/250, 06/09/2026): um `contextmenu` sintético
+ * (`el.dispatchEvent(new MouseEvent('contextmenu', …))`) volta `defaultPrevented: true,
+ * passou: false` — o renderer o cancela sem abrir nada. O `Input.dispatchMouseEvent` entra antes
+ * disso, pela fila de eventos do navegador, e é o único que abre o menu.
+ */
+export async function cliqueDireito(sessao, p, { modificadores = 0 } = {}) {
+  const m = { x: p.x, y: p.y, modifiers: modificadores };
+  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseMoved', buttons: 0 });
+  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mousePressed', button: 'right', buttons: 2, clickCount: 1 });
+  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseReleased', button: 'right', buttons: 0, clickCount: 1 });
+}
 
 /**
  * Clica um alvo (`{ id }`, `{ seletor }` ou `{ okcode }`). Com `{ esperarResposta: true }` devolve

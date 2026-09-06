@@ -25,6 +25,7 @@ import {
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
   FCODES_DE_LINHA,
   DIALOGO_DE_ORDENACAO, jsGridDoDialogoDeOrdenacao, jsDirecoesDosCriterios, jsOpcoesDoCombo,
+  fcodeDoItemDeMenu, jsMenuDoGrid, itensDoMenuDoGrid, acharNoMenuDoGrid, cliqueDireito,
   tsvDoBloco, jsColarNoGrid,
   criarCanalCdp, TETO_CMD_CDP_MS,
 } from './webgui.mjs';
@@ -2147,3 +2148,93 @@ function cmd0(canal, method) {
   p.catch(() => {});
   return p;
 }
+
+// ---------- o menu de contexto do ALV (item 122) ----------
+// Os brutos abaixo são os MEDIDOS no laboratório ZJBV_ALV47_EDIT e na lista do RSPARAM (s4h
+// 758/250, 06/09/2026) — `POC_webgui_grid_ctxmenu/medicoes/raw/b-anatomia.json`.
+
+const SID_MNU = 'wnd[0]/shellcont/shell/mnu';
+const itemDeCtx = (id, rotulo, fcode, extra = {}) => ({
+  id, desabilitado: null,
+  lsdata: { 1: rotulo, ...extra, 18: { SID: `${SID_MNU}/menu&${fcode}`, Type: 'GuiMenu' }, x: 0 },
+});
+const pomn = (cid, itens, { top = 261 } = {}) => ({
+  id: 'menu_1_1',
+  getBoundingClientRect: () => ({ top }),
+  getAttribute: (a) => (a === 'ct' ? 'POMN'
+    : a === 'lsdata' ? `{"5":{"SID":"${SID_MNU}","Type":"GuiMenu","refCtrlType":"ITSGRIDVIEW"},"6":true,"x":0}`
+    : a === 'lsevents' ? `{"Select":[{},{"1":"action/4","2":true,"15":true,"LinkedControlId":"${cid}"}]}` : null),
+  querySelectorAll: () => itens.map((i) => ({
+    id: i.id,
+    getAttribute: (a) => (a === 'lsdata' ? JSON.stringify(i.lsdata) : a === 'aria-disabled' ? i.desabilitado : null),
+  })),
+});
+const rodarMenu = (js, pomns) => new Function('document', `return ${js}`)({
+  querySelectorAll: (sel) => (sel === '[ct="POMN"]' ? pomns : []),
+});
+
+test('webgui: o FCODE do ALV mora no SID do item do menu de contexto', () => {
+  expect(fcodeDoItemDeMenu(`${SID_MNU}/menu&SORT_DSC`)).toBe('SORT_DSC');
+  // o `&` do nome composto não é separador: `LOCAL&CUT` sai inteiro
+  expect(fcodeDoItemDeMenu(`${SID_MNU}/menu&LOCAL&CUT`)).toBe('LOCAL&CUT');
+  // o menu da BARRA (item 49) não é este: nada de fcode lá
+  expect(fcodeDoItemDeMenu('wnd[0]/mbar/menu[0]/menu[3]')).toBe(null);
+  expect(fcodeDoItemDeMenu(null)).toBe(null);
+});
+
+test('webgui: o menu de contexto se acha pelo LinkedControlId, não pelo id do DOM', () => {
+  const meu = pomn('C102', [itemDeCtx('u2EB53', 'Cortar', 'LOCAL&CUT')]);
+  const outro = pomn('C900', [itemDeCtx('u2EB99', 'Cortar', 'LOCAL&CUT')]);
+  expect(rodarMenu(jsMenuDoGrid('C102'), [outro, meu]).id).toBe('menu_1_1');
+  expect(rodarMenu(jsMenuDoGrid('C102'), [outro, meu]).sid).toBe(SID_MNU);
+  expect(rodarMenu(jsMenuDoGrid('C102'), [outro, meu]).comando).toBe('action/4');
+  // o menu de informação do sistema é POMN e NÃO tem LinkedControlId: fica de fora
+  expect(rodarMenu(jsMenuDoGrid('C102'), [outro])).toBe(null);
+});
+
+test('webgui: FECHADO é o menu que o renderer jogou para y = -100000, não o invisível', () => {
+  const itens = [itemDeCtx('u2EB53', 'Cortar', 'LOCAL&CUT')];
+  expect(rodarMenu(jsMenuDoGrid('C102'), [pomn('C102', itens, { top: 261 })]).aberto).toBe(true);
+  expect(rodarMenu(jsMenuDoGrid('C102'), [pomn('C102', itens, { top: -100000 })]).aberto).toBe(false);
+  // e o nó CONTINUA lá, com os itens: quem testar por existência vê menu aberto para sempre
+  expect(rodarMenu(jsMenuDoGrid('C102'), [pomn('C102', itens, { top: -100000 })]).itens).toHaveLength(1);
+});
+
+test('webgui: os itens do menu de contexto saem com fcode, e sem o nivel do menu em árvore', () => {
+  const m = rodarMenu(jsMenuDoGrid('C102'), [pomn('C102', [
+    itemDeCtx('u2EB53', 'Cortar', 'LOCAL&CUT'),
+    itemDeCtx('u2EB57', 'Largura otimizada', 'OPTIMIZE', { 4: true }),
+    { ...itemDeCtx('u2EB5A', 'Continuar procurando', 'FIND_MORE', { 5: false }), desabilitado: 'true' },
+  ])]);
+  const itens = itensDoMenuDoGrid(m);
+  expect(itens[0]).toEqual({ id: 'u2EB53', sid: `${SID_MNU}/menu&LOCAL&CUT`, rotulo: 'Cortar',
+    atalho: null, submenu: false, inicioDeGrupo: false, habilitado: true, fcode: 'LOCAL&CUT' });
+  expect(itens[1].inicioDeGrupo).toBe(true);            // o lsdata[4] é o separador de grupo
+  expect(itens[2].habilitado).toBe(false);              // o cinza vem do lsdata[5], como na barra
+  // o `nivel` do menu em árvore não faz sentido aqui: o id (`u2EB53`) não é o caminho
+  expect(itens.every((i) => !('nivel' in i))).toBe(true);
+  expect(itensDoMenuDoGrid(null)).toEqual([]);
+});
+
+test('webgui: o item se pede pelo FCODE (exato) ou pelo rótulo (sem acento nem caixa)', () => {
+  const itens = itensDoMenuDoGrid(rodarMenu(jsMenuDoGrid('C102'), [pomn('C102', [
+    itemDeCtx('u1', 'Ordenar ord.crescente', 'SORT_ASC'),
+    itemDeCtx('u2', 'Ordenar ordem decrescente', 'SORT_DSC'),
+    itemDeCtx('u3', 'Planilha eletrônica...', 'XXL'),
+  ])]));
+  expect(acharNoMenuDoGrid(itens, 'SORT_DSC').id).toBe('u2');
+  expect(acharNoMenuDoGrid(itens, 'Planilha eletronica...').id).toBe('u3');   // sem o acento
+  expect(acharNoMenuDoGrid(itens, 'ordenar ordem').id).toBe('u2');            // prefixo
+  expect(acharNoMenuDoGrid(itens, 'MB_FILTER')).toBe(null);                   // o fcode da BARRA não é o daqui
+  expect(acharNoMenuDoGrid([], 'SORT_ASC')).toBe(null);
+});
+
+test('webgui: o clique DIREITO é press+release com button right e buttons 2', async () => {
+  const s = sessaoQueGrava();
+  await cliqueDireito(s, { x: 176, y: 252 });
+  expect(s.emitidos.map((e) => e.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
+  expect(s.emitidos.filter((e) => e.button).every((e) => e.button === 'right')).toBe(true);
+  expect(s.emitidos[1].buttons).toBe(2);        // o renderer ignora press sem `buttons` (§ clique)
+  expect(s.emitidos[2].buttons).toBe(0);
+  expect(s.emitidos.every((e) => e.x === 176 && e.y === 252)).toBe(true);
+});
