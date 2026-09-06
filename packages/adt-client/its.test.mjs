@@ -10,7 +10,7 @@ import {
   decodificarEntidades, cabecalhoDoShell, paramDe, passosDoMultipart, sidsDaResposta, lerResposta,
   sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla, janelaAtiva, janelaDoSid, ativa,
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, popupDaSessao, popupsDaTela, telaDoDelta, lerTela, parametrosDaTela,
-  batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
+  batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa, botaoDeOrdenacao, batchOrdenar, indiceDaColuna,
   itsdocDoDelta, pedidoDoItsdoc, atenderItsdoc, MULTIPART_IMPORT, tetoDoImport, OK_ITSDOC, FORMATOS, exportAsDoPopup,
   verboDoItsdoc, filtroDoItsdoc, corpoDaListaDeArquivos, corpoDoClipboard, TEMP_NFS,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
@@ -1439,4 +1439,42 @@ test('its: atenderItsdoc estourando o voltasMax ACUSA o truncamento, não devolv
   } finally {
     globalThis.fetch = fetchOriginal;
   }
+});
+
+// ---------- ORDENAR o ALV (item 115) ----------
+// Fixtures COPIADOS do delta da lista do RSPARAM no s4h 758/250, 06/09/2026
+// (POC_webgui_btn40/medicoes/raw/a-00-lista.txt): os dois botões de sort da barra, com o ícone que
+// os identifica (`s_b_srtu`/`s_b_srtd`) e o rótulo TRADUZIDO que não serve de âncora.
+const BARRA_SORT = `<div draggable="false" id="M0:48::btn[28]" ct="B" lsdata='{"0":"Ordenar em ordem crescente","4":"Ordenar em ordem crescente","9":true,"11":"/sap/public/icmandir/its/ls/theming/Base/baseLib/sap_fiori_3/svg/libs/SAPGUI-icons.svg#s_b_srtu","17":"O","18":"CTRL_4","21":true,"25":"TOGGLE","27":{"SID":"wnd[0]/tbar[1]/btn[28]","Type":"GuiButton","SubType":"toolbar"},"30":"ICON"}' lsevents='{"Press":[{},{"1":"action/3","2":true,"3":true}]}' role="button" title="Ordenar&#x20;em&#x20;ordem&#x20;crescente" class="lsButton"></div>
+<div draggable="false" id="M0:48::btn[40]" ct="B" lsdata='{"0":"Ordenar em ordem decrescente","4":"Ordenar em ordem decrescente","9":true,"11":"/sap/public/icmandir/its/ls/theming/Base/baseLib/sap_fiori_3/svg/libs/SAPGUI-icons.svg#s_b_srtd","17":"O","18":"CTRL_SHIFT_F4","21":true,"25":"TOGGLE","27":{"SID":"wnd[0]/tbar[1]/btn[40]","Type":"GuiButton","SubType":"toolbar"},"30":"ICON"}' lsevents='{"Press":[{},{"1":"action/3","2":true,"3":true}]}' role="button" title="Ordenar&#x20;em&#x20;ordem&#x20;decrescente" class="lsButton"></div>
+<div draggable="false" id="M0:48::btn[43]" ct="B" lsdata='{"0":"Planilha eletrônica...","11":"/sap/public/icmandir/its/ls/theming/Base/baseLib/sap_fiori_3/svg/libs/SAPGUI-icons.svg#s_lisvie","18":"CTRL_SHIFT_F7","27":{"SID":"wnd[0]/tbar[1]/btn[43]","Type":"GuiButton","SubType":"toolbar"},"30":"ICON"}' role="button" title="Planilha&#x20;eletrônica..." class="lsButton"></div>`;
+
+test('its: botaoDeOrdenacao acha o botão pelo ÍCONE, não pelo rótulo traduzido', () => {
+  const brutos = controlesDoHtml(BARRA_SORT);
+  expect(botaoDeOrdenacao(brutos, 'asc')).toEqual({
+    sid: 'wnd[0]/tbar[1]/btn[28]', rotulo: 'Ordenar em ordem crescente', tecla: 'CTRL_4', icone: 's_b_srtu' });
+  expect(botaoDeOrdenacao(brutos, 'desc')).toEqual({
+    sid: 'wnd[0]/tbar[1]/btn[40]', rotulo: 'Ordenar em ordem decrescente', tecla: 'CTRL_SHIFT_F4', icone: 's_b_srtd' });
+  // barra sem sort nenhum (só o botão de planilha) — informação, não erro
+  expect(botaoDeOrdenacao(controlesDoHtml(BARRA_SORT.split('\n')[2]), 'asc')).toBe(null);
+  expect(botaoDeOrdenacao([], 'asc')).toBe(null);
+  expect(() => botaoDeOrdenacao(brutos, 'crescente')).toThrow(/'asc' ou 'desc'/);
+});
+
+test('its: batchOrdenar põe a MARCA da coluna e o botão no mesmo POST', () => {
+  expect(batchOrdenar('wnd[0]/usr/cntlGRID1/shellcont/shell', [1], 'wnd[0]/tbar[1]/btn[40]')).toEqual([
+    { post: 'action/46/wnd[0]/usr/cntlGRID1/shellcont/shell', content: 'columns=;1;' },
+    { post: 'action/3/wnd[0]/tbar[1]/btn[40]' },
+  ]);
+  // vários critérios: a ordem da string não importa (é a das colunas na tela), mas o formato, sim
+  expect(batchOrdenar('G', [2, 5], 'B')[0].content).toBe('columns=;2;5;');
+});
+
+test('its: indiceDaColuna aceita número 1-based e ColumnID, e recusa a coluna 0', () => {
+  const cols = ['NAME', 'USER_VALUE', 'DEFAULT_VALUE', 'DEFAULT_USUBS_VALUE', 'DESCR'];
+  expect(indiceDaColuna(cols, 1)).toBe(1);
+  expect(indiceDaColuna(cols, 'DESCR')).toBe(5);
+  expect(indiceDaColuna(cols, 'descr')).toBe(5);
+  expect(() => indiceDaColuna(cols, 0)).toThrow(/1-based.*caixa de seleção/s);
+  expect(() => indiceDaColuna(cols, 'BANANA')).toThrow(/não tem a coluna "BANANA".*NAME/s);
 });

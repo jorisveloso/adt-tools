@@ -1239,6 +1239,17 @@ export const botoes = (sessao, janela = null) => sessao.sids
   .filter((x) => x.tipo === 'GuiButton' && x.okcode && (!janela || x.janela === janelaDoSid(janela)))
   .map((b) => ({ ...b, nome: OKCODES[b.okcode]?.nome ?? null }));
 
+/** O grid da tela que o `alvo` escolhe (índice, `{ id }` ou `{ sid }`; sem alvo, o primeiro). */
+function escolherGrid(sessao, alvo, quem) {
+  const grids = lerTela(sessao)?.grids ?? [];
+  const g = typeof alvo === 'number' ? grids[alvo]
+    : alvo?.sid ? grids.find((x) => x.sid === alvo.sid)
+    : alvo?.id ? grids.find((x) => x.id === alvo.id)
+    : grids[0];
+  if (!g) throw new Error(`its: ${quem} — a tela não tem esse grid (tem ${grids.length}: ${grids.map((x) => x.id).join(', ') || 'nenhum'})`);
+  return g;
+}
+
 /**
  * Lê o ALV da tela — as LINHAS, não só o cabeçalho que o `lsdata` já dava. É o par WebGUI do
  * `lerGrid` do GUI Scripting, e não varre célula na tela: pede o fragmento de linhas ao servidor
@@ -1264,12 +1275,7 @@ export const botoes = (sessao, janela = null) => sessao.sids
  * está incompleta, e é informação, não erro.
  */
 export async function lerGrid(sessao, alvo = null, { de = 1, ate = null, lote = 500, tetoMs = 180000 } = {}) {
-  const grids = lerTela(sessao)?.grids ?? [];
-  const g = typeof alvo === 'number' ? grids[alvo]
-    : alvo?.sid ? grids.find((x) => x.sid === alvo.sid)
-    : alvo?.id ? grids.find((x) => x.id === alvo.id)
-    : grids[0];
-  if (!g) throw new Error(`its: lerGrid — a tela não tem esse grid (tem ${grids.length}: ${grids.map((x) => x.id).join(', ') || 'nenhum'})`);
+  const g = escolherGrid(sessao, alvo, 'lerGrid');
   const total = Number(g.linhas ?? 0);
   const fim = Math.min(Number(ate ?? total) || 0, total);
   const ini = Math.max(1, Number(de) || 1);
@@ -1289,6 +1295,125 @@ export async function lerGrid(sessao, alvo = null, { de = 1, ate = null, lote = 
   detalhe(`its: lerGrid ${g.id} — ${dentro.size} linha(s) de ${total} em ${pedidos} pedido(s), ${bytes} B`);
   return { id: g.id, sid: g.sid, colunas: g.colunas ?? [], total, de: ini, ate: fim,
     linhas: linhasDoGrid(dentro, g.colunas ?? []), pedidos, bytes, ms: Date.now() - t0, truncado };
+}
+
+// ---------- ORDENAR o ALV (item 115) ----------
+//
+// Medido no s4h 758/250 em 06/09/2026 (`work/POC_webgui_btn40/medicoes/item115-btn40.md`), na lista
+// do `RSPARAM` (`SA38` → `btn[8]`, 1617 × 5, `SAPLSLVC_FULLSCREEN`), por HTTP puro.
+//
+// Ordenar é **um POST só, com DUAS metades**: a marca da coluna (`action/46 columns=;<n>;`, o irmão
+// do `action/47 rows=;n;` da seleção de linha) e o botão de sort da barra (`action/3`). A marca
+// morre no round-trip — as duas metades TÊM de ir no mesmo batch, e é por isso que `ordenarGrid`
+// marca a coluna ele mesmo em vez de pedir que se marque antes.
+//
+// ⚠ **Sem marca válida o botão não ordena: abre o diálogo "Ordenação"** (`SAPLSALV_CUL_…`) e a
+// sessão fica atrás de uma modal. Medido que caem aí: nenhum `action/46`, `columns=;0;` (a coluna 0
+// é a caixa de seleção, não é dado) e uma coluna que não existe (`;9;` num grid de 5) — o servidor
+// não recusa a marca inválida, ele a ignora. Neste canal a modal **é** `wnd[1]` de verdade
+// (`popupDaSessao` a vê) — ao contrário do canal navegador, onde o diálogo não é `wnd[1]` e o
+// `lerTela` do webgui.mjs fica cego (item 77).
+//
+// ⚠ **A ordem dos critérios é a das COLUNAS na tela, não a da string.** Medido: `;2;5;` e `;5;2;`
+// deram o MESMO resultado — coluna 2 primária, 5 desempatando dentro do grupo empatado; e `;2;1;`
+// ordenou por NAME (coluna 1) puro, porque a 1 vem antes. Empate sem desempate é ESTÁVEL: mantém a
+// ordem em que a lista veio.
+//
+// ⚠ **Quem reordena é o SERVIDOR, não o fragmento.** Contra-prova: com a tela em NAME desc, o XLSX
+// do `exportarPlanilha` saiu com `ztta/short_area` na primeira linha e `_CPARG0` na última — a mesma
+// ordem da tela. Um `_linha` guardado antes de ordenar aponta para outro dado depois.
+//
+// ⚠ **A tela NÃO declara o que está ordenado.** Os cabeçalhos (`ct="CP"`) vieram iguais antes e
+// depois do sort, e nenhum ícone de ordenação entra no delta. Quem quiser saber a ordem corrente lê
+// os DADOS — não há estado para ler.
+
+/** Os ícones que marcam os botões de ordenação da barra do ALV — a âncora que NÃO é traduzida. */
+const ICONE_SORT = { asc: 's_b_srtu', desc: 's_b_srtd' };
+
+/**
+ * PURO: o botão de ORDENAÇÃO da barra, achado pelo ÍCONE (`lsdata[11]`), não pelo rótulo — que vem
+ * traduzido ("Ordenar em ordem crescente" no PT, e outra coisa em cada idioma). Recebe os controles
+ * de um delta (`controlesDoDelta`) e devolve `{ sid, rotulo, tecla, icone }`, ou `null`.
+ *
+ * Medido na barra da lista do RSPARAM: `btn[28]` = `s_b_srtu` (`CTRL_4`) e `btn[40]` = `s_b_srtd`
+ * (`CTRL_SHIFT_F4`). Os NÚMEROS são do GUI status daquela tela e não valem como endereço fixo; o
+ * ícone, sim. Um ALV dentro de container põe o mesmo botão em `<sid do grid>/tbar/btn&SORT_ASC` —
+ * o SID muda, o ícone não.
+ */
+export function botaoDeOrdenacao(brutos = [], ordem = 'asc') {
+  const icone = ICONE_SORT[String(ordem).toLowerCase()];
+  if (!icone) throw new Error(`its: botaoDeOrdenacao — ordem "${ordem}" não existe (é 'asc' ou 'desc')`);
+  for (const c of brutos) {
+    const sid = c?.lsdata?.['27']?.SID;
+    if (!sid || c.ct !== 'B' || c.visivel === false) continue;
+    if (!String(c.lsdata?.['11'] ?? '').endsWith(`#${icone}`)) continue;
+    return { sid, rotulo: c.title ?? c.lsdata?.['0'] ?? null, tecla: c.lsdata?.['18'] ?? null, icone };
+  }
+  return null;
+}
+
+/** PURO: o batch que ordena — a marca da coluna e o botão, no MESMO POST (separá-los não ordena). */
+export const batchOrdenar = (sidGrid, colunas, sidBotao) => [
+  { post: `action/46/${sidGrid}`, content: `columns=;${colunas.join(';')};` },
+  { post: `action/3/${sidBotao}` },
+];
+
+/** PURO: o índice 1-based de uma coluna do grid, pelo número ou pelo `ColumnID` (`'NAME'`). */
+export function indiceDaColuna(colunas = [], coluna) {
+  if (typeof coluna === 'number') {
+    if (!Number.isInteger(coluna) || coluna < 1) throw new Error(`its: coluna ${coluna} inválida — o índice é 1-based (a coluna 0 é a caixa de seleção da linha, e marcá-la abre o diálogo "Ordenação")`);
+    return coluna;
+  }
+  const nome = String(coluna ?? '').toUpperCase();
+  const i = colunas.findIndex((c) => String(c).toUpperCase() === nome);
+  if (i < 0) throw new Error(`its: o grid não tem a coluna "${coluna}" (tem ${colunas.length}: ${colunas.join(', ') || 'nenhuma'})`);
+  return i + 1;
+}
+
+/**
+ * ORDENA o ALV da tela por uma ou mais colunas — a marca (`action/46`) e o botão de sort da barra
+ * num POST só. É o par HTTP puro do `ordenarGrid` do webgui.mjs, e ao contrário dele **não devolve
+ * as linhas**: neste canal ler o bloco é outra viagem, e cara (1617 linhas = 12 MB). Peça o
+ * `lerGrid` depois, se quiser o dado.
+ *
+ * ```js
+ * await ordenarGrid(s, null, 'NAME');                       // crescente
+ * await ordenarGrid(s, null, 'NAME', { ordem: 'desc' });    // decrescente
+ * await ordenarGrid(s, null, ['USER_VALUE', 'DESCR']);      // dois critérios
+ * ```
+ *
+ * `coluna` é o número 1-based, o `ColumnID`, ou um array deles. Devolve
+ * `{ id, sid, colunas, nomes, ordem, botao, tecla, total, ms }`.
+ *
+ * ⚠ Estoura — e CANCELA o diálogo, para não deixar a sessão presa atrás da modal — quando a marca
+ * não pega e o ALV abre a "Ordenação" em vez de ordenar (§ acima).
+ */
+export async function ordenarGrid(sessao, alvo = null, coluna, { ordem = 'asc', tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const dir = String(ordem).toLowerCase();
+  if (dir !== 'asc' && dir !== 'desc') throw new Error(`its: ordenarGrid — ordem "${ordem}" não existe (é 'asc' ou 'desc')`);
+  const g = escolherGrid(sessao, alvo, 'ordenarGrid');
+  const pedidas = Array.isArray(coluna) ? coluna : [coluna];
+  if (!pedidas.length) throw new Error('its: ordenarGrid — sem coluna nenhuma o ALV abre o diálogo "Ordenação" em vez de ordenar');
+  const indices = pedidas.map((c) => indiceDaColuna(g.colunas ?? [], c));
+  const b = botaoDeOrdenacao(controlesDoDelta(sessao.delta), dir);
+  if (!b) throw new Error(`its: ordenarGrid — esta tela não tem o botão de ordenação ${dir === 'desc' ? 'decrescente' : 'crescente'} (ícone ${ICONE_SORT[dir]}) na barra`);
+  const antes = janelaAtiva(sessao.sids);
+  const r = await postar(sessao, [...batchOrdenar(g.sid, indices, b.sid), ESTADO], { tetoMs });
+  const depois = janelaAtiva(sessao.sids);
+  if (depois !== antes) {
+    const modal = popupDaSessao(sessao);
+    const cancelar = modal?.botoes?.find((x) => /\/tbar\[0\]\/btn\[12\]$/.test(x.sid));
+    if (cancelar) await acionar(sessao, { sid: cancelar.sid }, { tetoMs });
+    throw new Error(`its: ordenarGrid — o ALV abriu "${modal?.titulo ?? depois}" em vez de ordenar: a marca `
+      + `columns=;${indices.join(';')}; não vale neste grid (a coluna 0 e a que não existe caem aqui). `
+      + `${cancelar ? 'O diálogo foi cancelado; a lista continua na ordem anterior.' : 'O diálogo continua aberto.'}`);
+  }
+  if (!r.pegou) throw new Error(`its: ordenarGrid — o POST não pegou: ${r.motivo}`);
+  const total = Number(escolherGrid(sessao, alvo, 'ordenarGrid').linhas ?? 0);
+  const nomes = indices.map((i) => (g.colunas ?? [])[i - 1] ?? null);
+  detalhe(`its: ordenarGrid ${g.id} — coluna(s) ${indices.join(', ')} (${nomes.join(', ')}) em ${dir}, ${total} linha(s)`);
+  return { id: g.id, sid: g.sid, colunas: indices, nomes, ordem: dir, botao: b.sid, tecla: b.tecla, total, ms: Date.now() - t0 };
 }
 
 // ---------- o ITSDoc: a via de ARQUIVO, nas duas direções (exportar e importar) ----------

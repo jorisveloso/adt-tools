@@ -3036,6 +3036,52 @@ ordenação de uma vez só pelo diálogo "Ordenação" — outro gesto, não cob
 - **O menu de contexto da célula** (`CellContextMenu`) — outra porta para os mesmos fcodes.
 - **`ColumnResize`** e o arrasto de coluna.
 
+### O mesmo sort por HTTP PURO — um POST, e o botão se acha pelo ÍCONE (item 115)
+
+Sem navegador não há clique no `<th>`: a marca da coluna **se posta**, junto do botão, no mesmo
+batch. É o gesto inteiro:
+
+```js
+import { abrir, acionar, ordenarGrid, lerGrid, fechar } from './its.mjs';
+const s = await abrir(cfg, { transacao: 'SA38', parametros: { 'RS38M-PROGRAMM': 'RSPARAM' }, okcode: 'STRT' });
+await acionar(s, 'btn[8]');
+await ordenarGrid(s, null, 'NAME', { ordem: 'desc' });   // 1 POST
+await ordenarGrid(s, null, ['USER_VALUE', 'DESCR']);     // dois critérios
+const g = await lerGrid(s);                              // o dado, já na ordem nova
+```
+
+```
+action/46/wnd[0]/usr/cntlGRID1/shellcont/shell   columns=;1;
+action/3/wnd[0]/tbar[1]/btn[40]
+get state/ur
+```
+
+As quatro ações que o renderer manda a reboque do clique (`action/50`, `53`, `246`, `346`) são
+**dispensáveis**: medido que o par `46` + `3` basta.
+
+**O botão se endereça pelo ícone `lsdata[11]`** (`s_b_srtu` crescente / `s_b_srtd` decrescente) — é
+o que `botaoDeOrdenacao` faz. O rótulo é traduzido ("Ordenar em ordem decrescente") e o `btn[n]` é do
+GUI status daquela tela: na lista do RSPARAM o sort desc é o `btn[40]`, vizinho do `btn[28]`
+crescente — **não** um botão de exportação, ao contrário do que o item 73 supôs.
+
+⚠ **Marca inválida não é recusada, é ignorada — e aí o botão abre o diálogo "Ordenação".** Caem aí:
+nenhum `action/46`, `columns=;0;` (a coluna 0 é a caixa de seleção) e coluna fora do grid. Não vem
+`-107` nem mensagem; o sinal é a modal. **Neste canal ela É `wnd[1]` de verdade** (o `popupDaSessao`
+a vê, com título e botões) — ao contrário do navegador, onde o `lerTela` fica cego. O `ordenarGrid`
+detecta, **cancela o diálogo** e estoura: a sessão continua utilizável.
+
+⚠ **`columns=;a;b;` é um CONJUNTO: a precedência é a das colunas na TELA, não a da string.** Medido:
+`;2;5;` e `;5;2;` deram o mesmo resultado (2 primária, 5 desempatando), e `;2;1;` ordenou por `NAME`
+puro. Empate sem desempate é **estável**.
+
+⚠ **Quem reordena é o servidor.** Com a tela em `NAME` desc, o XLSX do `exportarPlanilha` saiu na
+mesma ordem (`ztta/short_area` na primeira linha, `_CPARG0` na última).
+
+⚠ **Aqui a tela não declara a ordenação.** Os cabeçalhos (`ct="CP"`) vieram iguais antes e depois, e
+nenhum ícone de sort entra no delta — não há o `head<ordem>o<filtro>.png` do navegador. Quem quer
+saber a ordem corrente lê os dados. E **o filtro (`btn[29]`, `s_b_filt`) por esta via não está
+medido**.
+
 ## Escrever numa célula do ALV — e provar que gravou (item 47)
 
 **Medido no s4h 758/250 em 2026-09-05** (fila `adt-client`, item 47; evidência em
@@ -3448,8 +3494,10 @@ popup, chamam o MESMO ITSDoc, e os 1617 parâmetros batem **1617 de 1617** — m
 | o que é | a **LISTA** (o layout de impressão espalhado em células, texto com *padding*) | o **GRID** (uma coluna por coluna do ALV) |
 
 Para planilha que alguém vai abrir e usar: `exportarPlanilha`. O `btn[43]` é *Planilha
-eletrônica...*, `CTRL_SHIFT_F7`, e vive na mesma barra do `btn[45]` (a faixa publica `btn[40]`,
-`btn[43]` e `btn[45]` — o `btn[40]` não foi seguido).
+eletrônica...*, `CTRL_SHIFT_F7`, e vive na mesma barra do `btn[45]` (*File local...*,
+`CTRL_SHIFT_F9`). ⚠ São **dois**: o `btn[40]`, que este parágrafo já contou como terceiro da faixa,
+é *Ordenar em ordem decrescente* (item 115) — a numeração `btn[n]` não segue a posição na barra, e
+agrupar por `btn[4x]` é inventar uma faixa que não existe.
 
 ### ⚠ O `CopyToClipboardRequest` do grid NÃO tem via HTTP
 
