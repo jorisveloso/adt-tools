@@ -927,6 +927,21 @@ const urlNoLog = (url) => url.replace(/\/sap\([^)]*\)/, '/sap(…)');
  * Devolve a sessão `{ via, cfg, jar, action, moin, sids, ultimo, titulo, fila, aberta, desfazer, tempos }`.
  * Quem abre FECHA: `fechar(sessao)` — que roda a pilha `desfazer` ANTES do `/nex`.
  */
+/** As causas da sonda em que o CANAL é mesmo o problema — as que fazem procurar o nó na SICF. */
+const CAUSAS_DE_CANAL = new Set(['sem-no', 'ssl', 'proibido', 'erro-servidor', 'sem-icm', 'certificado']);
+
+/**
+ * PURO: como ABRIR a mensagem de recusa (item 88). Antes toda recusa saía como "canal WebGUI
+ * indisponível" — inclusive a que só diz que **a sessão não nasceu**, e aí a frase manda procurar
+ * o nó na SICF, que é o lugar errado (o nó respondeu a tela). O motivo vem do `interpretarSonda`;
+ * daqui sai só a primeira linha, e ela tem de apontar para onde o problema está.
+ */
+export const prefixoDaRecusa = (causa) =>
+  CAUSAS_DE_CANAL.has(causa) ? 'canal WebGUI indisponível'
+    : causa === 'sem-sessao-nova' ? 'o nó do WebGUI ATENDEU, mas a sessão não nasceu'
+    : causa === 'credencial' ? 'o WebGUI recusou a credencial'
+    : 'resposta não prevista do WebGUI';
+
 export async function abrir(cfg, { transacao = null, parametros = {}, okcode = null, boot = true, tetoMs = 30000 } = {}) {
   const url = urlWebgui(cfg, { transacao, parametros, okcode });
   const cabecalho = autorizacao(cfg);
@@ -946,7 +961,7 @@ export async function abrir(cfg, { transacao = null, parametros = {}, okcode = n
   const sonda = interpretarSonda({ status: res.status, statusText: res.statusText, cookies, corpo: html });
   if (!sonda.ok) {
     if (cookies.length) await encerrarSessao({ cfg, cookie: cookies.map((c) => c.split(';')[0]).join('; ') }).catch(() => {});
-    throw new Error(`its: canal WebGUI indisponível — ${sonda.motivo}`);
+    throw new Error(`its: ${prefixoDaRecusa(sonda.causa)} — ${sonda.motivo}`);
   }
   const jar = new Map();
   guardarCookies(jar, cookies);

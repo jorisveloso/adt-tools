@@ -201,6 +201,18 @@ export const CODIGO_SESSAO_MORTA = 'SESSAO_NASCEU_MORTA';
 export const ehSessaoMorta = (e) => e?.code === CODIGO_SESSAO_MORTA;
 
 /**
+ * O texto ACIONÁVEL do teto de sessões, num lugar só (item 88).
+ *
+ * Mora aqui e não dentro do `erroSessaoMorta` porque o MESMO estado se enxerga por outra porta: a
+ * sonda do WebGUI (`interpretarSonda`, webgui.mjs) vê 200 sem `Set-Cookie` de sessão, e quem lê
+ * aquela mensagem precisa da mesma saída — não de "procure o nó na SICF".
+ */
+export const SAIDA_SESSAO_MORTA =
+  'NÃO adianta repetir: cada tentativa abre mais uma sessão, e no estado doente o próprio logoff dá 400 e não ' +
+  'remove nenhuma. Saídas: esperar o `http/security_session_timeout` (1800 s no s4h) esvaziar sozinho, ou ' +
+  'derrubar as sessões do usuário à mão (SM04 / TH_USER_LIST).';
+
+/**
  * O erro nomeado. A mensagem diz o que NÃO adianta fazer: insistir soma sessão, e o logoff não
  * devolve nenhuma. O que resta é esperar o `http/security_session_timeout` (1800 s no s4h) ou
  * derrubar as sessões do usuário à mão (SM04 / `TH_USER_LIST`).
@@ -211,10 +223,7 @@ export function erroSessaoMorta(session) {
     'o cookie veio SEM SAP_SESSIONID — o servidor está no teto de sessões HTTP deste usuário (~150, medido no s4h 758).',
     'Toda requisição com este cookie responde 400 "Service nicht erreichbar", em QUALQUER path — a mensagem fala de ' +
     'SICF e manda procurar no lugar errado.',
-    'NÃO adianta repetir: cada tentativa abre mais uma sessão, e no estado doente o próprio logoff dá 400 e não ' +
-    'remove nenhuma.',
-    'Saídas: esperar o `http/security_session_timeout` (1800 s no s4h) esvaziar sozinho, ou derrubar as sessões do ' +
-    'usuário à mão (SM04 / TH_USER_LIST).',
+    SAIDA_SESSAO_MORTA,
   ].join('\n'));
   e.name = 'SessaoNasceuMorta';
   e.code = CODIGO_SESSAO_MORTA;

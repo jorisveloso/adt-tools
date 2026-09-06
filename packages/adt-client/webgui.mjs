@@ -36,7 +36,7 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { passo, detalhe, aviso } from './log.mjs';
-import { encerrarSessao } from './sap-connection.mjs';
+import { encerrarSessao, SAIDA_SESSAO_MORTA } from './sap-connection.mjs';
 
 /** Onde o Chrome costuma estar no Windows. `{ navegador }` sobrepõe; `JBV_CHROME` também. */
 export const CAMINHOS_CHROME = [
@@ -278,7 +278,35 @@ export function autorizacao(cfg) {
  * `/sap/bc/ui2/start_up`), 401 `Logon failed` (nó que DESAFIA em vez de mostrar formulário, ex.
  * `/sap/bc/srt/lsc`) e 500 `Application Server Error`. Cada um vira uma causa própria: o que a
  * sonda não pode fazer é empilhar tudo em "não deu".
+ *
+ * ⚠️ **200 SEM `SAP_SESSIONID` e SEM logon NÃO é sinônimo de teto de sessões (item 88).** O item 52
+ * deixou aberto se dava para nomear ali o `SessaoNasceuMorta`; a árvore de causas foi medida no s4h
+ * 758/250 em 06/09/2026 (`POC_webgui_sonda_causa`) e a resposta é **não**, porque existe um caso
+ * SAUDÁVEL com a mesma assinatura HTTP: um GET feito **dentro de uma sessão que já existe** (cookie
+ * na REQUISIÇÃO) devolve os mesmos 36 487 bytes de tela, byte a byte, e o `Set-Cookie` traz só
+ * `saplbS4H` — o `SAP_SESSIONID` sai na PRIMEIRA resposta e não se repete.
+ *
+ * | condição (mesmo nó, uma variável por vez) | resposta                                  | causa    |
+ * |------------------------------------------|-------------------------------------------|----------|
+ * | credencial boa, 1º GET                    | 200, 36 487 b, `SAP_SESSIONID_S4H_250`    | `ok`     |
+ * | credencial boa, 2º GET com o cookie       | 200, 36 487 b, **sem** `SAP_SESSIONID`    | `sem-sessao-nova` |
+ * | usuário inexistente / senha errada / sem `Authorization` / mandante 999 | 200, 23 246 b, `<title>Logon</title>` | `credencial` |
+ * | idioma inválido (`ZZ`), transação inexistente, sem `sap-client` | 200 + `SAP_SESSIONID` | `ok`  |
+ *
+ * O que SEPARA a tela do formulário é o shell (`webguiform0` + `action="…/sap(…)"`, presente nos
+ * dois 200 de tela e ausente na página de logon) — daí `sem-sessao-nova` ser causa própria, com as
+ * DUAS leituras no motivo e o texto acionável do `SessaoNasceuMorta` para quem não mandou cookie.
+ * ⚠ Segue **aberto** o que este nó responde SEM cookie com o servidor no teto: reproduzir o estado
+ * doente custa ~30 min de laboratório inutilizável (item 28 M8), e não foi feito. O que está medido
+ * do teto é o GET do webgui **com** o cookie envenenado: 400 (item 28, M5).
  */
+/**
+ * PURO: o que prova que o corpo é a TELA do WebGUI e não a página de logon nem um erro do ICF.
+ * Medido no s4h 758/250 em 06/09/2026: `webguiform0` está nos dois 200 de tela (com e sem
+ * `Set-Cookie` de sessão) e NÃO está nos 23 246 bytes da página de logon.
+ */
+export const MARCADOR_DO_SHELL = /webguiform0/i;
+
 export function interpretarSonda({ status = null, statusText = '', cookies = [], corpo = '', erro = null } = {}) {
   if (erro) {
     // ⚠ certificado recusado NÃO é "sem resposta do ICM" — o ICM está de pé, quem recusou foi o
@@ -314,9 +342,15 @@ export function interpretarSonda({ status = null, statusText = '', cookies = [],
   }
   if (status === 200) {
     const logon = nomes.some((n) => /^sap-login-XSRF/i.test(n)) || /<title>\s*Logon\s*<\/title>/i.test(corpo);
-    return logon
-      ? { ...base, ok: false, causa: 'credencial', motivo: '200, mas a resposta é a PÁGINA DE LOGON — o ICF não desafia, ele devolve formulário' }
-      : { ...base, ok: false, causa: 'inesperado', motivo: '200 sem cookie de sessão e sem página de logon' };
+    if (logon) return { ...base, ok: false, causa: 'credencial', motivo: '200, mas a resposta é a PÁGINA DE LOGON — o ICF não desafia, ele devolve formulário' };
+    if (MARCADOR_DO_SHELL.test(corpo)) {
+      return { ...base, ok: false, causa: 'sem-sessao-nova',
+        motivo: '200 com a TELA do WebGUI (o shell `webguiform0`), mas SEM Set-Cookie de sessão — o nó ATENDEU, ' +
+          'o que faltou foi sessão NOVA. Duas causas, e o HTTP não separa: (1) este GET saiu DENTRO de uma sessão ' +
+          'que já existe — o `Set-Cookie: SAP_SESSIONID` só vem na PRIMEIRA resposta; (2) o servidor não emitiu ' +
+          `sessão nenhuma — o mesmo estado do erro SessaoNasceuMorta. Se este GET não levou cookie, é (2): ${SAIDA_SESSAO_MORTA}` };
+    }
+    return { ...base, ok: false, causa: 'inesperado', motivo: '200 sem cookie de sessão, sem página de logon e sem o shell do WebGUI' };
   }
   if (status === 401) return { ...base, ok: false, causa: 'credencial', motivo: `${rotulo} — o nó desafia por Basic e a credencial não passou` };
   // 404 tem MAIS de uma causa e o HTTP não separa nenhuma: nó ausente, nó existente e ATIVO mas sem

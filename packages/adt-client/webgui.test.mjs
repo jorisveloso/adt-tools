@@ -397,6 +397,25 @@ test('webgui: a sonda não acredita no status — quem prova o canal é o cookie
   expect(errada.motivo).toMatch(/PÁGINA DE LOGON/);
 });
 
+test('webgui: 200 com a TELA e sem Set-Cookie de sessão é causa PRÓPRIA — não é "canal indisponível"', () => {
+  // medido no s4h 758/250 (06/09/2026, POC_webgui_sonda_causa): o 2º GET, feito DENTRO da sessão
+  // já aberta, devolve os MESMOS 36 487 bytes de tela e o Set-Cookie sem SAP_SESSIONID. Canal
+  // saudável, assinatura HTTP idêntica à do teto de sessões — por isso a causa não pode dizer "teto".
+  const r = interpretarSonda({
+    status: 200, statusText: 'OK', corpo: `<form name="webguiform0" action="/sap(cz1TSUQ)/bc/gui/">${'x'.repeat(36000)}`,
+    cookies: ['saplbS4H=3532650; path=/', 'saplbS4H-options=; path=/'],
+  });
+  expect(r).toMatchObject({ ok: false, causa: 'sem-sessao-nova' });
+  expect(r.motivo).toMatch(/DENTRO de uma sessão/);          // a leitura saudável
+  expect(r.motivo).toMatch(/SessaoNasceuMorta/);             // a leitura doente
+  expect(r.motivo).toMatch(/security_session_timeout/);      // e o MESMO texto acionável do erro nomeado
+  expect(r.motivo).toMatch(/SM04 \/ TH_USER_LIST/);
+
+  // sem o shell e sem logon continua sendo `inesperado` — o que a sonda não sabe ler, ela não batiza
+  expect(interpretarSonda({ status: 200, statusText: 'OK', corpo: '{"algo":1}', cookies: [] }))
+    .toMatchObject({ ok: false, causa: 'inesperado' });
+});
+
 test('webgui: o 404 não promete estado — ausente, sem handler e desativado saem iguais', () => {
   // medido no s4h 758/250 em 04/09/2026: /sap/bc/gui/sap/its/test está ATIVO (cl_icf_tree=>is_service_active
   // devolve X) e responde 404 porque não tem handler na ICFHANDLER — logo a sonda não pode dizer "desativado".

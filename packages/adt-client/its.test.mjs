@@ -16,7 +16,7 @@ import {
   indiceDoNo, arvoreDosBrutos, arvore, expansaoDoHtml, expandirNo, colapsarNo, batchExpandirNo, batchColapsarNo, batchAcionarNo, acharNoDaArvore,
   sidDoControle, controleDoSid, eventosDoControle, batchDoEvento, eventosDoAlvo,
   mensagemDosSids, carimboDosSids, carimboDoDelta, mudouDaTela,
-  criarPilhaDeDesfazer, transacional, fechar,
+  criarPilhaDeDesfazer, transacional, fechar, prefixoDaRecusa,
 } from './its.mjs';
 
 const SHELL = `<html><head><script>var moin = "FF671392BF705DEF";</script></head><body>
@@ -1099,4 +1099,16 @@ test('its: pedidoDoItsdoc — o Execute NÃO posta nada: o renderer só devolve 
   expect(doc).toMatchObject({ ITSDocMethod: 'Execute', Operation: 'OPEN', CommandLine: 'Z:\\ITEM73.xlsx' });
   // `caminho: null` = não POSTe nada; é o que o `atenderItsdoc` lê para pular direto ao OK_ITSDOC
   expect(pedidoDoItsdoc(doc).caminho).toBe(null);
+});
+
+test('its: a primeira linha da recusa aponta para onde o problema ESTÁ (item 88)', () => {
+  // "canal WebGUI indisponível" manda procurar o nó na SICF — certo para as causas de canal…
+  for (const c of ['sem-no', 'ssl', 'proibido', 'erro-servidor', 'sem-icm', 'certificado']) {
+    expect(prefixoDaRecusa(c)).toBe('canal WebGUI indisponível');
+  }
+  // …e ERRADO quando o nó respondeu a tela e o que faltou foi a sessão nascer.
+  expect(prefixoDaRecusa('sem-sessao-nova')).toMatch(/ATENDEU, mas a sessão não nasceu/);
+  expect(prefixoDaRecusa('sem-sessao-nova')).not.toMatch(/indisponível/);
+  expect(prefixoDaRecusa('credencial')).toMatch(/recusou a credencial/);
+  expect(prefixoDaRecusa('inesperado')).toMatch(/não prevista/);
 });

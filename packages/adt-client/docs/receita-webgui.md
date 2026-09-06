@@ -77,6 +77,32 @@ Ainda medidos no mesmo varrimento (209 paths ICF do s4h), cada um com causa pró
 `Logon failed` (nó que DESAFIA em vez de mostrar formulário, ex. `/sap/bc/srt/lsc`), 500
 `Application Server Error` (ex. os `/sap/bc/webdynpro/sap/*`).
 
+### ⚠ 200 sem `SAP_SESSIONID` NÃO quer dizer "teto de sessões" — quer dizer "sem sessão NOVA"
+
+Medido no s4h 758/250 em 06/09/2026 (item 88, `POC_webgui_sonda_causa`). A tentação era batizar o
+antigo `causa: 'inesperado'` de teto de sessões e mandar o texto do `SessaoNasceuMorta`. Não dá: um
+**segundo GET dentro da sessão já aberta** (cookie na REQUISIÇÃO) devolve a MESMA assinatura HTTP —
+200, sem `SAP_SESSIONID` no `Set-Cookie`, sem página de logon — com o canal **saudável**. Os dois
+corpos vieram com **36 487 bytes idênticos**: o `SAP_SESSIONID` sai na PRIMEIRA resposta e não se
+repete.
+
+O que separa a TELA do FORMULÁRIO é o shell: `webguiform0` (e `action="…/sap(…)"`) está nos dois
+200 de tela e **não** está nos 23 KB da página de logon. Daí a causa `sem-sessao-nova`:
+
+> o nó **atendeu** (veio a tela) e o que faltou foi sessão **nova**. Duas leituras: (1) o GET saiu
+> dentro de uma sessão existente; (2) o servidor não emitiu sessão — o estado do `SessaoNasceuMorta`.
+
+Se o seu GET não levou cookie, é (2), e a saída é a do teto (esperar o
+`http/security_session_timeout`, ou SM04 / `TH_USER_LIST`) — o motivo da sonda já traz esse texto.
+
+Também medido, e **não** produzem esse veredito: idioma inválido (`sap-language=ZZ`), `~transaction`
+inexistente e `sap-client` omitido saem `ok`; **mandante inexistente** (999) sai `credencial`, com a
+página de logon.
+
+⚠ **Aberto:** o que este nó responde SEM cookie com o servidor no teto **não foi medido** —
+reproduzir o estado doente custa ~30 min de laboratório inutilizável. Do teto, o que está medido no
+nó do WebGUI é o GET **com** o cookie envenenado: 400 (item 28, M5).
+
 ### ⚠ O 404 não é veredito de estado — e uma das causas é nó ATIVO
 
 O ICF não separa as causas do 404, de propósito. Medido: o path inventado
