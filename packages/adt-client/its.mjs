@@ -1708,15 +1708,39 @@ export function containerDaArvore(brutos = []) {
 }
 
 /**
+ * PURO: o ESTADO HIERÁRQUICO de cada linha da árvore — `Map n → 'EXPANDED' | 'COLLAPSED' |
+ * 'INDENT'`. É a flag de "tem filhos" que faltava (item 84), e ela **não** está em nenhum dos `ct`
+ * da árvore: mora no `lsdata[5]` de um `<td subct="HIC">` (`tree#C105#<n>#1`), que o despejo por
+ * `[ct]` não vê. `INDENT` é FOLHA; `COLLAPSED`/`EXPANDED` é nó expansível, fechado ou aberto.
+ *
+ * ⚠ Varre a tela inteira e ignora QUAL árvore — como o `containerDaArvore`, isto assume **uma**
+ * `GuiTree` por tela (é o caso do SMEN; duas árvores na mesma tela não foram medidas).
+ */
+export function expansaoDoHtml(corpo) {
+  const out = new Map();
+  const re = /<td\s+id="tree#[^#"]+#(\d+)#1"\s+subct="HIC"([^>]*)>/g;
+  let m;
+  while ((m = re.exec(String(corpo ?? '')))) {
+    const estado = jsonDoAtributo(/lsdata='([^']*)'/.exec(m[2])?.[1] ?? null)?.['5'];
+    if (typeof estado === 'string') out.set(Number(m[1]), estado);
+  }
+  return out;
+}
+
+/**
  * PURO: os nós VISÍVEIS da árvore, cruzando o `nodeindexes` do container com os `TV` da tela —
  * `{ sid, id, nos: [{ n, id, chave, rotulo, pai, nivel, categoria }] }`. Sem árvore na tela,
  * `{ sid: null, nos: [] }`.
  *
  * `pai` é o índice `n` do pai (`-1` na raiz) e `nivel` é a profundidade contada por ele.
  * `categoria` é o segundo campo do `nodeindexes` — vem `2` na raiz "Favoritos", `3` em cada
- * favorito, `0` na raiz "Menu SAP" e `1` em todo nó do menu; o significado NÃO está medido.
+ * favorito, `0` na raiz "Menu SAP" e `1` em todo nó do menu. Medido (item 84): a categoria **não**
+ * é a flag de filhos — folha e pasta do menu são as duas `1`.
+ *
+ * Com a `expansao` do `expansaoDoHtml` (é o que o `arvore(sessao)` passa), cada nó ganha
+ * `expansao` e **`temFilhos`** — e é ele que poupa o POST inócuo na folha (§ `expandirNo`).
  */
-export function arvoreDosBrutos(brutos = []) {
+export function arvoreDosBrutos(brutos = [], expansao = null) {
   const cont = containerDaArvore(brutos);
   if (!cont) return { sid: null, id: null, nodeindexes: null, nos: [] };
   const nos = brutos
@@ -1728,6 +1752,8 @@ export function arvoreDosBrutos(brutos = []) {
         n, id: c.id, chave: typeof e[0] === 'string' ? e[0] : null, categoria: e[1] ?? null,
         pai: typeof e[2] === 'number' ? e[2] : -1,
         rotulo: typeof c.lsdata?.['0'] === 'string' ? c.lsdata['0'] : (c.texto ?? null),
+        expansao: expansao?.get(n) ?? null,
+        temFilhos: expansao?.has(n) ? expansao.get(n) !== 'INDENT' : null,
       };
     })
     .filter((x) => x.chave !== null);
@@ -1741,13 +1767,19 @@ export function arvoreDosBrutos(brutos = []) {
   return { ...cont, nos };
 }
 
-/** A árvore da tela atual, do último delta — SEM tocar a rede. */
+/** A árvore da tela atual, do último delta (com o `temFilhos` de cada nó) — SEM tocar a rede. */
 export function arvore(sessao) {
   if (!sessao?.delta) throw new Error('its: sem delta para ler a árvore — abra a sessão (o boot do SMEN já a traz)');
-  return arvoreDosBrutos(controlesDoDelta(sessao.delta));
+  return arvoreDosBrutos(controlesDoDelta(sessao.delta), expansaoDoHtml(sessao.delta));
 }
 
-/** PURO: expandir um nó — o `CellExpand` que o container publica, endereçado por CHAVE. */
+/**
+ * PURO: expandir um nó — o `CellExpand` que o container publica, endereçado por CHAVE.
+ *
+ * ⚠ **É um TOGGLE, não um "abrir"** (medido no item 84): postado num nó já `EXPANDED`, ele
+ * **COLAPSA** — "Menu SAP" aberto com 11 filhos voltou a 2 nós num POST de 80 ms. Quem chama isto
+ * cru precisa olhar o `temFilhos`/`expansao` do nó antes; `expandirNo` já olha.
+ */
 export const batchExpandirNo = (sid, chave) => [{ post: `action/8/${sid}`, content: `type=node&node_key=${chave}` }];
 
 /** PURO: o duplo clique — abre o nó que tem filhos, ACIONA o que não tem. */
@@ -1764,12 +1796,19 @@ export function acharNoDaArvore(nos = [], alvo) {
 
 /**
  * EXPANDE um nó e devolve `{ ...lerResposta, no, abriu, filhos }`. `abriu: false` é INFORMAÇÃO —
- * o comando pegou e a árvore ficou igual (o nó já estava aberto, ou é folha).
+ * o comando pegou e a árvore ficou igual (o nó é uma pasta VAZIA; § `temFilhos`).
+ *
+ * **Numa FOLHA não posta nada** (item 84): `temFilhos === false` devolve `{ pulou: true, forma:
+ * null, abriu: false, filhos: [] }` sem tocar a rede — é o POST inócuo que o percurso poupa. Sem a
+ * flag na tela (`temFilhos === null`) o POST sai como antes.
+ *
+ * ⚠ **Num nó JÁ ABERTO isto COLAPSA** — o `action/8` é toggle (§ `batchExpandirNo`).
  */
 export async function expandirNo(sessao, alvo, opts) {
   const antes = arvore(sessao);
   if (!antes.sid) throw new Error('its: esta tela não tem árvore (nenhum GuiTree no delta)');
   const no = acharNoDaArvore(antes.nos, alvo);
+  if (no.temFilhos === false) return { forma: null, pulou: true, no, abriu: false, filhos: [] };
   const r = await despachar(sessao, batchExpandirNo(antes.sid, no.chave), opts);
   // ⚠ o índice `n` é posicional e a expansão reindexa: reachar o nó pela CHAVE, sempre
   const depois = r.forma === 'delta' ? arvore(sessao) : { nos: [] };
@@ -1821,8 +1860,8 @@ export async function navegarArvore(sessao, caminho, { acionar: aciona = true, .
     let irmaos = filhosDe(a, pai);
     let alvo = acharItemDeMenu(irmaos, rotulo);
     if (!alvo && pai) {                       // o nó pode estar fechado: abrir UMA vez e reler
-      await expandirNo(sessao, { chave: pai.chave }, opts);
-      expandidos.push(pai.chave);
+      const e = await expandirNo(sessao, { chave: pai.chave }, opts);
+      if (!e.pulou) expandidos.push(pai.chave);
       a = arvore(sessao);
       pai = a.nos.find((x) => x.chave === chave);
       irmaos = filhosDe(a, pai);
@@ -1836,7 +1875,7 @@ export async function navegarArvore(sessao, caminho, { acionar: aciona = true, .
     let a = arvore(sessao);
     let folha = a.nos.find((x) => x.chave === chave);
     let filhos = filhosDe(a, folha);
-    if (!filhos.length) {                     // um POST: descobrir o que há sob a folha exige abrir
+    if (!filhos.length && folha?.temFilhos !== false) {   // um POST — e a FOLHA não paga nenhum (item 84)
       await expandirNo(sessao, { chave }, opts);
       expandidos.push(chave);
       a = arvore(sessao);

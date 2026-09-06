@@ -1199,7 +1199,8 @@ em silêncio.
 import { abrirTransacao, arvore, navegarArvore, expandirNo } from './its.mjs';
 
 const s = await abrirTransacao(cfg, 'SMEN');       // o SAP Easy Access
-arvore(s).nos;   // [{ n: 1, chave: 'Favo', rotulo: 'Favoritos', pai: -1, nivel: 0 }, …] — zero rede
+arvore(s).nos;   // [{ n: 1, chave: 'Favo', rotulo: 'Favoritos', pai: -1, nivel: 0,
+                 //    expansao: 'EXPANDED', temFilhos: true }, …] — zero rede
 
 await navegarArvore(s, ['Menu SAP', 'Escritório'], { acionar: false });   // .filhos, um POST
 const r = await navegarArvore(s, ['Menu SAP', 'Escritório', 'Agenda', 'Próprio']);
@@ -1266,8 +1267,39 @@ estourou o teto de 30 s do `postar`. Por isso `acionarNo`/`navegarArvore` usam `
 ⚠ **Rótulo com `>` dentro** (o favorito "Produção -> Controle de produção -> …"): o caminho corta em
 `>`, então passe **array** — `navegarArvore(s, ['Favoritos', 'Produção'])`.
 
-⚠ **Não há flag de "tem filhos"** no que se lê: `navegarArvore` descobre expandindo, e uma folha
-gasta um POST inócuo para se revelar folha (fila 84).
+### A flag de "tem filhos" — o `<td subct="HIC">`, que o despejo por `[ct]` não vê (item 84)
+
+**Medido no s4h 758/250 em 06/09/2026**; a leitura em `medicoes/item84-flag-filhos.md`. Os quatro
+`ct` da árvore são CEGOS quanto a isto: o `lsdata` do `MG`, do `L` e dos dois `TV` é byte a byte o
+mesmo numa folha e numa pasta, e a `categoria` do `nodeindexes` também não separa (folha e pasta do
+menu são as duas `1`). A flag mora numa célula **sem `ct`**, que nem `controlesDoHtml` nem o
+`JS_DESPEJO_CONTROLES` enxergam:
+
+```html
+<td id="tree#C105#9#1" subct="HIC" lsdata='{"x":0,"4":2,"5":"COLLAPSED"}' altAction="HICEXP" st="-" lv="2">
+```
+
+| `lsdata[5]` | `st` / `altAction` / ícone | `temFilhos` | o que é |
+|---|---|---|---|
+| `EXPANDED` | `+` / `HICCOL` / `s_opfold` | `true` | pasta ABERTA |
+| `COLLAPSED` | `-` / `HICEXP` / `s_clofol` | `true` | pasta FECHADA |
+| `INDENT` | `-` / *(sem)* / `s_f_favo`, `s_wfwire` | **`false`** | **FOLHA** |
+
+`expansaoDoHtml(delta)` lê isso, `arvore(sessao)` já cola em cada nó (`expansao`, `temFilhos`), e
+**`expandirNo` numa folha não posta nada** (devolve `{ pulou: true, abriu: false, filhos: [] }`) —
+`navegarArvore(…, { acionar: false })` até uma folha caiu de 1 POST/~180 ms para **0 POST/22 ms**, e
+o acionamento continua chegando na transação.
+
+⚠ **A flag é assimétrica** (31 nós medidos, 30 acertos): `INDENT` → folha acertou 10/10 e é o lado
+que poupa o POST; `COLLAPSED` é "expansível" DECLARADO — houve uma pasta que abriu com **zero**
+filhos ("Pesquisa de payload"). Errar para esse lado custa o POST que já se pagava.
+
+⚠ **`temFilhos: null` é "não sei"**, não "não tem": a tela veio sem `HIC` (ou os brutos vieram de
+outra via). Aí o POST sai como antes.
+
+⚠ **`action/8` é TOGGLE:** postado num nó já `EXPANDED`, ele **COLAPSA** — "Menu SAP" aberto com 11
+filhos voltou a 2 nós em 80 ms. Quem chama `batchExpandirNo` cru precisa olhar o `expansao` antes.
+Isso responde metade da fila 85: colapsar não precisa de `action/9`.
 
 ### Árvore × barra de menu — quando usar qual
 
@@ -1280,10 +1312,10 @@ gasta um POST inócuo para se revelar folha (fila 84).
 | enxerga FAVORITOS | não | **sim — é o único caminho que enxerga** |
 | existe onde | em toda tela | só onde há `GuiTree` (o SMEN) |
 
-O que **ainda não** está medido: a `categoria` do `nodeindexes` (`0`/`1`/`2`/`3` — o padrão é claro,
-o significado não); **colapsar** um nó (`CellCollapse → action/9`, candidato pelo mesmo molde —
-fila 85); e a árvore pela via do **navegador** (os ids são os mesmos, o gesto não foi portado —
-fila 86).
+O que **ainda não** está medido: a `categoria` do `nodeindexes` (`0`/`1`/`2`/`3` — item 84 mediu que
+ela NÃO é a flag de filhos; o que ela significa segue aberto); por que uma pasta declarada abre
+vazia; e a árvore pela via do **navegador** (os ids são os mesmos, o gesto não foi portado — fila
+86; e lá a flag exige despejar `[subct="HIC"]` além de `[ct]`).
 
 ### `action/41` — a seleção isolada, e os FAVORITOS pela via HTTP (item 54)
 
@@ -2044,6 +2076,7 @@ na mesma função faria cada uma virar um `if` de duas pernas. O que é comum ve
 | OK-code = `value/okcd` + `vkey/0` | `comandar` | item 8 |
 | o menu inteiro já vem no boot; a folha é `action/4/<SID>` | `itensDeMenu`, `navegarMenu` — sem abrir nada | item 49 (146 itens na SE38; SE38 → SA38 em 91 ms) |
 | a árvore do SMEN se endereça por CHAVE, no container | `arvore`, `expandirNo`, `acionarNo`, `navegarArvore` | item 50 (SMEN → SSC1 em 2,5 s; favorito → CO01 em 386 ms) |
+| a FOLHA da árvore se declara antes do POST (`subct="HIC"`) | `expansaoDoHtml`, `arvore(s).nos[].temFilhos` | item 84 (30/31; folha: 1 POST/180 ms → 0/22 ms) |
 | o nó CORRENTE da árvore é `action/41`; sem ele o menu que age sobre o nó recusa | `postar` cru (`action/41/<SID>` + `node_key`) | item 54 (favorito inserido, acionado e apagado só por HTTP) |
 | `/nex` encerra; depois é 400 | `fechar`; `postar` recusa sessão encerrada | item 8; item 20 E |
 
