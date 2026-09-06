@@ -18,6 +18,7 @@ import {
   estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
   jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
+  FCODES_DE_LINHA,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -1286,4 +1287,26 @@ test('webgui: o botão escondido é achado, mas marcado como invisível (quem de
   const r = rodarBotao(jsBotaoDaBarra('wnd[0]/shellcont/shell', 'SORT_ASC'),
     [botao('C102_toolbar_btn15', 'wnd[0]/shellcont/shell/tbar/btn&SORT_ASC', { largura: 0 })]);
   expect(r.visivel).toBe(false);
+});
+
+// Os quatro fcodes de linha, como saíram da barra REAL do ZJBV_ALV47_EDIT (s4h 758/250,
+// 06/09/2026, `POC_webgui_grid_linha/medicoes/raw/a-barra.json`). O `&` no meio do nome é do ALV
+// (`&LOCAL&APPEND`), e o SID já traz o primeiro — quem monta o seletor não pode pôr outro.
+test('webgui: os fcodes de linha do ALV são os medidos, e o SID casa com eles', () => {
+  expect(FCODES_DE_LINHA).toEqual({
+    anexar: 'LOCAL&APPEND', inserir: 'LOCAL&INSERT_ROW',
+    apagar: 'LOCAL&DELETE_ROW', duplicar: 'LOCAL&COPY_ROW',
+  });
+  const sid = 'wnd[0]/shellcont/shell';
+  const barra = [
+    botao('C102_toolbar_btn10', `${sid}/tbar/btn&LOCAL&APPEND`),
+    botao('C102_toolbar_btn11', `${sid}/tbar/btn&LOCAL&INSERT_ROW`),
+    botao('C102_toolbar_btn12', `${sid}/tbar/btn&LOCAL&DELETE_ROW`),
+    botao('C102_toolbar_btn15', `${sid}/tbar/btn&SORT_ASC`),
+  ];
+  expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.anexar), barra).id).toBe('C102_toolbar_btn10');
+  expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.inserir), barra).id).toBe('C102_toolbar_btn11');
+  expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.apagar), barra).id).toBe('C102_toolbar_btn12');
+  // o ALV somente leitura não publica nenhum deles — e é assim que o erro sai com a lista certa
+  expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.duplicar), barra)).toBe(null);
 });

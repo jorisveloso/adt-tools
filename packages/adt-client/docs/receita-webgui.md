@@ -2495,6 +2495,70 @@ Fase A, 14 programas sondados por `SA38` no s4h (`raw/a-cacar.json`): **`BCALV_E
 ⚠ **Nenhum deles GRAVA** — fase B, lendo o fonte por ADT: todos mexem só em tabela interna. Servem
 para medir o gesto, **não** o ciclo com LUW; para esse, laboratório próprio.
 
+## Inserir e apagar LINHA no ALV — o gesto que viaja e mesmo assim não grava (item 78)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 78; evidência em
+`sap-accelerate/work/POC_webgui_grid_linha/medicoes/item78-inserir-apagar-linha.md`). O item 47
+deixou anotado que o `lsevents` da célula publica `DeleteItem` — não era por ali: **quem cria e
+apaga linha é a BARRA do ALV**, e só num ALV editável.
+
+```js
+import { inserirLinha, apagarLinhas, comandar } from './webgui.mjs';
+
+await inserirLinha(s);                                              // linha vazia no FIM
+await inserirLinha(s, null, { valores: { ID: '005', NOME: 'x' } }); // no fim, já preenchida
+await inserirLinha(s, null, { antesDe: 2 });                        // empurra a 2 para baixo
+await apagarLinhas(s, null, [1, 3]);                                // as duas de uma vez
+await comandar(s, 'FC01');                       // ← é ISTO que grava; o resto só mexe na tela
+```
+
+Com `layout-edit = 'X'` a barra publica os quatro, endereçáveis pelo SID (`<sid do
+grid>/tbar/btn&LOCAL&APPEND`), como o `SORT_ASC` do item 77 — o id do DOM (`C102_toolbar_btn10`) é
+posicional:
+
+| fcode | title | o que faz |
+|---|---|---|
+| `LOCAL&APPEND` | "Anexar linha" | linha nova no **FIM, sempre** — seleção e célula corrente não o desviam |
+| `LOCAL&INSERT_ROW` | "Inserir linha" | **ANTES** da linha selecionada (ou, sem seleção, da CORRENTE) |
+| `LOCAL&DELETE_ROW` | "Eliminar linha" | apaga **todas as selecionadas** de uma vez; **sem seleção, a CORRENTE** |
+| `LOCAL&COPY_ROW` | "Duplicar a linha" | medido na barra, gesto ainda não exercitado |
+
+O `lsdata` do grid ainda anuncia `hasRowInsertAllowed: true`. Num ALV somente leitura
+(`BCALV_GRID_DEMO`) **nenhum dos quatro existe**, e o erro sai dizendo o que a barra tem:
+`o ALV C102 não tem o botão "LOCAL&APPEND" na barra — a barra desta tela tem: DETAIL, SORT_ASC, …`.
+
+### ⚠ O round-trip acontece — e não é gravação
+
+É o espelho da armadilha do item 47, e mais fácil de cair: lá o valor digitado ficava preso no
+navegador; aqui o gesto **chega ao servidor** (`action/3` no batch), a tabela interna do ABAP muda na
+hora, a tela volta com uma linha a mais ou a menos — e o banco não mudou nada. Contra-prova pareada,
+mesma sequência, só o fcode de gravar mudando (`raw/e-ciclo.json`):
+
+| | gesto no servidor | `FC01` | a tabela em OUTRA LUW |
+|---|---|---|---|
+| **NEGATIVA** | sim, nos dois gestos | **não mandado** | **inalterada** (as 3 linhas de antes) |
+| **POSITIVA** | sim | mandado | linha nova gravada, apagada some |
+
+⚠ **`MODIFY FROM TABLE` não apaga.** Um programa que grava assim aceita a linha nova e **deixa a
+apagada no banco, calado** — o `FC01` do laboratório teve de virar `DELETE FROM` + `MODIFY` para que
+"apagou" fosse falseável. Antes de confiar num "apaguei pelo ALV", saiba o que o programa faz no
+gravar dele.
+
+⚠ **A linha nova nasce com os campos INICIAIS, chave incluída** — inserida sem preencher o `ID`
+(`numc(3)`), chegou ao banco como `ID = '000'`. Duas linhas novas sem chave colidem: quem insere
+preenche a chave.
+
+⚠ **`apagarLinhas` exige a lista de propósito.** Sem seleção o ALV apaga a linha CORRENTE, que
+qualquer clique numa célula move — "a que estiver marcada" não é endereço.
+
+⚠ **O `_linha` das que sobram RENUMERA na hora** (apagada a 2, a 3 vira 2) — mais uma face do §
+"`_linha` é a n-ésima linha VISÍVEL agora, nunca uma identidade". Apagar `[1, 3]` em duas chamadas
+apaga a linha errada na segunda: passe as duas juntas, ou releia o bloco entre uma e outra.
+
+`valores` sai por `escreverCelula` e por isso fica **pendente no navegador** (`pendente: true`): ele
+viaja no próximo round-trip, junto do gesto de gravar. Os dois conferem o total depois do gesto e
+estouram quando o programa recusou a inserção ou a exclusão.
+
 ## Exportar a lista por ARQUIVO — o ITSDoc (item 45)
 
 **O canal TEM via de saída** — não pelo `batch/json`, por um diálogo à parte. Medido no s4h 758/250

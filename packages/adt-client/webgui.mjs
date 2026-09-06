@@ -2148,6 +2148,144 @@ export async function lerColunas(sessao, alvo = null) {
     .map((h) => ({ coluna: h.coluna, nome: (b?.colunas ?? [])[h.coluna - 1] ?? null, ...estadoDoCabecalho(h.icone) }));
 }
 
+// ---------- INSERIR e APAGAR linha do ALV (item 78) ----------
+//
+// O terceiro par de gestos do ALV editável, e o que separa este dos dois anteriores é **quando o
+// servidor fica sabendo**. Medido no s4h 758/250 em 06/09/2026 (`POC_webgui_grid_linha`, fases A-F,
+// laboratório `ZJBV_ALV47_EDIT`):
+//
+//   • **os quatro botões existem, e só num ALV editável**: com `layout-edit = 'X'` a barra publica
+//     `LOCAL&APPEND` ("Anexar linha"), `LOCAL&INSERT_ROW` ("Inserir linha"), `LOCAL&DELETE_ROW`
+//     ("Eliminar linha") e `LOCAL&COPY_ROW` ("Duplicar a linha") — endereçáveis pelo SID, como o
+//     `SORT_ASC` do item 77. O `lsdata` do grid ainda anuncia `hasRowInsertAllowed: true`.
+//   • **`APPEND` vai para o FIM, sempre** — com a célula corrente na linha 1 a linha nova nasceu na
+//     6 de 6. Seleção e célula corrente não o desviam.
+//   • **`INSERT_ROW` entra ANTES** da linha selecionada (ou, sem seleção, da CORRENTE): com a 2
+//     selecionada, a nova ficou na 2 e a antiga 2 virou 3.
+//   • **`DELETE_ROW` apaga TODAS as selecionadas** de uma vez (com 1 e 3 marcadas, sobraram 3 de 5),
+//     e **sem seleção apaga a CORRENTE** — que é o modo de falha caro: um clique numa célula move a
+//     corrente, e o botão apaga aquela linha sem perguntar. Daí `apagarLinhas` exigir a lista.
+//   • **o `_linha` das demais RENUMERA na hora** (apagada a 2, o que era 3 virou 2).
+//
+// ⚠️ **O gesto FAZ round-trip (`action/3`) e mesmo assim NÃO GRAVA.** É o contrário do
+// `escreverCelula` (que fica pendente no cliente) e mais traiçoeiro: a tabela interna do ABAP muda
+// na hora, a tela volta com uma linha a mais ou a menos, e nada disso vai ao banco. Contra-prova
+// pareada, mesmo laboratório, mesma sequência, só o gesto de gravar mudando:
+//
+// | | inserir + apagar | `FC01` | `ZJBV_ALV47` em OUTRA LUW |
+// |---|---|---|---|
+// | **NEGATIVA** | feito, `action/3` nos dois | **não mandado** | **inalterada** (as 3 linhas de antes) |
+// | **POSITIVA** | idem | mandado | linha nova gravada, apagada some |
+//
+// (O `MODIFY` sozinho do laboratório do item 47 **nunca apagaria** — o `FC01` dele virou
+// `DELETE FROM` + `MODIFY`, uma sincronização, para que "apagou" fosse falseável.)
+//
+// ⚠️ **A linha nova nasce com os campos INICIAIS, chave incluída.** Medido: inserida sem preencher
+// o `ID` (`numc(3)`), ela chegou ao banco como `ID = '000'`. Duas linhas novas sem chave colidem —
+// quem insere preenche a chave.
+
+/** PURO: os fcodes de linha da barra do ALV editável — os nomes MEDIDOS, não a convenção. */
+export const FCODES_DE_LINHA = {
+  anexar: 'LOCAL&APPEND',
+  inserir: 'LOCAL&INSERT_ROW',
+  apagar: 'LOCAL&DELETE_ROW',
+  duplicar: 'LOCAL&COPY_ROW',
+};
+
+/** O gesto de linha: aciona o botão da barra e espera a tela voltar. Devolve o bloco depois. */
+async function gestoDeLinha(sessao, g, fcode, tetoMs) {
+  const b = await botaoDaBarra(sessao, g, fcode);
+  const antes = await carimbo(sessao);
+  await clicar(sessao, { id: b.id });
+  await esperarMudanca(sessao, antes, { tetoMs });
+  const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
+  if (modal?.length) throw new Error(`webgui: o ALV abriu o diálogo "${modal[0].titulo}" (${modal[0].id}) em vez de executar "${fcode}". `
+    + 'Esse diálogo NÃO é wnd[1] e o lerTela não o vê — feche-o antes de qualquer outro gesto.');
+  return lerGrid(sessao, { id: g.id });
+}
+
+/**
+ * INSERE uma linha no ALV editável — no fim (`LOCAL&APPEND`) ou antes de uma linha
+ * (`LOCAL&INSERT_ROW`), e opcionalmente já preenche as células dela.
+ *
+ * ```js
+ * await inserirLinha(s);                                              // linha vazia no fim
+ * await inserirLinha(s, null, { valores: { ID: '004', NOME: 'x' } }); // no fim, preenchida
+ * await inserirLinha(s, null, { antesDe: 2 });                        // empurra a 2 para baixo
+ * ```
+ *
+ * Devolve `{ id, sid, linha, modo, total, linhas, valores, pendente, ms }` — `linha` é onde ela
+ * ficou (o fim, ou o próprio `antesDe`) e `linhas` é o bloco já com ela.
+ *
+ * ⚠️ **Isto NÃO grava** (§ acima): a linha existe na tabela interna do ABAP e em lugar nenhum do
+ * banco até o programa gravar — `comandar(s, '<fcode de gravar>')`.
+ * ⚠️ `valores` sai por `escreverCelula`, então fica **pendente no navegador** (`pendente: true`):
+ * ele viaja no próximo round-trip, junto do gesto de gravar.
+ * ⚠️ A chave é sua: sem `valores` a linha nasce inicial, e duas assim colidem.
+ */
+export async function inserirLinha(sessao, alvo = null, { antesDe = null, valores = null, tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'inserirLinha');
+  const b = await lerGrid(sessao, { id: g.id });
+  const n = b.total;
+  let modo = 'anexar';
+  let linha = n + 1;
+  if (antesDe !== null && antesDe !== undefined) {
+    const k = Number(antesDe);
+    if (!Number.isInteger(k) || k < 1) throw new Error(`webgui: inserirLinha — antesDe "${antesDe}" não é uma linha (inteiro >= 1)`);
+    await selecionarLinhas(sessao, { id: g.id }, [k]);
+    modo = 'antes';
+    linha = k;
+  }
+  const alvoDaBarra = { id: g.id, sid: b.sid ?? g.sid };
+  const d = await gestoDeLinha(sessao, alvoDaBarra, modo === 'antes' ? FCODES_DE_LINHA.inserir : FCODES_DE_LINHA.anexar, tetoMs);
+  if (d.total !== n + 1) throw new Error(`webgui: inserirLinha — o ALV ${g.id} tinha ${n} linha(s) e ficou com ${d.total}, não ${n + 1}. `
+    + 'O programa recusou a inserção (ou o botão fez outra coisa).');
+  const escritos = {};
+  for (const [coluna, valor] of Object.entries(valores ?? {})) {
+    await escreverCelula(sessao, { id: g.id }, { linha, coluna, valor });
+    escritos[coluna] = valor;
+  }
+  const fim = valores ? await lerGrid(sessao, { id: g.id }) : d;
+  detalhe(`webgui: inserirLinha ${g.id} — linha ${linha} (${modo}), ${n} → ${d.total} linha(s)`
+    + `${valores ? `, ${Object.keys(escritos).length} célula(s) PENDENTE(s)` : ''}; NADA GRAVADO ainda`);
+  return { id: g.id, sid: alvoDaBarra.sid, linha, modo, total: d.total, linhas: fim.linhas,
+    valores: escritos, pendente: !!valores, ms: Date.now() - t0 };
+}
+
+/**
+ * APAGA linhas do ALV editável — marca as caixas e aciona `LOCAL&DELETE_ROW`.
+ *
+ * ```js
+ * await apagarLinhas(s, null, [2]);
+ * await apagarLinhas(s, null, [1, 3]);   // as duas de uma vez
+ * ```
+ *
+ * Devolve `{ id, sid, pedidas, antes, total, linhas, ms }`, com `linhas` já renumerado.
+ *
+ * ⚠️ **Isto NÃO grava** (§ acima) — a linha só sai do banco quando o programa gravar, e só se ele
+ * fizer `DELETE`: um `MODIFY FROM TABLE` deixa a linha apagada no banco, calado.
+ * ⚠️ **A lista é obrigatória de propósito.** `LOCAL&DELETE_ROW` sem seleção apaga a linha CORRENTE,
+ * que qualquer clique anterior pode ter movido — apagar "a que estiver marcada" não é endereço.
+ * ⚠️ **O `_linha` das que sobram RENUMERA.** Apagar [1, 3] em duas chamadas apaga a linha errada na
+ * segunda: passe as duas de uma vez, ou releia o bloco entre uma e outra.
+ */
+export async function apagarLinhas(sessao, alvo = null, linhas = [], { tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const pedidas = [...new Set((linhas ?? []).map(Number))].sort((x, y) => x - y);
+  if (!pedidas.length) throw new Error('webgui: apagarLinhas — nenhuma linha pedida. '
+    + 'Sem lista o ALV apagaria a linha CORRENTE, e ela não é endereço.');
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'apagarLinhas');
+  const b = await lerGrid(sessao, { id: g.id });
+  const n = b.total;
+  const s = await selecionarLinhas(sessao, { id: g.id }, pedidas);
+  const d = await gestoDeLinha(sessao, { id: g.id, sid: s.sid ?? b.sid ?? g.sid }, FCODES_DE_LINHA.apagar, tetoMs);
+  if (d.total !== n - pedidas.length) throw new Error(`webgui: apagarLinhas — pedi ${pedidas.length} linha(s) de ${n} e o ALV ${g.id} `
+    + `ficou com ${d.total}, não ${n - pedidas.length}. O programa recusou a exclusão (ou o botão fez outra coisa).`);
+  detalhe(`webgui: apagarLinhas ${g.id} — [${pedidas.join(', ')}] fora, ${n} → ${d.total} linha(s); NADA GRAVADO ainda`);
+  return { id: g.id, sid: s.sid ?? g.sid, pedidas, antes: n, total: d.total, linhas: d.linhas, ms: Date.now() - t0 };
+}
+
 export async function print(sessao, arquivo) {
   const r = await sessao.cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   fs.writeFileSync(arquivo, Buffer.from(r.data, 'base64'));
