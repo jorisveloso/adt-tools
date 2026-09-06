@@ -2619,7 +2619,7 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
   na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
   só existe no despejo DOM). ~~Combo~~ **medido** (item 114): escolher uma opção é postar a
-  CHAVE, e `preencher` traduz o texto (§ "O COMBOBOX (`ct="CB"`)"). ~~Ordenar/filtrar~~ **medido** (itens 77 e 116): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"), e o `lerGridInteiro` sob filtro devolve só as filtradas — com o `totalRows` já filtrado — enquanto a sessão de fora não vê nada disso (§ "O FILTRO, a linha selecionada e o drill-down"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
+  CHAVE, e `preencher` traduz o texto (§ "O COMBOBOX (`ct="CB"`)"). ~~Ordenar/filtrar~~ **medido** (itens 77 e 116): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"), e o `lerGridInteiro` sob filtro devolve só as filtradas — com o `totalRows` já filtrado — enquanto a sessão de fora não vê nada disso (§ "O FILTRO, a linha selecionada e o drill-down"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Desmarcar / limpar a seleção~~ **medido** (item 119): `desmarcarLinhas` (`ctrl`+clique), `limparSelecao` e `selecionarTudo` pelo toggle do cabeçalho — que alterna pelo **próprio ícone**, não pela tela (§ "Desmarcar e limpar a seleção do ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -3080,17 +3080,97 @@ apontando o `posicionarGrid`.
 
 ### O que ainda NÃO está medido
 
-- **Desmarcar.** O cabeçalho `grid#<cid>#0,0` **marca tudo** com a seleção limpa (3 de 3, 0
-  requisição), mas com tudo marcado o mesmo clique **não desmarcou** — apesar do nome
-  `SELECTION_TOGGLE`. Não há gesto medido para limpar a seleção.
+- ~~Desmarcar~~ **medido no item 119** — e a conclusão de cima ("não desmarcou") estava errada pelo
+  motivo certo: o toggle alterna pelo **próprio ícone**, não pelo que está pintado. § "Desmarcar e
+  limpar a seleção do ALV".
 - **Selecionar COLUNA e BLOCO de células.** Marcar a coluna pelo cabeçalho **saiu no item 77**
-  (`marcarColuna`, e o `action/46 columns=;2;` que ela emenda no gesto seguinte), mas o que o
-  `get_selected_columns` responde depois disso não foi cruzado. O BLOCO segue aberto: `action/48`
+  (`marcarColuna`, e o `action/46 columns=;2;` que ela emenda no gesto seguinte); o item 119 cruzou
+  com o ABAP por acaso — `selecionarTudo` devolveu `cols=3:ID,NOME,QTD`, então o toggle marca as
+  colunas junto. O BLOCO segue aberto: `action/48`
   (`cells=`) e `action/50` (`top_left`/`bottom_right`) existem e o `lsevents` publica `BlockSelect`,
   sem gesto medido.
 - **ALV de seleção ÚNICA.** O laboratório e o RSPARAM são os dois `selectionMode.type: "rowscols"`.
   `selecionarLinhas` estoura com o modo no texto quando a tela não fica como o pedido, mas o caso
   não foi exercitado num ALV que recuse a segunda linha.
+
+## Desmarcar e limpar a seleção do ALV — o toggle segue o ÍCONE, não a tela (item 119)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 119; evidência em
+`sap-accelerate/work/POC_webgui_grid_sel/medicoes/item119-desmarcar.md`, fases H–K). Fecha o único
+buraco que o item 76 deixou no gesto de seleção — e corrige a conclusão dele.
+
+```js
+import { limparSelecao, selecionarTudo, desmarcarLinhas, lerSelecao, comandar } from './webgui.mjs';
+
+await selecionarTudo(s);              // { selecionadas: 1617, total: 1617, todas: true, gestos: 1 }
+await desmarcarLinhas(s, null, [2]);  // ctrl+clique na caixa: { linhas: [1, 3] }
+await limparSelecao(s);               // { linhas: [], gestos: 2, jaLimpa: false }
+await comandar(s, 'FC02');            // e o ABAP responde rows=0 — a limpeza chegou
+```
+
+### ⚠ Por que o item 76 concluiu que o cabeçalho "não desmarca"
+
+Dentro do `<th subct="HC">` mora o alvo de verdade:
+
+```html
+<th id="grid#C102#0,0" subct="HC" lsdata='{"2":"SELECTIONCOLUMN","3":"SELECTION_TOGGLE"}'>
+  <div class="lsSTBSHCDIV"><div class="urST5HCMetricSelColToggle">
+    <div id="grid#C102#0,0-SELCOLTOGGLE" acf="SELCOLTOGGLE" tabindex="0"
+         class="… urSTSelColToggleUnSelIcon urST4LbUnselIcon"    ← ↔ …SelColToggleSelIcon urST4LbSelIcon
+         title="Foram selecionadas 3 linhas de 3 linhas possíveis.">
+```
+
+**O toggle alterna pela classe DELE, não pelas linhas pintadas.** No item 76 as 3 linhas tinham sido
+marcadas pelas *caixas* (shift), o ícone continuou `UnSel`, e o clique **marcou tudo sobre o que já
+estava tudo marcado** — na tela, indistinguível de "não fez nada". Reproduzido na fase I:
+
+| estado | ícone antes → depois | tela |
+|---|---|---|
+| `[1,2,3]` pintadas pelas caixas | `UnSel` → `Sel` | **não mudou** ← o caso 6 do item 76 |
+| o clique **seguinte** | `Sel` → `UnSel` | **limpou tudo** |
+| marcação parcial `[2]` | `UnSel` → `Sel` | marcou `[1,2,3]` |
+
+⚠ E o ícone **volta a `UnSel` depois de um round-trip** mesmo com linhas pintadas (o `title` chegou a
+dizer "0 linhas" com `[1,3]` na tela): ele não é leitor da seleção. Por isso `limparSelecao` e
+`selecionarTudo` **conferem e batem de novo** — no máximo 2 cliques — em vez de clicar uma vez e
+acreditar.
+
+### Os gestos, todos com ZERO requisição
+
+| gesto | efeito |
+|---|---|
+| `ctrl`+clique numa caixa **marcada** | **desmarca aquela linha** (`[1,2,3]` → `[1,3]`; `[2]` → `[]`) |
+| clique **simples** numa caixa marcada | **não** desmarca: SUBSTITUI a seleção por ela (`[1,3]` → `[1]`) |
+| clique no cabeçalho | alterna pelo ícone: marca tudo ou limpa tudo |
+| `ctrl`+clique no cabeçalho | igual ao clique simples |
+| `shift`+clique no cabeçalho | ignorado |
+| clique numa **célula de dado** | limpa a seleção de linhas — mas é efeito colateral (`action/50`+`53`, move a célula corrente), não gesto de limpar |
+
+### A seleção do cabeçalho é LÓGICA — e por isso `linhas` subconta
+
+No RSPARAM (1617 linhas, 166 caixas no DOM):
+
+```
+selecionarTudo(s)     gestos=1, selecionadas=1617 de 1617 — e só 166 caixas pintadas no DOM
+posicionarGrid(900)   as caixas novas JÁ NASCEM pintadas (247 de 247)
+limparSelecao(s)      gestos=1, 0 de 1617
+```
+
+**Quem conta a seleção inteira é o `title` do toggle**, não as caixas: `lerSelecao().toggle` traz
+`{ marcado, selecionadas, total, todas }`, e `interpretarTituloDoToggle` faz a leitura pelos dois
+primeiros números (o texto é traduzido). ⚠ O `title` **pode não existir antes do primeiro gesto** —
+aí `selecionadas`/`total` saem `null`, e não `0`.
+
+### A prova ABAP (fcode `FC02` do `ZJBV_ALV47_EDIT`)
+
+| gesto no navegador | o batch levou | **o ABAP respondeu** |
+|---|---|---|
+| `limparSelecao` | `action/47 rows=;` | `rows=0: cols=0: cells=0` |
+| `selecionarTudo` | `action/47 rows=;1-3;` | `rows=3:…001,…002,…003` **`cols=3:ID,NOME,QTD`** |
+| `desmarcarLinhas([2])` | `action/47 rows=;1;3;` | `rows=2:0000000001,0000000003` `cols=0:` |
+
+⚠ **O toggle marca as COLUNAS junto** (num ALV `selectionMode.type: "rowscols"`) — e um `ctrl`+
+clique numa caixa qualquer devolve `cols=0`. Quem quer só linhas usa `selecionarLinhas`.
 
 ## Ordenar e filtrar o ALV — marcar a coluna e acionar a barra (item 77)
 

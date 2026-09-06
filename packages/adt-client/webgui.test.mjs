@@ -20,6 +20,7 @@ import {
   jsFragmentoDoGrid, faltaNaFaixaDoBloco, jsPostarNaPagina, postarNaPagina, extratorDeCelulas,
   estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
   jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD, clique, duploClique,
+  idDoToggleDeSelecao, interpretarTituloDoToggle, normalizarToggle,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
   FCODES_DE_LINHA,
   tsvDoBloco, jsColarNoGrid,
@@ -1429,9 +1430,18 @@ const caixaReal = (linha, selecionada, cid = 'C102') => ({
   }),
 });
 
-const rodarSelecao = (js, { caixas = [], lsdata = LSDATA_SEL(), cid = 'C102' } = {}) => {
+// o `<div id="grid#<cid>#0,0-SELCOLTOGGLE">` REAL do cabeçalho (item 119, `raw/h-desmarcar.json`)
+const toggleReal = (marcado, title) => ({
+  id: 'grid#C102#0,0-SELCOLTOGGLE',
+  className: 'urBorderBox lsSTCellHeightInherit urSTSCOuterDiv '
+    + (marcado ? 'urSTSelColToggleSelIcon urST4LbSelIcon' : 'urSTSelColToggleUnSelIcon urST4LbUnselIcon'),
+  title: title ?? '',
+});
+
+const rodarSelecao = (js, { caixas = [], lsdata = LSDATA_SEL(), cid = 'C102', toggle = null } = {}) => {
   const documento = {
-    getElementById: (id) => (id === cid ? { getAttribute: (a) => (a === 'lsdata' ? lsdata : null) } : null),
+    getElementById: (id) => (id === cid ? { getAttribute: (a) => (a === 'lsdata' ? lsdata : null) }
+      : (toggle && id === `grid#${cid}#0,0-SELCOLTOGGLE` ? toggle : null)),
     querySelectorAll: (sel) => (sel === 'td[subct="SC"]' ? caixas : []),
   };
   return new Function('document', `return ${js}`)(documento);
@@ -1484,6 +1494,66 @@ test('webgui: a caixa de seleção NÃO tem o sufixo #if da célula de dado', ()
 
 test('webgui: os modificadores do clique são o mapa de bits do CDP', () => {
   expect(MOD).toEqual({ alt: 1, ctrl: 2, meta: 4, shift: 8 });
+});
+
+// ---------- desmarcar a seleção (item 119) ----------
+// Medido no s4h 758/250 em 06/09/2026 (`POC_webgui_grid_sel`, fases H/I/J).
+
+test('webgui: o toggle do cabeçalho tem id PRÓPRIO, e não é o id da caixa da linha 0', () => {
+  expect(idDoToggleDeSelecao('C102')).toBe('grid#C102#0,0-SELCOLTOGGLE');
+  expect(idDoToggleDeSelecao('C102')).not.toBe(idDaCaixa('C102', 0));
+});
+
+test('webgui: o despejo traz o estado do toggle — a CLASSE dele, não a das caixas', () => {
+  const r = rodarSelecao(jsSelecaoDoGrid('C102'), {
+    caixas: [caixaReal(1, true), caixaReal(2, true), caixaReal(3, true)],
+    toggle: toggleReal(true, 'Foram selecionadas 3 linhas de 3 linhas possíveis.'),
+  });
+  expect(r.toggle.existe).toBe(true);
+  expect(r.toggle.marcado).toBe(true);
+  expect(r.toggle.title).toBe('Foram selecionadas 3 linhas de 3 linhas possíveis.');
+});
+
+test('webgui: sem o div do toggle no DOM, o despejo diz existe:false em vez de estourar', () => {
+  const r = rodarSelecao(jsSelecaoDoGrid('C102'), { caixas: [caixaReal(1, false)] });
+  expect(r.toggle).toEqual({ existe: false, marcado: null, title: null, cls: null });
+  expect(normalizarToggle(r.toggle).todas).toBe(null);
+});
+
+test('webgui: o title do toggle é quem CONTA a seleção além do bloco carregado', () => {
+  // medido no RSPARAM: 166 caixas pintadas no DOM e o cabeçalho anunciando 1617 de 1617
+  expect(interpretarTituloDoToggle('Foram selecionadas 1617 linhas de 1617 linhas possíveis.'))
+    .toEqual({ selecionadas: 1617, total: 1617 });
+  expect(interpretarTituloDoToggle('Foram selecionadas 0 linhas de 3 linhas possíveis.'))
+    .toEqual({ selecionadas: 0, total: 3 });
+  expect(interpretarTituloDoToggle('2 of 3 rows selected')).toEqual({ selecionadas: 2, total: 3 });
+  expect(interpretarTituloDoToggle('')).toBe(null);
+  expect(interpretarTituloDoToggle(null)).toBe(null);
+});
+
+test('webgui: normalizarToggle responde "a seleção é a lista inteira?" onde pintadas subconta', () => {
+  const grande = normalizarToggle(
+    { existe: true, marcado: true, title: 'Foram selecionadas 1617 linhas de 1617 linhas possíveis.' });
+  expect(grande).toMatchObject({ existe: true, marcado: true, selecionadas: 1617, total: 1617, todas: true });
+
+  const vazio = normalizarToggle(
+    { existe: true, marcado: false, title: 'Foram selecionadas 0 linhas de 1617 linhas possíveis.' });
+  expect(vazio).toMatchObject({ selecionadas: 0, total: 1617, todas: false });
+
+  // grid vazio: 0 de 0 NÃO é "tudo selecionado"
+  expect(normalizarToggle({ existe: true, marcado: false, title: '0 de 0' }).todas).toBe(false);
+  expect(normalizarToggle(null)).toMatchObject({ existe: false, marcado: null, todas: null });
+});
+
+test('webgui: o ícone do toggle é o SENTIDO do próximo clique, não o estado da tela', () => {
+  // fase I: as 3 linhas pintadas pelas CAIXAS deixam o ícone em UNSEL — foi o que enganou o item 76
+  const r = rodarSelecao(jsSelecaoDoGrid('C102'), {
+    caixas: [caixaReal(1, true), caixaReal(2, true), caixaReal(3, true)],
+    toggle: toggleReal(false, 'Foram selecionadas 3 linhas de 3 linhas possíveis.'),
+  });
+  expect(r.pintadas).toEqual([1, 2, 3]);
+  expect(r.toggle.marcado).toBe(false);                       // o ícone diverge do que está pintado
+  expect(normalizarToggle(r.toggle).todas).toBe(true);        // e a CONTAGEM concorda com a tela
 });
 
 // ---------- o duplo clique como gesto (item 118) ----------

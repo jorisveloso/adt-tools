@@ -2413,6 +2413,36 @@ export async function posicionarGrid(sessao, alvo = null, linha, { tetoMs = 1500
 export const idDaCaixa = (cid, linha) => `grid#${cid}#${Number(linha)},0`;
 
 /**
+ * O id do ALVO DE VERDADE do cabeçalho da coluna de seleção — o `<div acf="SELCOLTOGGLE">` que
+ * mora dentro do `<th subct="HC">`. Clicar no `<th>` funciona (o evento sobe), mas é a CLASSE
+ * deste `<div>` que diz o estado do toggle, e o `title` dele que conta quantas de quantas.
+ */
+export const idDoToggleDeSelecao = (cid) => `grid#${cid}#0,0-SELCOLTOGGLE`;
+
+/**
+ * PURO: o `title` do toggle (`"Foram selecionadas 1617 linhas de 1617 linhas possíveis."`) vira
+ * `{ selecionadas, total }`. É a ÚNICA fonte que conta a seleção inteira quando o grid é maior que
+ * o bloco carregado — medido no RSPARAM: 166 caixas pintadas no DOM e o título dizendo 1617 de
+ * 1617. O texto é traduzido, então a leitura é pelos dois primeiros números, na ordem.
+ */
+export function interpretarTituloDoToggle(title) {
+  const m = /(\d+)\D+?(\d+)/.exec(String(title ?? ''));
+  return m ? { selecionadas: Number(m[1]), total: Number(m[2]) } : null;
+}
+
+/**
+ * PURO: o toggle cru do despejo vira `{ existe, marcado, selecionadas, total, todas, title }`.
+ * `todas` é o que responde "a seleção é a lista inteira?" — e vale mesmo onde `pintadas` subconta.
+ */
+export function normalizarToggle(bruto) {
+  const t = bruto ?? { existe: false };
+  const c = interpretarTituloDoToggle(t.title);
+  return { existe: t.existe === true, marcado: t.marcado ?? null, title: t.title ?? null,
+    selecionadas: c?.selecionadas ?? null, total: c?.total ?? null,
+    todas: c ? (c.total > 0 && c.selecionadas === c.total) : null };
+}
+
+/**
  * PURO: o `selectedRows` do `lsdata` (`";1;3;"`, `";1-3;"`, `";"`) vira lista de linhas 1-based.
  * O framework COMPACTA faixa contígua com `-` (medido: 1,2,3 selecionadas saem como `";1-3;"`),
  * então quem só fizesse `split(';')` leria "a linha 1-3" e perderia duas linhas.
@@ -2454,7 +2484,12 @@ export const jsSelecaoDoGrid = (cid) => `(() => {
   }
   pintadas.sort((a, b) => a - b);
   caixas.sort((a, b) => a - b);
-  return { cid, pintadas, caixas,
+  const tg = document.getElementById(cid ? 'grid#' + cid + '#0,0-SELCOLTOGGLE' : '');
+  const toggle = tg
+    ? { existe: true, marcado: /urSTSelColToggleSelIcon|urST4LbSelIcon/.test(tg.className),
+        title: tg.title || null, cls: tg.className || null }
+    : { existe: false, marcado: null, title: null, cls: null };
+  return { cid, pintadas, caixas, toggle,
     publicado: { linhas: sid.selectedRows ?? null, celulas: sid.selectedCells ?? null,
       colunas: sid.selectedColumns ?? null, bloco: sid.selectedBlock ?? null },
     celulaCorrente: { linha: sid.currentCellRow ?? null, coluna: sid.currentCellColumn ?? null },
@@ -2470,10 +2505,16 @@ export const jsSelecaoDoGrid = (cid) => `(() => {
  * sel.linhas       // [1, 3] — as linhas pintadas AGORA (1-based, absolutas)
  * sel.publicado    // { linhas: [2], texto: ';2;' } — o que o SERVIDOR sabe, um round-trip atrás
  * sel.defasado     // true: o servidor ainda não viu o que está pintado
+ * sel.toggle       // { marcado, selecionadas: 1617, total: 1617, todas: true } — o cabeçalho
  * ```
  *
  * `alvo` escolhe o grid como em `lerGrid` (índice, `{ id }`, `{ sid }`). Devolve
- * `{ id, sid, linhas, publicado, defasado, celulaCorrente, bloco, total, modo, ms }`.
+ * `{ id, sid, linhas, publicado, defasado, toggle, celulaCorrente, bloco, total, modo, ms }`.
+ *
+ * ⚠️ **Com "tudo" marcado numa lista grande, `linhas` SUBCONTA** — quem sabe o número inteiro é o
+ * `toggle`. Medido no RSPARAM (item 119): depois do clique no cabeçalho, `linhas` trouxe as 166
+ * caixas que o DOM tinha e o `toggle.selecionadas` disse **1617 de 1617**; ao rolar até a 900 as
+ * caixas novas já nasceram pintadas. A seleção do cabeçalho é LÓGICA, não uma caixa de cada vez.
  *
  * ⚠️ **`linhas` só enxerga o BLOCO carregado** — `bloco` diz que faixa de caixas existe. O bloco
  * só CRESCE (medido no RSPARAM: 166 caixas na abertura, 247 depois de rolar até a linha 900, e a
@@ -2495,7 +2536,7 @@ export async function lerSelecao(sessao, alvo = null) {
   return { id: g.id, sid: g.sid, linhas,
     publicado: { linhas: publicadas, texto: b.publicado?.linhas ?? null, celulas: b.publicado?.celulas ?? null,
       colunas: b.publicado?.colunas ?? null, bloco: b.publicado?.bloco ?? null },
-    defasado, celulaCorrente: b.celulaCorrente ?? null,
+    defasado, toggle: normalizarToggle(b.toggle), celulaCorrente: b.celulaCorrente ?? null,
     bloco: { de: caixas[0] ?? null, ate: caixas[caixas.length - 1] ?? null, n: caixas.length },
     total: b.total ?? 0, modo: b.modo ?? null, ms: Date.now() - t0 };
 }
@@ -2566,6 +2607,234 @@ export async function selecionarLinhas(sessao, alvo = null, linhas = [], { acres
   }
   detalhe(`webgui: selecionarLinhas ${g.id} — [${pintadas.join(', ')}] pintada(s) com ${gestos.length} clique(s), PENDENTE de round-trip`);
   return { id: g.id, sid: g.sid, linhas: pintadas, pedidas, gestos, pendente: true, ms: Date.now() - t0 };
+}
+
+
+// ---------- DESMARCAR a seleção (item 119) ----------
+//
+// O item 76 mediu o MARCAR e deixou o inverso em aberto: o cabeçalho `SELECTION_TOGGLE` "não
+// desmarcou" com as 3 linhas marcadas. Medido no s4h 758/250 em 06/09/2026
+// (`POC_webgui_grid_sel`, fases H, I e J; laboratório `ZJBV_ALV47_EDIT` com o `FC02` que despeja
+// `get_selected_rows`, e o RSPARAM de 1617 linhas para o grid maior que o bloco):
+//
+//   • **O cabeçalho É toggle nos dois sentidos — mas ele alterna pelo PRÓPRIO ícone, não pelo que
+//     a tela mostra.** Dentro do `<th>` mora um `<div id="grid#<cid>#0,0-SELCOLTOGGLE"
+//     acf="SELCOLTOGGLE">` cuja classe é `urSTSelColToggleUnSelIcon` ↔ `urSTSelColToggleSelIcon`,
+//     e o `title` conta `"Foram selecionadas N linhas de M linhas possíveis."` — é o segundo alvo
+//     que o item 76 suspeitou existir.
+//
+//     **É isso que explica o caso 6 do item 76:** lá as 3 linhas foram pintadas pelas CAIXAS
+//     (shift), o ícone continuou UNSEL, e o clique MARCOU TUDO sobre o que já estava marcado — na
+//     tela, indistinguível de "não fez nada". Reproduzido (fase I): mesmo estado, `iconeAntes:
+//     false → iconeDepois: true`, tela igual; o clique SEGUINTE limpou as 3.
+//     ⚠️ Daí `limparSelecao` e `selecionarTudo` CONFEREM e clicam de novo, em vez de clicar uma vez
+//     e acreditar. E ⚠️ o ícone volta a UNSEL depois de um round-trip mesmo com linhas pintadas
+//     (fase I, I4b: `title` dizia "0 linhas" com `[1,3]` na tela) — ele não é leitor da seleção.
+//
+//   • **`ctrl`+clique numa caixa MARCADA desmarca aquela linha** — `[1,2,3]` → `[1,3]`, e na única
+//     marcada `[2]` → `[]`. **Zero requisições**, como todo o resto da seleção.
+//     O clique SIMPLES numa linha já marcada não a desmarca: ele SUBSTITUI a seleção por ela
+//     (`[1,3]` + clique na 1 → `[1]`).
+//
+//   • **Clicar numa CÉLULA DE DADO limpa a seleção de linhas** (`[1,2,3]` → `[]`). É efeito
+//     colateral, não gesto de limpar: sai `action/50`+`action/53` e a célula corrente se move.
+//
+//   • **A seleção do cabeçalho é LÓGICA, não caixa a caixa** (fase J, RSPARAM 1617 linhas): o
+//     clique pintou as 166 caixas que o DOM tinha e o `title` anunciou **1617 de 1617**; ao rolar
+//     até a 900 as caixas novas já nasceram pintadas; o clique de volta limpou as 247. Por isso
+//     `lerSelecao().linhas` SUBCONTA nesse estado e quem conta é `lerSelecao().toggle`.
+//
+//   • **A PROVA ABAP** (fases I e K): `[1,3]` depois do `ctrl`+clique → `action/47 rows=;1;3;` e o
+//     ABAP respondeu `rows=2:0000000001,0000000003`; limpo pelo cabeçalho → `action/47 rows=;` e
+//     `rows=0`. **A limpeza feita no navegador é a limpeza que o `get_selected_rows` enxerga.**
+//
+//   • ⚠️ **O toggle marca as COLUNAS junto** (fase K, num ALV de `selectionMode.type = rowscols`):
+//     depois do `selecionarTudo` o ABAP respondeu `rows=3:… cols=3:ID,NOME,QTD` — e um `ctrl`+
+//     clique numa caixa qualquer devolveu `cols=0`. Quem só quer linhas usa `selecionarLinhas`.
+//
+//   • ⚠️ **O `title` do toggle pode não existir antes do primeiro gesto** (medido no laboratório
+//     recém-aberto: `title` vazio). Por isso `selecionadas`/`total` saem `null` em vez de `0`, e
+//     "limpo" só se decide pelo título quando ele existe.
+
+/** O ponto clicável do toggle do cabeçalho — o `<div>` interno, ou o `<th>` de fora se ele faltar. */
+async function pontoDoToggle(sessao, cid, rotulo) {
+  const p = await apontar(sessao, { id: idDoToggleDeSelecao(cid) }, { descer: false })
+    ?? await apontar(sessao, { id: idDaCaixa(cid, 0) }, { descer: false });
+  if (!p || p.x == null) {
+    throw new Error(`webgui: ${rotulo} — o grid ${cid} não tem o toggle do cabeçalho ` +
+      `(${idDoToggleDeSelecao(cid)}) apontável na tela. Sem ele, o caminho é linha a linha: ` +
+      '`selecionarLinhas` / `desmarcarLinhas`.');
+  }
+  return p;
+}
+
+/** Clica o toggle e sonda o despejo até `pronto(despejo)` ou o teto — o toggle não toca a rede. */
+async function baterOToggle(sessao, cid, ponto, pronto, tetoMs = 3000) {
+  await clique(sessao, ponto);
+  const fim = Date.now() + tetoMs;
+  let b = null;
+  do {
+    await espera(250);
+    b = await avaliar(sessao, jsSelecaoDoGrid(cid));
+    if (b && pronto(b)) return b;
+  } while (Date.now() < fim);
+  return b;
+}
+
+/**
+ * DESMARCA linhas do ALV com `ctrl`+clique na caixa — o inverso exato do `selecionarLinhas`.
+ *
+ * ```js
+ * await desmarcarLinhas(s, null, [2]);      // tira a 2 e deixa o resto
+ * await comandar(s, 'FC02');                // e AGORA o ABAP vê a seleção menor
+ * ```
+ *
+ * Devolve `{ id, sid, linhas, pedidas, jaLimpas, gestos, pendente: true, ms }` — `linhas` é o que
+ * ficou pintado, `jaLimpas` as pedidas que já não estavam marcadas (não recebem clique, porque
+ * `ctrl`+clique numa caixa limpa a MARCA).
+ *
+ * ⚠️ **Não manda nada ao servidor** (`pendente: true`), como `selecionarLinhas`: a seleção nova
+ * viaja no `action/47` do próximo round-trip.
+ *
+ * ⚠️ Só alcança o BLOCO carregado — linha sem caixa no DOM estoura pedindo `posicionarGrid`. E
+ * para tirar TUDO de uma lista grande o gesto certo é `limparSelecao`, que é lógico e não depende
+ * de haver caixa para cada linha.
+ */
+export async function desmarcarLinhas(sessao, alvo = null, linhas = []) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'desmarcarLinhas');
+  const b = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: desmarcarLinhas — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  if (b.temColunaDeSelecao !== true) {
+    throw new Error(`webgui: desmarcarLinhas — o grid ${g.id} não tem coluna de seleção ` +
+      `(o lsdata dele diz hasSelectionColumn=${b.temColunaDeSelecao}). Sem a caixa da coluna 0 não há o que clicar.`);
+  }
+  const pedidas = [...new Set((linhas ?? []).map(Number))].sort((x, y) => x - y);
+  if (!pedidas.length) throw new Error('webgui: desmarcarLinhas — nenhuma linha pedida');
+  const caixas = new Set(b.caixas ?? []);
+  const fora = pedidas.filter((n) => !caixas.has(n));
+  if (fora.length) {
+    const c = b.caixas ?? [];
+    throw new Error(`webgui: desmarcarLinhas — a(s) linha(s) ${fora.join(', ')} não tem caixa no bloco carregado ` +
+      `(${c[0] ?? '-'}..${c[c.length - 1] ?? '-'} de ${b.total}). ` +
+      'Chegar a uma linha distante é navegação: `posicionarGrid(sessao, alvo, linha)`; ' +
+      'limpar a seleção inteira é `limparSelecao(sessao, alvo)`.');
+  }
+  const marcadas = new Set(b.pintadas ?? []);
+  const jaLimpas = pedidas.filter((n) => !marcadas.has(n));
+  const gestos = [];
+  for (const n of pedidas.filter((x) => marcadas.has(x))) {
+    const id = idDaCaixa(g.id, n);
+    const p = await apontar(sessao, { id }, { descer: false });
+    if (!p) throw new Error(`webgui: desmarcarLinhas — a caixa ${id} não está apontável na tela`);
+    await clique(sessao, p, { modificadores: MOD.ctrl });
+    gestos.push({ linha: n, modificadores: MOD.ctrl });
+    await espera(250);
+  }
+  const d = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  const pintadas = d?.pintadas ?? [];
+  const teimosas = pedidas.filter((n) => pintadas.includes(n));
+  if (teimosas.length) {
+    throw new Error(`webgui: desmarcarLinhas — pedi para tirar [${pedidas.join(', ')}] e a(s) linha(s) ` +
+      `${teimosas.join(', ')} continua(m) pintada(s) (a tela tem [${pintadas.join(', ')}]). ` +
+      `O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)}.`);
+  }
+  detalhe(`webgui: desmarcarLinhas ${g.id} — sobrou [${pintadas.join(', ')}] com ${gestos.length} ctrl+clique(s), PENDENTE de round-trip`);
+  return { id: g.id, sid: g.sid, linhas: pintadas, pedidas, jaLimpas, gestos, pendente: true, ms: Date.now() - t0 };
+}
+
+/**
+ * MARCA a lista inteira pelo toggle do cabeçalho — e a seleção é LÓGICA, não uma caixa de cada vez.
+ *
+ * ```js
+ * const r = await selecionarTudo(s);
+ * r.selecionadas   // 1617   ← o que o toggle anuncia (a lista inteira)
+ * r.linhas.length  // 166    ← só as caixas que o DOM tem AGORA
+ * ```
+ *
+ * Devolve `{ id, sid, linhas, selecionadas, total, todas, gestos, pendente: true, ms }`.
+ *
+ * ⚠️ **O toggle alterna pelo PRÓPRIO ícone, não pelo que está pintado** — por isso esta função
+ * confere e bate de novo (no máximo 2 cliques): um clique só, sobre linhas marcadas à mão, apenas
+ * "acende" o ícone e não muda a tela. É o modo de falha que enganou o item 76.
+ *
+ * ⚠️ **Marca as COLUNAS junto**, num ALV `rowscols`: medido `rows=3:… cols=3:ID,NOME,QTD` no ABAP
+ * logo depois. Quem quer só linhas usa `selecionarLinhas`, que deixa `cols=0`.
+ *
+ * ⚠️ **Não manda nada ao servidor** (`pendente: true`) — o `action/47` sai no próximo round-trip.
+ */
+export async function selecionarTudo(sessao, alvo = null, { tetoMs = 3000 } = {}) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'selecionarTudo');
+  let b = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: selecionarTudo — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  if (b.temColunaDeSelecao !== true) {
+    throw new Error(`webgui: selecionarTudo — o grid ${g.id} não tem coluna de seleção ` +
+      `(o lsdata dele diz hasSelectionColumn=${b.temColunaDeSelecao}) — não há cabeçalho de seleção para clicar.`);
+  }
+  const cheio = (x) => normalizarToggle(x?.toggle).todas === true;
+  const ponto = await pontoDoToggle(sessao, g.id, 'selecionarTudo');
+  let gestos = 0;
+  while (!cheio(b) && gestos < 2) { b = await baterOToggle(sessao, g.id, ponto, cheio, tetoMs); gestos++; }
+  const tg = normalizarToggle(b?.toggle);
+  if (!tg.todas) {
+    throw new Error(`webgui: selecionarTudo — depois de ${gestos} clique(s) no toggle o cabeçalho ainda diz ` +
+      `${tg.selecionadas ?? '?'} de ${tg.total ?? '?'} (${JSON.stringify(tg.title)}). ` +
+      `O modo de seleção deste grid é ${JSON.stringify(b?.modo ?? null)} — um ALV de seleção ÚNICA não marca tudo.`);
+  }
+  detalhe(`webgui: selecionarTudo ${g.id} — ${tg.selecionadas} de ${tg.total} com ${gestos} clique(s) ` +
+    `(${(b?.pintadas ?? []).length} caixa(s) pintada(s) no DOM), PENDENTE de round-trip`);
+  return { id: g.id, sid: g.sid, linhas: b?.pintadas ?? [], selecionadas: tg.selecionadas,
+    total: tg.total, todas: true, gestos, pendente: true, ms: Date.now() - t0 };
+}
+
+/**
+ * LIMPA a seleção do ALV pelo toggle do cabeçalho — o gesto que faltava desde o item 76.
+ *
+ * ```js
+ * await limparSelecao(s);       // nenhuma linha marcada, 0 requisições
+ * await comandar(s, 'FC02');    // e o ABAP responde rows=0 (medido)
+ * ```
+ *
+ * Devolve `{ id, sid, linhas: [], selecionadas, total, gestos, jaLimpa, pendente: true, ms }`.
+ *
+ * ⚠️ Precisa de **até 2 cliques**, e é de propósito: com o ícone em UNSEL sobre linhas marcadas à
+ * mão, o primeiro clique MARCA TUDO e só o segundo limpa. A função confere depois de cada um.
+ *
+ * ⚠️ **Não manda nada ao servidor** (`pendente: true`): a limpeza viaja como `action/47 rows=;` no
+ * próximo round-trip. Antes disso o `get_selected_rows` ainda devolve a seleção anterior.
+ */
+export async function limparSelecao(sessao, alvo = null, { tetoMs = 3000 } = {}) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'limparSelecao');
+  let b = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: limparSelecao — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  if (b.temColunaDeSelecao !== true) {
+    throw new Error(`webgui: limparSelecao — o grid ${g.id} não tem coluna de seleção ` +
+      `(o lsdata dele diz hasSelectionColumn=${b.temColunaDeSelecao}) — não há cabeçalho de seleção para clicar.`);
+  }
+  // Limpo = nenhuma caixa pintada E o cabeçalho contando zero (é ele quem enxerga além do bloco).
+  const limpo = (x) => {
+    if ((x?.pintadas ?? []).length !== 0) return false;
+    const n = normalizarToggle(x?.toggle).selecionadas;
+    return n === null || n === 0;
+  };
+  const jaLimpa = limpo(b);
+  let gestos = 0;
+  if (!jaLimpa) {
+    const ponto = await pontoDoToggle(sessao, g.id, 'limparSelecao');
+    while (!limpo(b) && gestos < 2) { b = await baterOToggle(sessao, g.id, ponto, limpo, tetoMs); gestos++; }
+  }
+  if (!limpo(b)) {
+    const tg = normalizarToggle(b?.toggle);
+    throw new Error(`webgui: limparSelecao — depois de ${gestos} clique(s) no toggle a tela ainda tem ` +
+      `[${(b?.pintadas ?? []).join(', ')}] pintada(s) e o cabeçalho diz ${JSON.stringify(tg.title)}. ` +
+      'O caminho linha a linha é `desmarcarLinhas(sessao, alvo, linhas)`.');
+  }
+  const tg = normalizarToggle(b?.toggle);
+  detalhe(`webgui: limparSelecao ${g.id} — seleção limpa com ${gestos} clique(s)${jaLimpa ? ' (já estava)' : ''}, PENDENTE de round-trip`);
+  return { id: g.id, sid: g.sid, linhas: [], selecionadas: tg.selecionadas, total: tg.total,
+    gestos, jaLimpa, pendente: true, ms: Date.now() - t0 };
 }
 
 
