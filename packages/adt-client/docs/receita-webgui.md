@@ -973,30 +973,44 @@ Dois equivalentes, para traduzir receita de um lado para o outro:
 
 ## O MENU da barra — chegar numa tela por CAMINHO, sem saber o tcode
 
-**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 26) e **em 2026-09-05** pela via
-HTTP pura (item 49). Bruto, agregado e prova em `sap-accelerate/work/POC_webgui_menu/`; a leitura em
-`medicoes/item26-menu.md` e `medicoes/item49-menu-http.md`.
+**Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 26), **em 2026-09-05** pela via
+HTTP pura (item 49) e **em 2026-09-06** de novo no DOM (item 82). Bruto, agregado e prova em
+`sap-accelerate/work/POC_webgui_menu/`; a leitura em `medicoes/item26-menu.md`,
+`medicoes/item49-menu-http.md` e `medicoes/item82-arvore-no-xmp.md`.
 
-⚠ **As duas vias divergem no essencial:** no NAVEGADOR o menu não existe antes de ser aberto e o
-percurso é cascata de cliques; na via HTTP a árvore INTEIRA já vem no boot e só a FOLHA vira POST
-(§ "O mesmo menu pela via HTTP pura" abaixo). Mesmo modelo de item, mesmo caminho por rótulo.
+⚠ **As duas vias divergem só no ACIONAMENTO:** as duas recebem a árvore INTEIRA no boot e a leem de
+graça — na HTTP ela está no delta, no navegador está guardada como marcação inerte dentro de `<xmp>`
+(§ abaixo). O que muda é o gesto: na HTTP só a FOLHA vira POST (`action/4`); no navegador o clique é
+em ELEMENTO, e a folha só vira elemento depois de o pai ser clicado — a cascata é irredutível.
 
 ```js
-import { abrirMenu, navegarMenu, itensDeMenu } from './webgui.mjs';
+import { arvoreDeMenu, abrirMenu, navegarMenu, itensDeMenu } from './webgui.mjs';
 
-const menus = await abrirMenu(s);                         // Programa | Processar | … | Sistema | Ajuda
-const sob  = await navegarMenu(s, 'Sistema > Serviços', { acionar: false });   // só DESCOBRE
-sob.filhos.map((i) => i.rotulo);                          // Reporting | QuickViewer | Batch input | …
+const arvore = await arvoreDeMenu(s);   // 146 itens, 4 níveis, ZERO clique, ~20 ms (SE38)
+const sob = await navegarMenu(s, 'Sistema > Serviços', { acionar: false });   // só DESCOBRE
+sob.filhos.map((i) => i.rotulo);        // Reporting | QuickViewer | Batch input | … — 8 ms, 0 clique
 
 const r = await navegarMenu(s, 'Sistema > Serviços > Reporting');
 r.mudou;   // true — partiu da SE38 e chegou na SA38, sem o script saber o tcode
 ```
 
-### O menu NÃO existe no DOM antes de ser aberto
+### O menu não é ELEMENTO antes de aberto — mas a árvore inteira já está no DOM, em `<xmp>`
 
-Nenhum despejo de tela traz a barra de menu: quem a materializa é o botão `cua2sapmenu_btn` (SID
-`wnd[0]/tbar[0]/[0]`). ⚠ O `lsdata[14]` dele nomeia o popup (`mnu0_63`, `mnu0_494`) e **muda a cada
-render** — não serve de âncora. Estáveis são o id do botão e o SID `wnd[0]/mbar`.
+Quem materializa a barra é o botão `cua2sapmenu_btn` (SID `wnd[0]/tbar[0]/[0]`). ⚠ O `lsdata[14]`
+dele nomeia o popup (`mnu0_63`, `mnu0_494`) e **muda a cada render** — não serve de âncora. Estáveis
+são o id do botão e o SID `wnd[0]/mbar`.
+
+Elemento não há mesmo: na SE38 recém carregada, `querySelectorAll('[ct="POMNI"]')` **sem** filtro de
+visível devolve 0 de `wnd[0]/mbar` (os 7 que aparecem são o menu de informação do sistema). Mas o
+boot escreve a marcação de CADA popup num `<xmp>` inerte (`class="lsPopupMenu__metaData"`, 28 na
+SE38), e ali estão os **146 `POMNI` em quatro níveis com os 11 cinzas** — os mesmos que a via HTTP
+recebe no delta. O renderer **guarda a marcação e infla sob demanda**, um popup por clique: o botão
+inflou os 7 do nível 0; "Sistema" inflou só os 12 filhos dele.
+
+É disso que vive o `arvoreDeMenu` (`DOMParser` sobre o texto dos `<xmp>`, documento solto que não
+entra na página) e é por isso que `navegarMenu` resolve o caminho INTEIRO — rótulo inexistente,
+item cinza — **antes de tocar na tela**: medido na SE38, a guarda do cinza caiu de 13 559 ms (e 51
+elementos materializados, com o menu ficando aberto) para 6 ms com o DOM intocado.
 
 Aberto, o menu é o modelo mais legível deste canal: **o `id` de cada item É o caminho**, igual ao
 SID do SAP GUI.

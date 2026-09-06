@@ -2959,6 +2959,24 @@ export async function comandar(sessao, texto, { tetoMs = 25000, publicarValores 
 // modelo mais legível deste canal — 121 itens varridos numa tela, e **o `id` de cada item É o
 // caminho** (`wnd[0]/mbar/menu[5]/menu[3]/menu[0]`), igual ao SID do SAP GUI.
 //
+// ⚠️ **"Não existe no DOM" era meia verdade — a ÁRVORE INTEIRA está lá, como TEXTO.** Medido no
+// item 82 (s4h 758/250, 06/09/2026, `medicoes/item82-arvore-no-xmp.md`): elemento de menu não há
+// mesmo — `querySelectorAll('[ct="POMNI"]')` SEM o filtro de visível devolve **0** da barra antes
+// do clique. Mas o boot escreve a marcação de CADA popup dentro de um `<xmp>` inerte
+// (`class="lsPopupMenu__metaData"`, um por popup, 28 na SE38), e ali estão os **146 `POMNI` de
+// `wnd[0]/mbar` em quatro níveis** — os MESMOS 146 (e os mesmos 11 cinzas) que o boot da via HTTP
+// devolve no delta (item 49). O renderer não descarta nem esconde: ele **guarda a marcação e INFLA
+// sob demanda**, um popup por clique (o botão inflou os 7 do nível 0; "Sistema" inflou só os 12
+// filhos DELE — a folha de nível 2 continuou não existindo).
+//
+// Daí a divisão de trabalho desta seção, e é ela que paga:
+//  · **LER é de graça** — `arvoreDeMenu` interpreta os `<xmp>` em ~15 ms, ZERO clique, ZERO rede;
+//    `navegarMenu({ acionar: false })` e as guardas (rótulo inexistente, item cinza) saem daí,
+//    como na via HTTP. Antes isso custava a cascata inteira de cliques.
+//  · **ACIONAR ainda é CASCATA** — a folha só vira elemento depois de o pai ser clicado, e clique
+//    é em elemento. O que a árvore tira da cascata é a leitura entre os passos: o caminho já vem
+//    resolvido por `id`, e `clicar` (que espera o alvo aparecer) basta.
+//
 // ⚠️ TRÊS armadilhas, todas medidas, todas silenciosas:
 //  1. **Há DOIS menus `POMNI` na tela.** O da barra (`wnd[0]/mbar/…`) e o de informação do sistema
 //     (`sysInfoAreaMenuItem*`), que tem um item chamado **"Sistema"** — o mesmo rótulo do menu
@@ -3051,6 +3069,57 @@ export async function itensDeMenu(sessao) {
   return (brutos ?? []).filter((b) => daBarraDeMenu(b.id)).map(interpretarItemDeMenu);
 }
 
+/**
+ * O despejo da ÁRVORE INTEIRA, lida da marcação que o boot guardou nos `<xmp>` — sem clicar em
+ * nada (§ item 82 acima). Cada popup vem num `<xmp>` inerte; o `DOMParser` o transforma em
+ * documento SOLTO (não entra no DOM da página) e daí saem os `POMNI` com `id` e `lsdata`.
+ *
+ * ⚠️ Os `<xmp>` trazem também os menus de CONTEXTO da área de trabalho (`wnd[0]/usr/mnu/…`, 39 na
+ * SE38) — quem filtra a barra é o `arvoreDeMenu`, como já fazia o `itensDeMenu`.
+ */
+export const JS_ARVORE_DE_MENU = `[...document.querySelectorAll('xmp')]
+  .filter((x) => (x.textContent || '').indexOf('POMNI') >= 0)
+  .flatMap((x) => [...new DOMParser().parseFromString(x.textContent, 'text/html').querySelectorAll('[ct="POMNI"]')])
+  .map((el) => { let d = null; try { d = JSON.parse(el.getAttribute('lsdata')); } catch { d = null; }
+    return { id: el.id || null, lsdata: d, desabilitado: el.getAttribute('aria-disabled') }; })`;
+
+/**
+ * A árvore de menu INTEIRA da tela atual, já interpretada — **zero clique, zero rede** (~15 ms).
+ * `nivel: 0` são os itens da barra; `submenu` diz quem tem filhos; `habilitado` já traz a guarda
+ * do cinza (`lsdata[5]`, item 48) para o caminho todo, e não só para onde a cascata chegou.
+ *
+ * Medido na SE38 (146 itens, 4 níveis, 11 cinzas) e na SE16 (83 itens, 15 cinzas): a árvore é a da
+ * tela do momento e acompanha a troca de tela sozinha — é lida do DOM, não guardada.
+ */
+export async function arvoreDeMenu(sessao) {
+  const brutos = await avaliar(sessao, JS_ARVORE_DE_MENU);
+  return (brutos ?? []).filter((b) => daBarraDeMenu(b.id)).map(interpretarItemDeMenu);
+}
+
+/**
+ * PURO: desce a árvore por RÓTULO e devolve `{ caminho, passos, alvo, filhos }`. Os candidatos de
+ * cada passo são só os filhos DIRETOS do nó anterior — dois menus podem ter o mesmo rótulo em
+ * ramos diferentes, e casar por rótulo solto pega o errado (item 26).
+ *
+ * É o mesmo percurso das DUAS vias: o `its.mjs` o reexporta e roda sobre os itens do delta.
+ */
+export function acharCaminhoDeMenu(itens, caminho) {
+  const partes = partirCaminhoDeMenu(caminho);
+  const filhosDe = (sid) => (sid === null
+    ? (itens ?? []).filter((i) => i.nivel === 0)
+    : (itens ?? []).filter((i) => filhoDiretoDeMenu(sid, i.id)));
+  let sid = null;
+  const passos = [];
+  for (const rotulo of partes) {
+    const irmaos = filhosDe(sid);
+    const alvo = acharItemDeMenu(irmaos, rotulo);
+    if (!alvo) throw new Error(`menu: "${rotulo}" não está sob ${sid ?? 'wnd[0]/mbar'}. Tenho: ${irmaos.map((i) => i.rotulo).join(' | ')}`);
+    passos.push(alvo);
+    sid = alvo.sid ?? alvo.id;
+  }
+  return { caminho: partes, passos, alvo: passos[passos.length - 1], filhos: filhosDe(sid) };
+}
+
 /** Fecha o menu da barra usando o TOGGLE. ⚠️ Nunca com `Escape` — ele cancela a TRANSAÇÃO. */
 export async function fecharMenu(sessao, { tentativas = 3 } = {}) {
   for (let t = 0; t < tentativas; t += 1) {
@@ -3087,55 +3156,39 @@ export async function abrirMenu(sessao, { tetoMs = 6000, tentativas = 4 } = {}) 
  * await navegarMenu(s, 'Sistema > Serviços > Reporting');   // da SE38 chega na SA38
  * ```
  *
- * ⚠️ O percurso é CASCATA, e tem de ser: abrir um irmão FECHA o submenu anterior, então não dá
- * para varrer o nível inteiro e só depois descer. A cada passo os candidatos são só os filhos
- * DIRETOS do nó atual (`filhoDiretoDeMenu`) — nunca "todo item com este rótulo".
+ * O caminho é resolvido de UMA vez na `arvoreDeMenu` (zero clique) — rótulo inexistente e item
+ * cinza denunciam ANTES de o menu sequer abrir, e `{ acionar: false }` devolve os `filhos` do
+ * último nó sem tocar em nada: é assim que se DESCOBRE o menu de uma tela.
+ *
+ * ⚠️ O ACIONAMENTO continua CASCATA, e tem de ser: a folha só vira elemento depois de o pai ser
+ * clicado (§ item 82), e abrir um irmão FECHA o submenu anterior. O que a árvore tirou daqui foi a
+ * LEITURA entre os passos — cada nó já vem com o `id`, e o `clicar` espera o alvo aparecer, que é
+ * a espera não-síncrona de que o submenu precisa.
  *
  * Devolve `{ caminho, passos, folha, mudou }`. `mudou: false` é INFORMAÇÃO, a mesma de `acionar`:
  * a folha foi clicada e a tela ficou igual.
- *
- * Com `{ acionar: false }` para no último nó e devolve os `filhos` dele — é assim que se DESCOBRE
- * o menu de uma tela sem acionar nada.
  */
 export async function navegarMenu(sessao, caminho, { acionar: aciona = true, tetoMs = 8000, tetoAcaoMs = 40000 } = {}) {
-  const partes = partirCaminhoDeMenu(caminho);
-  await abrirMenu(sessao);
-  let prefixo = 'wnd[0]/mbar';
-  const passos = [];
-  for (let n = 0; n < partes.length; n += 1) {
-    const rotulo = partes[n];
-    const irmaos = (await itensDeMenu(sessao)).filter((i) => filhoDiretoDeMenu(prefixo, i.id));
-    const alvo = acharItemDeMenu(irmaos, rotulo);
-    if (!alvo) {
-      throw new Error(`webgui: navegarMenu — "${rotulo}" não está sob ${prefixo}. Tenho: ${irmaos.map((i) => i.rotulo).join(' | ')}`);
-    }
-    // ⚠️ item DESABILITADO: o clique é ENGOLIDO — medido no mesmo popup (SAP Easy Access,
-    // "Processar"), o cinza deixa o menu ABERTO e o carimbo igual, enquanto o irmão habilitado
-    // fecha o menu e muda a tela. Sem esta guarda a falha seria a mais silenciosa deste canal:
-    // o percurso esperaria 8 s por filhos que nunca vêm e devolveria "zero filhos".
-    if (!alvo.habilitado) {
-      throw new Error(`webgui: navegarMenu — "${alvo.rotulo}" está DESABILITADO nesta tela (${alvo.id}); o clique não faria nada`);
-    }
-    const ultimo = n === partes.length - 1;
-    if (ultimo && !alvo.submenu && aciona) {
-      const antes = await carimbo(sessao);
-      await clicar(sessao, alvo.id);
-      const mudou = await esperarMudanca(sessao, antes, { tetoMs: tetoAcaoMs });
-      passos.push({ ...alvo, acionado: true });
-      return { caminho: partes, passos, folha: alvo, mudou };
-    }
-    await clicar(sessao, alvo.id);
-    // ⚠️ a abertura do submenu NÃO é síncrona: esperar o FILHO, nunca um tempo fixo. Com espera
-    // fixa de 900 ms, "Serviços" devolvia 0 filhos ora sim ora não.
-    const ate = Date.now() + tetoMs;
-    let filhos = [];
-    do {
-      await espera(300);
-      filhos = (await itensDeMenu(sessao)).filter((i) => filhoDiretoDeMenu(alvo.id, i.id));
-    } while (Date.now() < ate && !filhos.length);
-    passos.push({ ...alvo, filhos });
-    prefixo = alvo.id;
-    if (ultimo) return { caminho: partes, passos, folha: null, filhos, mudou: false };
+  const arvore = await arvoreDeMenu(sessao);
+  if (!arvore.length) {
+    throw new Error('webgui: navegarMenu — esta tela não publicou árvore de menu nenhuma nos `<xmp>` '
+      + '(nenhum POMNI de wnd[n]/mbar); o menu da barra pode não existir aqui');
   }
-  return { caminho: partes, passos, folha: null, mudou: false };
+  const { caminho: partes, passos, alvo, filhos } = acharCaminhoDeMenu(arvore, caminho);
+  // ⚠️ item DESABILITADO: o clique é ENGOLIDO — medido no mesmo popup (SAP Easy Access,
+  // "Processar"), o cinza deixa o menu ABERTO e o carimbo igual, enquanto o irmão habilitado
+  // fecha o menu e muda a tela. Sem esta guarda a falha seria a mais silenciosa deste canal:
+  // o percurso esperaria pelos filhos que nunca vêm. Agora vale para o caminho INTEIRO, e de
+  // graça — a árvore traz o `lsdata[5]` de todos os níveis.
+  const cinza = passos.find((p) => !p.habilitado);
+  if (cinza) {
+    throw new Error(`webgui: navegarMenu — "${cinza.rotulo}" está DESABILITADO nesta tela (${cinza.id}); o clique não faria nada`);
+  }
+  if (!aciona || alvo.submenu) return { caminho: partes, passos, folha: null, filhos, mudou: false };
+  await abrirMenu(sessao);
+  for (const passo of passos.slice(0, -1)) await clicar(sessao, passo.id, { tetoMs });
+  const antes = await carimbo(sessao);
+  await clicar(sessao, alvo.id, { tetoMs });
+  const mudou = await esperarMudanca(sessao, antes, { tetoMs: tetoAcaoMs });
+  return { caminho: partes, passos, folha: alvo, mudou };
 }

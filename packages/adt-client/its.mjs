@@ -48,6 +48,7 @@ import {
   urlWebgui, autorizacao, interpretarSonda, okcodeDe, campoDoSid, janelaDoSid, OKCODES,
   montarTela, sidDoLsdata, rotuloLimpo, teclaDoBotao, sidsDaTela,
   interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu, filhoDiretoDeMenu, daBarraDeMenu,
+  acharCaminhoDeMenu,
   criarPilhaDeDesfazer, transacional,
 } from './webgui.mjs';
 
@@ -1569,25 +1570,10 @@ export function itensDeMenu(sessao, { sob = null } = {}) {
   return itens.filter((i) => filhoDiretoDeMenu(String(sob), i.id));
 }
 
-/**
- * PURO: desce a árvore por RÓTULO e devolve `{ passos, alvo, filhos }`. Os candidatos de cada
- * passo são só os filhos DIRETOS do nó anterior — dois menus podem ter o mesmo rótulo em ramos
- * diferentes, e casar por rótulo solto pega o errado (item 26).
- */
-export function acharCaminhoDeMenu(itens, caminho) {
-  const partes = partirCaminhoDeMenu(caminho);
-  const filhosDe = (sid) => (sid === null ? itens.filter((i) => i.nivel === 0) : itens.filter((i) => filhoDiretoDeMenu(sid, i.id)));
-  let sid = null;
-  const passos = [];
-  for (const rotulo of partes) {
-    const irmaos = filhosDe(sid);
-    const alvo = acharItemDeMenu(irmaos, rotulo);
-    if (!alvo) throw new Error(`its: navegarMenu — "${rotulo}" não está sob ${sid ?? 'wnd[0]/mbar'}. Tenho: ${irmaos.map((i) => i.rotulo).join(' | ')}`);
-    passos.push(alvo);
-    sid = alvo.sid ?? alvo.id;
-  }
-  return { caminho: partes, passos, alvo: passos[passos.length - 1], filhos: filhosDe(sid) };
-}
+// O percurso por rótulo é o MESMO das duas vias e o código é UM só: `acharCaminhoDeMenu` mora no
+// `webgui.mjs`, ao lado dos outros puros do menu, e é reexportado aqui (item 82). Lá ele desce a
+// árvore lida dos `<xmp>` do DOM; aqui, a lida do delta — mesmo modelo de item, mesmo erro.
+export { acharCaminhoDeMenu };
 
 /**
  * Vai a uma tela pelo CAMINHO de menu, sem saber o tcode e sem navegador:
