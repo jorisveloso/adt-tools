@@ -1503,6 +1503,9 @@ export async function lerGridInteiro(sessao, alvo = null, { de = 1, ate = null, 
  * é o programa ABAP, não este módulo; e a prova de que gravou é ler em outra LUW.
  *
  * Devolve `{ id, sid, linha, coluna, nomeColuna, de, para, publicado, pendente, ms }`.
+ *
+ * ⚠️ **Uma célula por vez.** Para VÁRIAS de uma vez, `colarBloco` — medido (item 79) que as mesmas 6
+ * células custam 9748 ms aqui e 2578 ms num round-trip só lá.
  */
 export async function escreverCelula(sessao, alvo = null, { linha, coluna, valor } = {}) {
   const t0 = Date.now();
@@ -1540,6 +1543,185 @@ export async function escreverCelula(sessao, alvo = null, { linha, coluna, valor
   detalhe(`webgui: escreverCelula ${id} (${b.colunas?.[c - 1] ?? c}) "${de}" → "${para}" — publicado, PENDENTE de round-trip`);
   return { id, sid: b.sid ?? g.sid, linha: n, coluna: c, nomeColuna: b.colunas?.[c - 1] ?? null,
     de, para, publicado: publicado ?? null, pendente: true, ms: Date.now() - t0 };
+}
+
+// ---------- COLAR UM BLOCO no ALV, num gesto só (item 79) ----------
+//
+// Medido no s4h 758/250 em 06/09/2026 (fila `adt-client`, item 79; bruto e leitura em
+// `sap-accelerate/work/POC_webgui_grid_paste/`), no mesmo laboratório do item 47
+// (`ZJBV_ALV47_EDIT`: ALV editável que PERSISTE).
+//
+// A célula editável declara `"ClipboardTablePaste":[{},{"0":"GuiTextField","1":"action/25",…}]` —
+// e aqui **o `lsevents` MENTE**: colar não posta `action/25` nenhum. O que sai é
+//
+//   focus/<SID do shell>                       ← só quando o foco ainda não estava no grid
+//   action/50/<SID>   top_left_column_index=<c>&top_left_row_index=<r>&bottom_right_…&reference_…
+//   action/53/<SID>   row_index=<r>&column_index=<c>          ← a célula CORRENTE: a ÂNCORA
+//   action/770/<SID>  c0=<v>&c1=<v>…&curColIdx=<c 1-based>&curRowIdx=<n 0-based, RELATIVO à âncora>
+//   … um `action/770` POR LINHA colada …
+//   state/ur
+//
+// tudo num POST só, e o `content` sai URL-encoded (`a;b` → `a%3Bb`). O separador de coluna é o TAB
+// e o de linha é a quebra — `\n` e `\r\n` deram o MESMO batch (fase B, casos 3 e 4), que é o que
+// faz o TSV do Excel servir direto.
+//
+// **É round-trip IMEDIATO**, ao contrário do `escreverCelula` (que fica pendente no navegador até
+// o gesto seguinte): 2×2 = 4 células numa requisição, ~2,5 s com o clique da âncora incluído.
+//
+// ⚠️ **A âncora é a célula CORRENTE do ALV, não o elemento em que o `paste` cai.** Medido (fase C,
+// caso `a`): disparar o evento no span da célula 3,NOME **sem clicar nela antes** colou na (1,1) —
+// a corrente do ALV — com `curColIdx=1`: "REP79" foi para o ID (truncado a "REP", maxlen 3) e
+// "931" para o NOME. Por isso `colarBloco` CLICA na âncora e exige o campo de entrada aberto.
+//
+// ⚠️ **Texto sem TAB e sem quebra não é colagem de tabela** (fase B caso 1, fase C caso `b`): o
+// handler nem chama `preventDefault`, 0 requisição, nada muda — e calado. Uma célula é
+// `escreverCelula`.
+//
+// ⚠️ **Coluna que estoura à direita some SEM AVISO** (fase B caso 6): ancorado na última coluna,
+// `c0=601&c1=X&c2=Y` foi postado inteiro, o ALV aplicou o `601` e descartou `X` e `Y` em silêncio.
+//
+// ⚠️ **Linha que estoura embaixo o ALV ANEXA** (fase B caso 5): entre os `action/770` entra um
+// `action/771 curRowIdx=0&pasteOption=Append` e o total foi de 3 para 5. Mas a linha nova nasce
+// VAZIA fora do bloco — o renderer manda `c1=&c2=` —, então a chave que não veio no bloco fica em
+// branco. É o `anexadas` do retorno.
+//
+// ⚠️ **A tela depois do paste NÃO é prova.** Fase C caso `d`: colar `ABC` na coluna numérica `QTD`
+// deixou `ABC` no grid, o `FC01` respondeu *"ITEM47 GRAVOU subrc=0 n=3"* e o banco ficou com o
+// valor ANTIGO (815) — sem mensagem e sem a tela se corrigir. (Neste laboratório o
+// `check_changed_data( )` é chamado sem ler `e_valid`; outro programa reagiria.) A prova é ler em
+// outra LUW.
+//
+// ⚠️ **Colar não grava.** Contra-prova pareada da fase C: colar 2×2 e fechar a sessão SEM o fcode
+// deixou o banco IDÊNTICO; o mesmo bloco com `FC01` gravou (`931`, `ITEM79B`, `ITEM79C`). O
+// round-trip do paste entrega o dado ao ALV, não ao banco.
+//
+// A via medida do gesto é o `ClipboardEvent` sintético com `DataTransfer`. O paste NATIVO do CDP
+// (`Input.dispatchKeyEvent{ commands: ['paste'] }` depois de `navigator.clipboard.writeText`)
+// produziu **o mesmo batch** (fase A) — mas passa pelo clipboard do SISTEMA, que é da máquina
+// inteira e do usuário; por isso a lib usa o sintético.
+
+/**
+ * PURO: a matriz vira o TSV que o Excel põe no clipboard — TAB entre colunas, quebra entre linhas.
+ * Aceita também o TSV já pronto (o `\r\n` do Excel é normalizado). Recusa TAB ou quebra DENTRO de
+ * um valor — ali o renderer partiria a célula em duas sem avisar — e recusa o bloco de UMA célula,
+ * que o renderer ignora em silêncio (§ acima).
+ * Devolve `{ tsv, linhas, colunas, celulas, matriz }`.
+ */
+export function tsvDoBloco(valores) {
+  const bruta = typeof valores === 'string'
+    ? String(valores).replace(/\r\n?/g, '\n').split('\n').map((l) => l.split('\t'))
+    : valores;
+  if (!Array.isArray(bruta) || !bruta.length) {
+    throw new Error('webgui: colarBloco — `valores` é o bloco: array de linhas (cada uma array de células) ou o TSV pronto; '
+      + `veio ${Array.isArray(bruta) ? 'um array vazio' : JSON.stringify(valores)}`);
+  }
+  const matriz = bruta.map((l, i) => {
+    const cels = Array.isArray(l) ? l : [l];
+    if (!cels.length) throw new Error(`webgui: colarBloco — a linha ${i + 1} do bloco não tem célula nenhuma`);
+    return cels.map((v, j) => {
+      const s = v === null || v === undefined ? '' : String(v);
+      if (/[\t\r\n]/.test(s)) {
+        throw new Error(`webgui: colarBloco — o valor da linha ${i + 1}, coluna ${j + 1} tem TAB ou quebra `
+          + `(${JSON.stringify(s)}): são os separadores do bloco, e o renderer partiria a célula em duas sem avisar`);
+      }
+      return s;
+    });
+  });
+  const colunas = Math.max(...matriz.map((l) => l.length));
+  const celulas = matriz.reduce((n, l) => n + l.length, 0);
+  if (matriz.length === 1 && colunas === 1) {
+    throw new Error('webgui: colarBloco — um bloco de UMA célula não é colagem de tabela: medido que sem TAB e sem '
+      + 'quebra o renderer ignora o paste (0 requisição, nada muda, em silêncio). Para uma célula: `escreverCelula`.');
+  }
+  return { tsv: matriz.map((l) => l.join('\t')).join('\n'), linhas: matriz.length, colunas, celulas, matriz };
+}
+
+/** PURO: o gesto de colar — o `paste` com um `DataTransfer` de texto sobre o elemento `id`.
+ * `tratado: true` (o `preventDefault` do renderer) é o sinal de que virou colagem de TABELA. */
+export const jsColarNoGrid = (id, tsv) => `(() => {
+  const el = document.getElementById(${JSON.stringify(String(id))});
+  if (!el) return { erro: 'a célula ' + ${JSON.stringify(String(id))} + ' sumiu do DOM antes do paste' };
+  const dt = new DataTransfer();
+  dt.setData('text/plain', ${JSON.stringify(String(tsv))});
+  const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+  el.dispatchEvent(ev);
+  return { tag: el.tagName, foco: document.activeElement === el, tratado: ev.defaultPrevented };
+})()`;
+
+/**
+ * Cola um BLOCO no ALV **desta** tela a partir da célula (`linha`, `coluna`) — o gesto que troca N
+ * `escreverCelula` por um round-trip só. `alvo` escolhe o grid como no `lerGrid`; `linha` é o
+ * índice ABSOLUTO (o `_linha` do `lerGrid`) e `coluna` é o nome do `ColumnIDs` ou o índice 1-based;
+ * `valores` é `[['a', 1], ['b', 2]]` ou o TSV pronto.
+ *
+ * ⚠️ **MANDA ao servidor na hora** (`pendente: false`) — o contrário do `escreverCelula`. Mas
+ * mandar não é GRAVAR: quem grava é o programa ABAP, no fcode seguinte (`comandar(sessao, 'FC01')`),
+ * e a prova é ler em outra LUW (§ acima).
+ *
+ * Devolve `{ id, sid, linha, coluna, nomeColuna, nLinhas, nColunas, celulas, total, anexadas,
+ * divergentes, pendente, ms }`. `anexadas` > 0 quando o bloco passou do fim e o ALV criou linha;
+ * `divergentes` lista o que a tela NÃO mostrou como pedido (a coluna que recusa o valor não avisa).
+ */
+export async function colarBloco(sessao, alvo = null, { linha, coluna, valores, tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const bloco = tsvDoBloco(valores);
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'colarBloco');
+  const b = await avaliar(sessao, jsBlocoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: colarBloco — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  if (b.editavel !== true) {
+    throw new Error(`webgui: colarBloco — o grid ${g.id} não é editável (o lsdata dele diz editable=${b.editavel}). `
+      + 'ALV somente-leitura não tem campo de entrada: o clique na âncora não abre input e nada seria colado.');
+  }
+  const c = indiceDaColuna(b.colunas, coluna);
+  const n = Number(linha);
+  const presentes = Object.keys(b.celulas).map(Number).filter(Number.isFinite).sort((x, y) => x - y);
+  if (!b.celulas[String(n)]) {
+    throw new Error(`webgui: colarBloco — a linha âncora ${linha} não está no bloco carregado `
+      + `(${presentes[0] ?? '-'}..${presentes[presentes.length - 1] ?? '-'} de ${b.total}). `
+      + 'Chegar a linha distante é navegação: `posicionarGrid(sessao, alvo, linha)`.');
+  }
+  const nCols = b.colunas?.length ?? 0;
+  if (nCols && c + bloco.colunas - 1 > nCols) {
+    throw new Error(`webgui: colarBloco — o bloco tem ${bloco.colunas} coluna(s) a partir de `
+      + `${b.colunas[c - 1]} (${c}) e o grid só tem ${nCols}: as ${c + bloco.colunas - 1 - nCols} que sobram seriam `
+      + 'DESCARTADAS em silêncio (medido). Ancore mais à esquerda ou corte o bloco.');
+  }
+  const id = `grid#${g.id}#${n},${c}#if`;
+  const p = await apontar(sessao, { id }, { descer: false });
+  if (!p) throw new Error(`webgui: colarBloco — a célula âncora ${id} não está apontável na tela`);
+  await clique(sessao, p);
+  await esperarQuieto(sessao, { quietoMs: 800, tetoMs: 8000 });
+  const foco = await avaliar(sessao, `(() => { const a = document.activeElement; return a && a.id === ${JSON.stringify(id)} && 'value' in a ? a.tagName : (a && a.id) || null; })()`);
+  if (foco !== 'INPUT') {
+    throw new Error(`webgui: colarBloco — o clique na âncora ${id} não abriu campo de entrada (o foco ficou em `
+      + `${foco ?? 'nada'}). Sem a âncora o ALV cola na célula CORRENTE dele, que é outra (medido): a célula está `
+      + 'protegida, ou o ALV está em "editável e não pronto para entrada" (o botão Exibir/Modificar alterna isso).');
+  }
+  const antes = Number(b.total || 0);
+  const r = await avaliar(sessao, jsColarNoGrid(id, bloco.tsv));
+  if (r?.erro) throw new Error(`webgui: colarBloco — ${r.erro}`);
+  if (r?.tratado !== true) {
+    throw new Error('webgui: colarBloco — o renderer não tratou o paste (nenhum `preventDefault`): o gesto NÃO virou '
+      + 'colagem de tabela e nada foi mandado. É o modo de falha silencioso do bloco sem TAB e sem quebra.');
+  }
+  await esperarQuieto(sessao, { quietoMs: 1200, tetoMs });
+  const d = await avaliar(sessao, jsBlocoDoGrid(g.id));
+  const divergentes = [];
+  bloco.matriz.forEach((ls, i) => ls.forEach((v, j) => {
+    const lin = n + i, col = c + j;
+    const ficou = d?.celulas?.[String(lin)]?.[String(col)] ?? null;
+    if (String(ficou ?? '').trim() !== v.trim()) {
+      divergentes.push({ linha: lin, coluna: col, nomeColuna: d?.colunas?.[col - 1] ?? null, pedi: v, ficou });
+    }
+  }));
+  const anexadas = Number(d?.total || 0) - antes;
+  detalhe(`webgui: colarBloco ${g.id} — ${bloco.linhas}×${bloco.colunas} (${bloco.celulas} células) a partir de `
+    + `${n},${b.colunas?.[c - 1] ?? c} num round-trip`
+    + (anexadas > 0 ? `; ${anexadas} linha(s) ANEXADA(s) pelo ALV, vazias fora do bloco` : '')
+    + (divergentes.length ? `; ⚠ ${divergentes.length} célula(s) NÃO ficaram como pedido: ${divergentes.map((x) => `${x.linha},${x.nomeColuna ?? x.coluna} "${x.pedi}"→"${x.ficou}"`).join(', ')}` : ''));
+  return { id, sid: b.sid ?? g.sid, linha: n, coluna: c, nomeColuna: b.colunas?.[c - 1] ?? null,
+    nLinhas: bloco.linhas, nColunas: bloco.colunas, celulas: bloco.celulas,
+    total: Number(d?.total || 0), anexadas, divergentes, pendente: false, ms: Date.now() - t0 };
 }
 
 // ---------- posicionar o ALV numa linha DISTANTE (item 75) ----------

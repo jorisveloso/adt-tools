@@ -2559,6 +2559,112 @@ apaga a linha errada na segunda: passe as duas juntas, ou releia o bloco entre u
 viaja no próximo round-trip, junto do gesto de gravar. Os dois conferem o total depois do gesto e
 estouram quando o programa recusou a inserção ou a exclusão.
 
+## Colar um BLOCO no ALV — N células num round-trip só (item 79)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 79; evidência em
+`sap-accelerate/work/POC_webgui_grid_paste/medicoes/item79-colar-bloco.md`). O item 47 deixou
+anotado que a célula editável publica
+`"ClipboardTablePaste":[{},{"0":"GuiTextField","1":"action/25","2":true,"3":true}]` — um dos raros
+`lsevents` de shell que **traz** o comando. Ele traz, e **mente**: colar não posta `action/25`
+nenhum.
+
+```js
+import { colarBloco, comandar } from './webgui.mjs';
+
+await colarBloco(s, null, { linha: 1, coluna: 'NOME', valores: [
+  ['ITEM79-A', 201], ['ITEM79-B', 202], ['ITEM79-C', 203] ] });   // 6 células, 1 requisição
+await colarBloco(s, null, { linha: 1, coluna: 'NOME', valores: 'a\t1\r\nb\t2' }); // TSV do Excel
+await comandar(s, 'FC01');                       // ← é ISTO que grava; colar só mexe no ALV
+```
+
+### O que o gesto POSTA de verdade
+
+Um POST só, com o batch inteiro (`raw/a-sonda.json`, `raw/b-forma.json`):
+
+```
+focus/<SID do shell>                      ← só quando o foco ainda não estava no grid
+action/50/<SID>   top_left_column_index=2&top_left_row_index=1&bottom_right_…&reference_…
+action/53/<SID>   row_index=1&column_index=2          ← a célula CORRENTE: a ÂNCORA
+action/770/<SID>  c0=ITEM79-A&c1=201&curColIdx=2&curRowIdx=0
+action/770/<SID>  c0=ITEM79-B&c1=202&curColIdx=2&curRowIdx=1     ← um action/770 POR LINHA
+state/ur
+```
+
+`curColIdx` é a coluna ÂNCORA, 1-based (a mesma numeração do `lerGrid` e do `indiceDaColuna`);
+`curRowIdx` é 0-based e **relativo à âncora** — ancorado na linha 2, a primeira linha colada sai
+com `curRowIdx=0`. O `content` vai URL-encoded (`a;b` → `a%3Bb`). Separador de coluna é o TAB, de
+linha é a quebra: `\n` e `\r\n` produziram o **mesmo** batch, e é isso que faz o TSV copiado do
+Excel servir direto.
+
+### O que isso economiza
+
+As mesmas 6 células do laboratório, medidas na mesma sessão (`raw/d-e2e.json`):
+
+| via | tempo | requisições | estado depois |
+|---|---|---|---|
+| 6 × `escreverCelula` | **9748 ms** | 0 (tudo pendente) | `pendente: true` — só viaja no próximo gesto |
+| 1 × `colarBloco` | **2578 ms** | **1** | já chegou ao ALV |
+
+⚠ **`colarBloco` faz round-trip, então ele LEVA JUNTO o que estava pendente** de `escreverCelula`:
+no e2e, o POST do paste saiu com os 6 `action/622` da fila anterior antes dos seus `action/770`.
+
+### ⚠ A âncora é a célula CORRENTE do ALV, não o elemento onde o `paste` cai
+
+O achado que mais dói. Disparando o evento no span da célula `3,NOME` **sem clicar nela antes**, o
+ALV colou na célula `(1,1)` — a corrente dele — e o `content` saiu `curColIdx=1`: `REP79` foi para
+o `ID` (truncado a `REP`, maxlen 3) e `931` para o `NOME` (`raw/c-luw.json`, caso `a`). O elemento
+do `dispatchEvent` não escolhe nada; quem escolhe é o clique anterior. Por isso `colarBloco` clica
+na âncora e exige o campo de entrada aberto antes de colar.
+
+### ⚠ Os três silêncios
+
+| situação | o que acontece | como `colarBloco` reage |
+|---|---|---|
+| texto **sem TAB e sem quebra** | o renderer nem chama `preventDefault`: 0 requisição, nada muda | recusa antes, apontando `escreverCelula` |
+| **coluna estoura à direita** | `c0=601&c1=X&c2=Y` é postado inteiro; o ALV aplica o que cabe e **descarta o resto calado** | recusa antes, dizendo quantas sobram |
+| **linha estoura embaixo** | o ALV **ANEXA**: entra um `action/771 pasteOption=Append` entre os `770`, e o total foi de 3 para 5 | deixa acontecer e devolve `anexadas` |
+
+A linha anexada nasce **vazia fora do bloco** — o renderer manda `c1=&c2=` —, então a chave que não
+veio no bloco fica em branco (mesma armadilha do `inserirLinha` do item 78).
+
+### ⚠ A tela depois do paste não é prova
+
+Colar `ABC` na coluna numérica `QTD` deixou `ABC` no grid, o `FC01` respondeu *"ITEM47 GRAVOU
+subrc=0 n=3"* — e o banco ficou com o valor **antigo** (815), sem mensagem e sem a tela se corrigir
+(`raw/c-luw.json`, caso `d`). O `check_changed_data( )` do laboratório é chamado sem ler `e_valid`;
+outro programa reagiria. A lição vale para qualquer um: a prova é ler em outra LUW. `colarBloco`
+devolve `divergentes` — o que a tela não mostrou como pedido —, que pega o truncamento mas **não**
+pega este caso.
+
+### ⚠ Colar não grava
+
+Contra-prova pareada, mesma sequência, só o fcode mudando (`raw/c-luw.json`):
+
+| | round-trip do paste | `FC01` | a tabela em OUTRA LUW |
+|---|---|---|---|
+| **NEGATIVA** | sim, 1 POST | **não mandado** | **inalterada** |
+| **POSITIVA** | sim | mandado | `931`, `ITEM79B`, `ITEM79C` gravados |
+
+E o e2e fechou o item: o bloco `ITEM79-A/201`, `ITEM79-B/202`, `ITEM79-C/203` colado num gesto
+chegou ao banco idêntico, pelo mesmo caminho do `action/622` (`raw/d-e2e.json`).
+
+### A via do gesto: `ClipboardEvent` sintético, não o clipboard do SO
+
+O paste NATIVO do CDP (`Input.dispatchKeyEvent{ commands: ['paste'] }` depois de
+`navigator.clipboard.writeText`) produziu **exatamente o mesmo batch** (fase A) — funciona, e é bom
+saber que funciona. Mas ele passa pelo clipboard do SISTEMA, que é da máquina inteira e do usuário
+logado: rodar a lib apagaria o que a pessoa tinha copiado. Por isso `colarBloco` usa o
+`ClipboardEvent` com `DataTransfer`, que só existe dentro da página. O recibo de que o renderer
+tratou é o `preventDefault` — sem ele, `colarBloco` estoura em vez de deixar o silêncio passar.
+
+### O que ainda NÃO está medido
+
+- **`action/770` pela via HTTP** (`its.mjs`), sem navegador — seria escrita em lote sem Chrome.
+- **Colar com mais de um bloco selecionado**, ou sobre uma seleção de faixa (o `action/50` sugere
+  que a área importa; aqui ela sempre foi 1×1).
+- **`LOCAL&COPY_ROW`** e o caminho inverso (copiar do ALV para o clipboard) — o
+  `CopyToClipboardRequest` já se sabe sem via HTTP (item 45).
+
 ## Exportar a lista por ARQUIVO — o ITSDoc (item 45)
 
 **O canal TEM via de saída** — não pelo `batch/json`, por um diálogo à parte. Medido no s4h 758/250

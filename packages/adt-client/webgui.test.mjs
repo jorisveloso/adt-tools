@@ -19,6 +19,7 @@ import {
   jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
   FCODES_DE_LINHA,
+  tsvDoBloco, jsColarNoGrid,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -1309,4 +1310,56 @@ test('webgui: os fcodes de linha do ALV são os medidos, e o SID casa com eles',
   expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.apagar), barra).id).toBe('C102_toolbar_btn12');
   // o ALV somente leitura não publica nenhum deles — e é assim que o erro sai com a lista certa
   expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.duplicar), barra)).toBe(null);
+});
+
+// ---------- colar um BLOCO no ALV (item 79) ----------
+
+test('webgui: a matriz vira o TSV do Excel — TAB entre colunas, quebra entre linhas', () => {
+  const b = tsvDoBloco([['a', 1], ['b', 2]]);
+  expect(b.tsv).toBe('a\t1\nb\t2');
+  expect([b.linhas, b.colunas, b.celulas]).toEqual([2, 2, 4]);
+  // o TSV pronto passa direto, e o `\r\n` do Excel é normalizado (medido: dá o MESMO batch)
+  expect(tsvDoBloco('a\t1\r\nb\t2').tsv).toBe('a\t1\nb\t2');
+  // null/undefined viram célula vazia; número vira texto
+  expect(tsvDoBloco([['x', null], [undefined, 7]]).tsv).toBe('x\t\n\t7');
+  // linha irregular é aceita — `colunas` é a maior, que é o que decide o estouro à direita
+  expect(tsvDoBloco([['a'], ['b', 'c']]).colunas).toBe(2);
+});
+
+test('webgui: o TSV recusa o que o renderer partiria ou ignoraria em silêncio', () => {
+  // TAB/quebra DENTRO do valor viraria célula a mais, sem aviso
+  expect(() => tsvDoBloco([['a\tb', 'c'], ['d', 'e']])).toThrow(/linha 1, coluna 1 tem TAB ou quebra/);
+  expect(() => tsvDoBloco([['a', 'b\nc'], ['d', 'e']])).toThrow(/linha 1, coluna 2 tem TAB ou quebra/);
+  // uma célula só NÃO é colagem de tabela: medido que o renderer ignora o paste (0 requisição)
+  expect(() => tsvDoBloco([['so-uma']])).toThrow(/UMA célula não é colagem de tabela.*escreverCelula/s);
+  expect(() => tsvDoBloco('so-uma')).toThrow(/UMA célula não é colagem de tabela/);
+  expect(() => tsvDoBloco([])).toThrow(/array vazio/);
+  expect(() => tsvDoBloco(null)).toThrow(/veio null/);
+});
+
+test('webgui: o gesto de colar é um `paste` com DataTransfer — e o preventDefault é o recibo', () => {
+  const eventos = [];
+  const dados = {};
+  class DataTransferFalso { setData(t, v) { dados[t] = v; } }
+  class ClipboardEventFalso {
+    constructor(tipo, init) { this.type = tipo; Object.assign(this, init); this.defaultPrevented = false; }
+  }
+  const elemento = (tratar) => ({
+    id: 'grid#C102#2,3#if', tagName: 'INPUT',
+    dispatchEvent(ev) { eventos.push(ev); if (tratar) ev.defaultPrevented = true; return !tratar; },
+  });
+  const rodar = (el) => new Function('document', 'DataTransfer', 'ClipboardEvent',
+    `return ${jsColarNoGrid('grid#C102#2,3#if', 'a\t1\nb\t2')}`)(
+    { getElementById: (id) => (id === 'grid#C102#2,3#if' ? el : null), activeElement: el },
+    DataTransferFalso, ClipboardEventFalso);
+
+  const tratado = rodar(elemento(true));
+  expect(tratado).toEqual({ tag: 'INPUT', foco: true, tratado: true });
+  expect(dados['text/plain']).toBe('a\t1\nb\t2');
+  expect([eventos[0].type, eventos[0].bubbles, eventos[0].cancelable]).toEqual(['paste', true, true]);
+
+  // sem `preventDefault` o renderer NÃO tratou: é o silêncio que o colarBloco transforma em erro
+  expect(rodar(elemento(false)).tratado).toBe(false);
+  // a célula que sumiu do DOM entre o clique e o paste sai como erro, não como `undefined`
+  expect(rodar(null).erro).toMatch(/sumiu do DOM antes do paste/);
 });
