@@ -586,6 +586,147 @@ export function controlesDoDelta(corpo) {
   return brutos;
 }
 
+// ---------- o DISPARO que a tela DECLARA (item 71) ----------
+//
+// O `batchAcionar` posta `action/3/<SID>` em TUDO: é o `Press` do botão, e só. Mas cada controle
+// declara, no `lsevents`, o comando que cada um dos seus eventos dispara (`{"Press":[{},
+// {"1":"action/3",…}]}`) — o item 44 mediu que a via HTTP lê esse mapa inteiro (334/334 atributos
+// nos 4 raws) e que ele é IGUAL ao que o navegador lê (56/56 controles da mesma SE38). O que
+// faltava era a COMPOSIÇÃO: virar o comando declarado em passos de batch.
+//
+// ⚠️ A composição é por FAMÍLIA, não por concatenação (item 24 + os achados desta medição):
+//
+//   | comando declarado          | vira                                          | medido em |
+//   |----------------------------|-----------------------------------------------|-----------|
+//   | `action/<n>`               | `action/<n>/<SID>`                            | itens 7, 49 |
+//   | `value`                    | `focus/<SID>` + `value/<SID>` + `content`     | item 7 |
+//   | `focus`                    | `focus/<SID>` + `logic: ignore`               | item 7 |
+//   | `okcode/ses[0]`            | como está + `content`                          | item 8 |
+//   | `vkey/<n>/ses[0]`          | como está                                      | item 8 |
+//   | **`vkey/<n>` SEM sufixo**  | **`focus/<SID>` + `vkey/<n>/ses[0]`**          | item 22 |
+//   | **`action/1/wnd[0]/sbar`** | **como está** (traz o alvo, e é OUTRO SID)     | item 44 |
+//
+// As duas últimas linhas são as que derrubam o executor ingênuo. `vkey/8` cru volta `-1002
+// <control-id> is expected`: o alvo do teclado é a SESSÃO, e o campo entra pelo `focus` anterior no
+// mesmo batch. E o `ActivateHelp` do `ct=MB` publica `action/1/wnd[0]/sbar` — já endereçado, e ao
+// `wnd[0]/sbar`, não ao `wnd[0]/sbar_msg` do próprio elemento. Por isso a detecção de "já
+// endereçado" (`/wnd[` no meio, ou `/ses[0]` no fim) vem ANTES de concatenar SID nenhum.
+//
+// ⚠️ **Nada aqui POSTA.** Estas funções são puras — bruto + nome do evento → passos do batch. A
+// composição de `action/3`, `action/4`, `value`, `focus`, `okcode/ses[0]` e `vkey/*` está medida
+// (acima); a dos demais `action/<n>` que o mapa traz (`1`, `2`, `25`, `64`–`68`) é PRESUMIDA pela
+// família — nenhum deles foi postado. A contra-prova de execução é o item 43 da fila.
+
+/**
+ * PURO: o SID que um controle despejado carrega — o endereço dele no protocolo.
+ *
+ * ⚠ Não é o `id` do markup, e não é uma chave `SID` de topo: ele mora ANINHADO no `lsdata`, num
+ * índice numérico que varia por tipo de controle (é o `sidDoLsdata` do webgui.mjs que o acha).
+ *
+ * Medido em 05/09/2026 (item 71) sobre os 5 raws de `POC_webgui_its_lib` e `POC_webgui_okcode`:
+ * dos **392 controles que publicam `lsevents`, 387 trazem exatamente UM par aninhado**
+ * `{ SID, Type }` — índice `27` no botão (`ct=B`), `21` no campo (`CBS`), `5` no menu (`POMN`),
+ * `19` no rótulo (`L`), `13` no radio (`R_standards`), `11` na barra de mensagens (`MB`), `2` no
+ * `ALT`, `4` no `RL`, `10` no `AL`. **Nenhum** dos 695 controles lidos tem dois — a busca é
+ * determinística. Os 5 sem SID são todos o mesmo `sysInfoAreaToggle` (`GuiToggle`), que também não
+ * publica comando de POST: é botão de UI do renderer.
+ *
+ * ⚠ E o `id` NÃO substitui: dos 392, **1** tinha `id` na forma de SID (o `wnd[0]/sbar_msg`); o
+ * resto é `M0:56::btn[3]`, `ToolbarOkCode`, `mnu0_531`.
+ */
+export const sidDoControle = (controle) => sidDoLsdata(controle?.lsdata)?.SID ?? null;
+
+/**
+ * PURO: o controle da tela que responde por um SID — quem carrega o `lsevents` daquele endereço.
+ *
+ * ⚠ SID repetido EXISTE: medido (item 71) 18 a 26 por tela, e são sempre os do menu — o `POMNI`
+ * (o item, `lsevents: null`) e o `POMN` (o submenu de mesmo SID, que publica o `action/4`) declaram
+ * o MESMO `wnd[0]/mbar/menu[0]`. Mas **nunca dois com `lsevents`** nos 5 raws: entre os homônimos,
+ * o que declara disparo é único, e é ele que este devolve.
+ */
+export function controleDoSid(brutos = [], sid) {
+  const alvo = String(sid ?? '');
+  const iguais = brutos.filter((b) => sidDoControle(b) === alvo);
+  return iguais.find((b) => b.lsevents) ?? iguais[0] ?? null;
+}
+
+/** Comandos que o `lsevents` publica mas que NÃO são POST — são o roteador interno do renderer. */
+const NAO_POSTAM = {
+  receive: 'é a ponte de `postMessage` do renderer (ct=IHUBPOSTMESSAGE)',
+  vkey: 'é `vkey` SEM número — o atalho do renderer, cujo número só existe em tempo de gesto; a tecla se manda por `tecla(sessao, \'F8\')`',
+};
+
+/**
+ * PURO: os eventos deste controle que VIRAM POST, com o comando de cada um — o cardápio do que a
+ * tela declara que aquele controle sabe fazer: `[{ evento: 'Press', comando: 'action/3' }, …]`.
+ * Fora ficam os que o renderer trata sozinho (`ListAccess`, `Validate`, `DeleteItem` — sem índice
+ * `1`), o `Select` do menu-raiz (que traz `JScript`, não comando) e os do `NAO_POSTAM`.
+ */
+export function eventosDoControle(controle) {
+  const mapa = controle?.lsevents;
+  if (!mapa || typeof mapa !== 'object') return [];
+  return Object.entries(mapa)
+    .map(([evento, par]) => ({ evento, comando: typeof par?.[1]?.['1'] === 'string' ? par[1]['1'] : null }))
+    .filter((e) => e.comando && !(e.comando in NAO_POSTAM));
+}
+
+/**
+ * PURO: **o bruto + o nome do evento → os passos do batch.** É a peça que troca o `action/3` fixo
+ * do `batchAcionar` pelo que a TELA declara (§ o DISPARO que a tela DECLARA, acima).
+ *
+ * `valor` é para os comandos que levam conteúdo (`value`, `okcode/ses[0]`); `content` passa um
+ * corpo cru (o `type=node&node_key=…` da árvore); `sid` sobrepõe o SID do próprio controle.
+ *
+ * Cada recusa é uma informação, não um acidente: evento não declarado lista os que existem, evento
+ * sem comando diz que o renderer o trata sozinho, e comando fora das famílias medidas estoura AQUI
+ * em vez de virar um `-101 not supported` do outro lado.
+ *
+ * Medido (item 71) sobre os 5 raws: dos 948 pares evento→comando, **709 são postáveis e 709
+ * compõem**, sem família desconhecida; 51 deles (7,2%) NÃO são `comando + / + SID`.
+ * ⚠ **Compor não é funcionar.** A tela declara o que o RENDERER faria; o servidor decide o que
+ * aceita — o item 50 mediu `action/1` e `action/74` declarados e inexistentes no protocolo
+ * (`-102 control not found`). Isto entrega o batch certo pela regra, não a garantia do desfecho.
+ */
+export function batchDoEvento(controle, evento, { valor = null, content = null, sid = null } = {}) {
+  const nome = String(evento ?? '').trim();
+  if (!nome) throw new Error('its: informe o evento (ex. "Press", "Change", "Select", "DoubleClick")');
+  const quem = `${controle?.ct ?? '?'} ${controle?.id ?? '?'}`;
+  const mapa = controle?.lsevents;
+  if (!mapa || typeof mapa !== 'object') throw new Error(`its: o controle ${quem} não declara lsevents — não há disparo a compor`);
+  if (!(nome in mapa)) {
+    const posta = eventosDoControle(controle).map((e) => `${e.evento} (${e.comando})`).join(', ') || '(nenhum)';
+    throw new Error(`its: ${quem} não declara o evento "${nome}" — declara ${Object.keys(mapa).join(', ')}; postam: ${posta}`);
+  }
+  const params = mapa[nome]?.[1] ?? {};
+  const comando = typeof params['1'] === 'string' ? params['1'] : null;
+  if (!comando) {
+    throw new Error(`its: o evento "${nome}" de ${quem} não posta nada — `
+      + (params.JScript ? `é gesto do renderer (JScript: ${params.JScript})`
+        : 'não traz comando no índice 1 (é evento que o renderer trata sozinho — ListAccess, Validate, DeleteItem…)'));
+  }
+  if (comando in NAO_POSTAM) throw new Error(`its: "${nome}" de ${quem} publica \`${comando}\`, que ${NAO_POSTAM[comando]}`);
+
+  // ⚠ ANTES de concatenar: o comando pode JÁ TRAZER o alvo — `/ses[0]` (a sessão) ou um `/wnd[…]`
+  // que nem sempre é o SID do próprio controle (o `action/1/wnd[0]/sbar` do ct=MB, item 44).
+  const jaEnderecado = comando.includes('/wnd[') || /\/ses\[0\]$/.test(comando);
+  const familia = comando.split('/')[0];
+  const alvo = sid ?? sidDoControle(controle);
+  if (!jaEnderecado && !alvo) throw new Error(`its: ${quem} publica \`${comando}\`, que precisa de SID, e o controle não carrega nenhum — passe { sid }`);
+  const corpo = content ?? (valor === null || valor === undefined ? null : String(valor));
+  if ((familia === 'value' || familia === 'okcode') && corpo === null) {
+    throw new Error(`its: "${nome}" de ${quem} posta \`${comando}\`, que leva conteúdo — informe o valor: { evento: '${nome}', valor: '…' }`);
+  }
+  const passoDe = (post) => (corpo === null ? { post } : { post, content: corpo });
+  const foco = { post: `focus/${alvo}`, logic: 'ignore' };
+
+  if (jaEnderecado) return [passoDe(comando)];
+  if (familia === 'vkey') return [foco, { post: `${comando}/ses[0]` }];          // item 22: o alvo é a SESSÃO
+  if (familia === 'value') return [foco, { post: `value/${alvo}`, content: corpo }];
+  if (familia === 'focus') return [foco];
+  if (familia === 'action') return [passoDe(`${comando}/${alvo}`)];
+  throw new Error(`its: comando "${comando}" ("${nome}" de ${quem}) fora das famílias medidas — action, value, focus, vkey, okcode`);
+}
+
 /**
  * PURO: a PILHA de modais (`GuiModalWindow`) que o delta trouxe — da de BAIXO para a de CIMA
  * (`wnd[1]`, `wnd[2]`…), `[]` quando não há popup. Em cada uma: o título é a primeira linha do
@@ -1144,13 +1285,40 @@ export const enviar = (sessao, opts) => despachar(sessao, [], opts);
  * ⚠ O botão é resolvido NA JANELA ATIVA: com popup aberto o delta traz também a barra da `wnd[0]`,
  * e `btn[0]` existe nas duas (medido, `d2-o.txt`). Para acionar a barra de trás do modal é preciso
  * dizê-lo — `acionar(s, 'btn[15]', { janela: 'wnd[0]' })` — ou passar o SID inteiro.
+ *
+ * **`{ evento }` aciona pelo que a tela DECLARA** (item 71), em vez do `action/3` fixo: o batch sai
+ * do `lsevents` daquele controle, composto por família (§ o DISPARO que a tela DECLARA). É assim
+ * que se aciona o que não é botão — `acionar(s, { sid: 'wnd[0]/mbar/menu[0]' }, { evento: 'Select' })`
+ * dá o `action/4/<SID>` que o item 49 mediu, e `{ evento: 'FieldHelpPress' }` num campo com match
+ * code dá o `focus/<SID>` + `vkey/4/ses[0]` do item 22 — não o `vkey/4/<SID>` que a concatenação
+ * ingênua produziria. `{ valor }` alimenta os comandos que levam conteúdo (`value`, `okcode`).
+ * ⚠ O comando vem do último `delta`; a composição de `action/1|2|25|64`–`68` é presumida pela
+ * família, não medida (a contra-prova de execução é o item 43).
  */
 export async function acionar(sessao, alvo, opts) {
   // objeto ({ sid }/{ okcode }) e SID cru passam como estão; o resto ('btn[8]', 8, 'Executar') é OK-code
   const alvoBotao = typeof alvo === 'object' || /^wnd\[/.test(String(alvo)) ? alvo : { okcode: alvo };
   const sid = sidDoAlvo(sessao.sids, alvoBotao, { janela: opts?.janela ?? null });
-  const r = await despachar(sessao, batchAcionar(sid), opts);
+  const { evento = null, valor = null, content = null, ...resto } = opts ?? {};
+  const batch = evento
+    ? batchDoEvento(controleDaSessao(sessao, sid), evento, { valor, content, sid })
+    : batchAcionar(sid);
+  const r = await despachar(sessao, batch, resto);
   return { ...r, sid };
+}
+
+/** O controle da tela ATUAL que responde por um SID — a fonte do `lsevents` do `{ evento }`. */
+function controleDaSessao(sessao, sid) {
+  if (!sessao?.delta) throw new Error('its: sem delta para ler o disparo declarado — abra a sessão (o boot traz a primeira tela)');
+  const c = controleDoSid(controlesDoDelta(sessao.delta), sid);
+  if (!c) throw new Error(`its: nenhum controle da tela carrega o SID ${sid} — o lsevents é do CONTROLE, não do SID solto`);
+  return c;
+}
+
+/** Os eventos POSTÁVEIS de um alvo da tela atual — o cardápio antes de escolher o `{ evento }`. */
+export function eventosDoAlvo(sessao, alvo, { janela = null } = {}) {
+  const sid = sidDoAlvo(sessao.sids, typeof alvo === 'object' || /^wnd\[/.test(String(alvo)) ? alvo : { okcode: alvo }, { janela });
+  return { sid, eventos: eventosDoControle(controleDaSessao(sessao, sid)) };
 }
 
 /** O Enter da dynpro (`vkey/0/ses[0]`), levando junto o que foi preenchido. Medido: `T000` no

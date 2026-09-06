@@ -1526,8 +1526,37 @@ endereçável, o nó não** — o `action/74` que o `TV` publica devolve `-102 c
 § "O mesmo menu pela via HTTP pura", item 49; o `2`, o `8` e o `41` são os da ÁRVORE — § "A ÁRVORE
 do SAP Easy Access", item 50). `action/7`, `9`, `25`, `62`, `309`, `810` e `901` aparecem no mapa mas
 **não** foram postados; `action/1` e `74` foram e **não existem** no protocolo (`-102` no id do nó) — a contra-prova está em
-`POC_webgui_lsdata/scripts/derivar.mjs`, à espera de uma janela com o s4h no ar (fila 43). Compor o
-POST a partir do `lsevents` (`acionar(sessao, alvo, { evento })`) é a fila 71.
+`POC_webgui_lsdata/scripts/derivar.mjs`, à espera de uma janela com o s4h no ar (fila 43).
+
+### Compor o POST a partir do `lsevents` — `acionar(s, alvo, { evento })` (item 71)
+
+A composição virou código: `batchDoEvento(controle, evento, { valor })` no `its.mjs` é PURA — bruto
++ nome do evento → passos do batch —, e `acionar(s, alvo, { evento })` a liga na sessão. É assim que
+se aciona o que **não é botão**:
+
+```js
+acionar(s, { sid: 'wnd[0]/mbar/menu[0]' }, { evento: 'Select' })   // action/4/<SID> — o POST do item 49
+acionar(s, 'RS38M-PROGRAMM', { evento: 'FieldHelpPress' })         // focus/<SID> + vkey/4/ses[0]
+acionar(s, 'ToolbarOkCode', { evento: 'Change', valor: '/nSE38' }) // okcode/ses[0] + content
+eventosDoAlvo(s, 'btn[8]')   // o cardápio: [{ evento: 'Press', comando: 'action/3' }]
+```
+
+⚠ **O SID do controle mora ANINHADO no `lsdata`**, num índice numérico que varia por `ct` (`27`
+botão, `21` campo, `5` menu, `19` rótulo, `13` radio, `11` barra de mensagens) — não é o `id` do
+markup, que é `M0:56::btn[3]`/`ToolbarOkCode`/`mnu0_531`. Medido em 05/09/2026 (fila 71,
+`POC_webgui_its_lib/medicoes/item71-compor-lsevents.md`): dos 392 controles com `lsevents` dos 5
+raws, **387 trazem exatamente um** par `{ SID, Type }`, **nenhum traz dois**, e os 5 sem SID
+(`sysInfoAreaToggle`) também não publicam comando. É o `sidDoLsdata` do `webgui.mjs` que o acha.
+
+⚠ **SID repetido existe, e é sempre o menu:** 18 a 26 por tela — o `POMNI` (o item, sem `lsevents`)
+e o `POMN` (o submenu, que publica o `action/4`) declaram o mesmo `wnd[0]/mbar/menu[n]`. **Nunca
+dois com `lsevents`**, então `controleDoSid` desempata por quem declara disparo.
+
+**Cobertura:** passado por todo par evento→comando dos 5 raws, **709 de 709 pares postáveis
+compõem**, sem família desconhecida; as 239 recusas são 234 sem índice `1` (o renderer trata
+sozinho) e 5 com `JScript`. Das 709 composições, **51 (7,2%) não são "comando + `/` + SID"** — 47
+`vkey/<n>` sem sufixo e 4 `action/1/wnd[0]/sbar`. **Nada disso foi postado:** a contra-prova de
+execução continua sendo a fila 43.
 
 ### A caixa de comando (OK-code) — a navegação genérica do canal
 

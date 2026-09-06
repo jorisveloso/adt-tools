@@ -14,6 +14,7 @@ import {
   itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
   indiceDoNo, arvoreDosBrutos, arvore, batchExpandirNo, batchAcionarNo, acharNoDaArvore,
+  sidDoControle, controleDoSid, eventosDoControle, batchDoEvento, eventosDoAlvo,
   mensagemDosSids, carimboDosSids, carimboDoDelta, mudouDaTela,
   criarPilhaDeDesfazer, transacional, fechar,
 } from './its.mjs';
@@ -327,6 +328,131 @@ test('its: controlesDoHtml expõe o lsevents — o COMANDO que cada evento dispa
 test('its: lsevents ausente ou quebrado vira null, e o resto do controle continua lido', () => {
   expect(controlesDoHtml(`<div ct="B" lsevents='{quebrado'>x</div>`)[0]).toMatchObject({ ct: 'B', lsevents: null, texto: 'x' });
   expect(controlesDoHtml(`<div ct="B">x</div>`)[0].lsevents).toBeNull();
+});
+
+// ---------------------------------------------------------------------------------------------
+// A COMPOSIÇÃO do disparo declarado (fila 71) — `lsevents` + evento → passos do batch.
+// Mais quatro trechos COPIADOS INTEIROS do bruto, escolhidos porque cada um quebra a regra ingênua
+// "comando + / + SID" de um jeito diferente: a barra de mensagens traz comando JÁ ENDEREÇADO a
+// OUTRO SID, o menu-raiz traz JScript em vez de comando, o campo da SE38 traz `vkey/4` sem sufixo,
+// e o `sysInfoAreaToggle` não traz SID nenhum.
+//   `wnd[0]/sbar_msg` e `mnu0_*` — POC_webgui_its_lib/medicoes/raw/a-boot.xml
+//   `M0:46:::2:14` e `M0:46:::5:1` — POC_webgui_okcode/medicoes/raw/c4-nse38.txt (a SE38)
+// ---------------------------------------------------------------------------------------------
+
+const MB_COM_EVENTOS = `<div tabindex="0" ti="0" title="Para&#x20;tabela&#x20;T000&#x20;existe&#x20;uma&#x20;vis&#xe3;o&#x20;de&#x20;atualiza&#xe7;&#xe3;o" class="lsMessageBar lsMessageBar--nowrapping lsMessageBar--width-default lsMessageBar--ruleBottom lsMessageBar--transparent" id="wnd[0]/sbar_msg" ct="MB" lsdata='{"0":"Para tabela T000 existe uma visão de atualização","1":"OK","5":"Para tabela T000 existe uma visão de atualização","6":true,"7":"Exibir detalhes","11":{"SID":"wnd[0]/sbar_msg","Type":"MESSAGEBAR","visibility":0,"messageType":"OK","applicationText":"Para tabela T000 existe uma visão de atualização"},"12":false,"13":true}' lsevents='{"ActivateHelp":[{},{"1":"action/1/wnd[0]/sbar","2":true}]}' aria-label="Com&#x20;&#xea;xito&#x20;Barra&#x20;de&#x20;mensagens" role="note" aria-live="assertive">`;
+const POMN_RAIZ = `<table border="0" cellpadding="0" cellspacing="0" id="mnu0_531" ct="POMN" lsdata='{"x":0,"5":{"SID":"wnd[0]/mbar","Type":"GuiMenu","ModalNo":0}}' lsevents='{"Select":[{},{"JScript":"sap.g4h.doWguMenuSelect(oCfg);"}]}' class="lsMnuTable" role="menu" data-sap-ls-style=";width:100%">`;
+const POMN_MENU0 = `<table border="0" cellpadding="0" cellspacing="0" id="mnu0_513" ct="POMN" lsdata='{"x":0,"5":{"SID":"wnd[0]/mbar/menu[0]","Type":"GuiMenu","ModalNo":0}}' lsevents='{"Select":[{},{"1":"action/4","2":true}]}' class="lsMnuTable" role="menu" data-sap-ls-style=";width:100%">`;
+const POMNI_MENU0 = `<tr ct="POMNI" lsdata='{"x":0,"1":"Programa","6":true,"7":"mnu0_513","18":{"SID":"wnd[0]/mbar/menu[0]","Type":"GuiMenu"},"19":"Programa"}' id="wnd[0]/mbar/menu[0]" title="Programa" role="menuitem"><td class="urMnuTxt"><span>Programa</span></td></tr>`;
+const CAMPO_SE38_COM_EVENTOS = `<input id="M0:46:::2:14" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","3":"M0:46:::2:14_TALB","7":true,"12":true,"13":"P","14":"SERVER","16":true,"20":false,"21":{"SID":"wnd[0]/usr/ctxtRS38M-PROGRAMM","Type":"GuiCTextField","value":"","maxlen":40,"focusable":"X","showTypeAhead":"true"},"22":"pstxt","29":"M0:46:::2:0"}' lsevents='{"Change":[{},{"1":"value","3":true,"7":true}],"Select":[{},{"1":"value","3":true,"7":true}],"Validate":[{},{}],"DeleteItem":[{},{"3":true}],"ListAccess":[{"ResponseData":"delta","TransportMethod":"full","EnqueueCardinality":"none"},{"3":true,"8":"typeahead","maxlen":0,"parentid":"USRAREA"}],"FieldHelpPress":[{},{"1":"vkey/4","2":true,"5":true}],"ActionItemActivate":[{},{"1":"vkey/0/ses[0]","2":true}],"ClipboardTablePaste":[{},{"0":"GuiTextField","1":"action/25","2":true,"3":true}]}' type="text" data-sap-ls-accesskey="P" accesskey="P" tabindex="0" ti="0" title="Nome&#x20;do&#x20;programa&#x20;ABAP" class="lsField__input" role="textbox" name="InputField"/>`;
+const RADIO_SE38_COM_EVENTOS = `<span ct="R_standards" lsdata='{"0":"%RBG0257","1":true,"4":"Texto fonte","5":"Editor","10":"T","13":{"SID":"wnd[0]/usr/radRS38M-FUNC_EDIT","Type":"GuiRadioButton","group":"%RBG0257","focusable":"X"},"15":true}' lsevents='{"Enter":[{},{"1":"vkey/0/ses[0]","2":true}],"Change":[{},{"1":"action/4","3":true,"7":true}]}' accessPoint="ROOT" title="Editor" name="&#x25;RBG0257" id="M0:46:::5:1" class="lsRadioButton lsRadioButton--checked " role="radio" aria-checked="true"></span>`;
+const SYSINFO_TOGGLE = `<div draggable="false" id="sysInfoAreaToggle" ct="B" lsdata='{"x":0,"2":"TRANSPARENT","4":"Abrir informações do sistema","9":true,"11":"/sap/public/icmandir/its/ls/theming/Base/baseLib/sap_fiori_3/svg/libs/SAPGUI-icons.svg#s_b_colr"}' lsevents='{"Press":[{},{"0":"GuiToggle","link":"sysInfoArea","invers":true}]}' role="button" title="Abrir&#x20;informa&#xe7;&#xf5;es&#x20;do&#x20;sistema" tabindex="0" ti="0" class="lsButton lsButton--onlyImage">`;
+
+const um = (html) => controlesDoHtml(html)[0];
+
+test('its: o SID do controle mora ANINHADO no lsdata — índice por tipo, um só, e o id NÃO serve (item 71)', () => {
+  // medido nos 5 raws: 387 de 392 controles com lsevents trazem UM par { SID, Type }; nenhum traz dois
+  expect(sidDoControle(um(BTN3_COM_EVENTOS))).toBe('wnd[0]/tbar[0]/btn[3]');    // ct=B  → índice 27
+  expect(sidDoControle(um(OKCD_COM_EVENTOS))).toBe('wnd[0]/tbar[0]/okcd');      // ct=CBS → índice 21
+  expect(sidDoControle(um(POMN_MENU0))).toBe('wnd[0]/mbar/menu[0]');            // ct=POMN → índice 5
+  expect(sidDoControle(um(MB_COM_EVENTOS))).toBe('wnd[0]/sbar_msg');            // ct=MB  → índice 11
+  expect(sidDoControle(um(RADIO_SE38_COM_EVENTOS))).toBe('wnd[0]/usr/radRS38M-FUNC_EDIT');  // R_standards → 13
+  // o id do markup não é o SID — dos 392, só 1 coincidia (justamente a barra de mensagens)
+  expect(um(BTN3_COM_EVENTOS).id).toBe('M0:56::btn[3]');
+  expect(um(MB_COM_EVENTOS).id).toBe('wnd[0]/sbar_msg');
+  // e o único sem SID dos 5 raws é o toggle de UI — que também não publica comando de POST
+  expect(sidDoControle(um(SYSINFO_TOGGLE))).toBeNull();
+  expect(eventosDoControle(um(SYSINFO_TOGGLE))).toEqual([]);
+});
+
+test('its: SID repetido existe (POMNI × POMN do menu), e quem responde é o que declara o disparo (item 71)', () => {
+  const brutos = controlesDoDelta(cdata('backpackCUA', `${POMNI_MENU0}${POMN_MENU0}`));
+  expect(brutos.map((b) => `${b.ct}:${sidDoControle(b)}`))
+    .toEqual(['POMNI:wnd[0]/mbar/menu[0]', 'POMN:wnd[0]/mbar/menu[0]']);   // o MESMO SID nos dois
+  expect(controleDoSid(brutos, 'wnd[0]/mbar/menu[0]').ct).toBe('POMN');    // e o POMNI não publica nada
+  expect(controleDoSid(brutos, 'wnd[0]/mbar/menu[9]')).toBeNull();
+});
+
+test('its: batchDoEvento compõe por FAMÍLIA — action leva SID, value leva focus+content, vkey sem sufixo vai à SESSÃO (itens 22, 24, 71)', () => {
+  // action/<n> + SID do controle — o mesmo batch que `batchAcionar` produz, agora vindo da TELA
+  expect(batchDoEvento(um(BTN3_COM_EVENTOS), 'Press')).toEqual([{ post: 'action/3/wnd[0]/tbar[0]/btn[3]' }]);
+  expect(batchDoEvento(um(BTN3_COM_EVENTOS), 'Press')).toEqual(batchAcionar('wnd[0]/tbar[0]/btn[3]'));
+  // o menu: `action/4/<SID do submenu>` — exatamente o POST que o item 49 mediu (SE38 → SA38)
+  expect(batchDoEvento(um(POMN_MENU0), 'Select')).toEqual([{ post: 'action/4/wnd[0]/mbar/menu[0]' }]);
+  // o radio: `action/4` também, mas com o SID do radio
+  expect(batchDoEvento(um(RADIO_SE38_COM_EVENTOS), 'Change')).toEqual([{ post: 'action/4/wnd[0]/usr/radRS38M-FUNC_EDIT' }]);
+
+  // value: focus + value + content — o MESMO batch do `batchPreencher` (item 7)
+  expect(batchDoEvento(um(CAMPO_SE38_COM_EVENTOS), 'Change', { valor: 'RSPARAM' }))
+    .toEqual(batchPreencher('wnd[0]/usr/ctxtRS38M-PROGRAMM', 'RSPARAM'));
+
+  // ⚠ o ponto onde a derivação ingênua QUEBRA: `vkey/4` NÃO vira `vkey/4/<SID>` (item 22: `-1002
+  // <control-id> is expected`) — o alvo do teclado é a sessão, e o campo entra pelo focus anterior
+  expect(batchDoEvento(um(CAMPO_SE38_COM_EVENTOS), 'FieldHelpPress')).toEqual([
+    { post: 'focus/wnd[0]/usr/ctxtRS38M-PROGRAMM', logic: 'ignore' },
+    { post: 'vkey/4/ses[0]' },
+  ]);
+  // já auto-endereçado à sessão: posta como está, SEM focus e SEM SID
+  expect(batchDoEvento(um(CAMPO_SE38_COM_EVENTOS), 'ActionItemActivate')).toEqual([{ post: 'vkey/0/ses[0]' }]);
+  expect(batchDoEvento(um(OKCD_COM_EVENTOS), 'Enter')).toEqual([ENTER]);
+  // okcode/ses[0]: já endereçado E leva conteúdo
+  expect(batchDoEvento(um(OKCD_COM_EVENTOS), 'Change', { valor: '/nSE38' })).toEqual([{ post: 'okcode/ses[0]', content: '/nSE38' }]);
+
+  // ⚠ o achado do item 44: comando que já vem endereçado ao SID de OUTRO controle — `wnd[0]/sbar`,
+  // não o `wnd[0]/sbar_msg` do próprio elemento. Concatenar aqui daria `action/1/wnd[0]/sbar/wnd[0]/sbar_msg`
+  expect(batchDoEvento(um(MB_COM_EVENTOS), 'ActivateHelp')).toEqual([{ post: 'action/1/wnd[0]/sbar' }]);
+
+  // content cru (o `type=node&node_key=…` da árvore) e SID sobreposto passam adiante
+  expect(batchDoEvento(um(BTN3_COM_EVENTOS), 'Press', { content: 'x=1', sid: 'wnd[1]/usr/btnX' }))
+    .toEqual([{ post: 'action/3/wnd[1]/usr/btnX', content: 'x=1' }]);
+});
+
+test('its: batchDoEvento recusa o que NÃO posta — e a recusa diz o que a tela declara (item 71)', () => {
+  const campo = um(CAMPO_SE38_COM_EVENTOS);
+  // evento que o controle não declara: a mensagem lista os declarados E os que postam
+  expect(() => batchDoEvento(campo, 'DoubleClick')).toThrow(/não declara o evento "DoubleClick"/);
+  expect(() => batchDoEvento(campo, 'DoubleClick')).toThrow(/postam: Change \(value\)/);
+  // evento declarado que o renderer trata sozinho — sem índice 1
+  expect(() => batchDoEvento(campo, 'Validate')).toThrow(/não posta nada.*índice 1/s);
+  expect(() => batchDoEvento(campo, 'ListAccess')).toThrow(/não posta nada/);
+  // o menu-raiz publica JScript, não comando de protocolo
+  expect(() => batchDoEvento(um(POMN_RAIZ), 'Select')).toThrow(/JScript: sap\.g4h\.doWguMenuSelect/);
+  // value sem valor: recusa AQUI, em vez de postar content vazio
+  expect(() => batchDoEvento(campo, 'Change')).toThrow(/leva conteúdo — informe o valor/);
+  // controle sem lsevents nenhum, e evento vazio
+  expect(() => batchDoEvento(um(POMNI_MENU0), 'Select')).toThrow(/não declara lsevents/);
+  expect(() => batchDoEvento(campo, '')).toThrow(/informe o evento/);
+  // o toggle: publica Press, mas o parâmetro não tem comando — e não tem SID para concatenar
+  expect(() => batchDoEvento(um(SYSINFO_TOGGLE), 'Press')).toThrow(/não posta nada/);
+});
+
+test('its: eventosDoControle é o cardápio POSTÁVEL — fora o que o renderer trata sozinho (item 71)', () => {
+  expect(eventosDoControle(um(CAMPO_SE38_COM_EVENTOS))).toEqual([
+    { evento: 'Change', comando: 'value' },
+    { evento: 'Select', comando: 'value' },
+    { evento: 'FieldHelpPress', comando: 'vkey/4' },
+    { evento: 'ActionItemActivate', comando: 'vkey/0/ses[0]' },
+    { evento: 'ClipboardTablePaste', comando: 'action/25' },
+  ]);   // Validate, DeleteItem e ListAccess ficam de fora — declarados, sem comando
+  expect(eventosDoControle(um(POMN_RAIZ))).toEqual([]);            // só JScript
+  expect(eventosDoControle(um(BTN3_COM_EVENTOS))).toEqual([{ evento: 'Press', comando: 'action/3' }]);
+  expect(eventosDoControle(null)).toEqual([]);
+});
+
+test('its: acionar({ evento }) resolve o alvo, acha o controle no delta e compõe dali (item 71)', () => {
+  // sem rede: a sessão é só `{ sids, delta }`, e o que se checa é o batch que o despachar receberia
+  const delta = `<updates><delta-update>${cdata('cuaarea', `<div id="cuaarea" ct="CO">${BTN3_COM_EVENTOS}${OKCD_COM_EVENTOS}</div>`)}`
+    + `${cdata('steploop0', `<div id="steploop0" ct="PLP">${CAMPO_SE38_COM_EVENTOS}</div>`)}</delta-update></updates>`;
+  const sessao = { sids: sidsDaResposta(delta), delta };
+  expect(eventosDoAlvo(sessao, { campo: 'RS38M-PROGRAMM' })).toEqual({
+    sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM',
+    eventos: eventosDoControle(um(CAMPO_SE38_COM_EVENTOS)),
+  });
+  expect(eventosDoAlvo(sessao, 'btn[3]').sid).toBe('wnd[0]/tbar[0]/btn[3]');
+  // SID que a tela tem mas nenhum controle carrega, e sessão sem delta: erro que diz o que falta
+  expect(() => eventosDoAlvo({ sids: sessao.sids, delta: cdata('x', '<div ct="CO"></div>') }, 'btn[3]'))
+    .toThrow(/nenhum controle da tela carrega o SID wnd\[0\]\/tbar\[0\]\/btn\[3\]/);
+  expect(() => eventosDoAlvo({ sids: sessao.sids, delta: null }, 'btn[3]')).toThrow(/sem delta para ler o disparo/);
 });
 
 test('its: telaDoDelta é o MESMO modelo do lerTela do navegador — rótulo costurado pelo label, dica do data element, radio pelo aria, botões com tecla', () => {
