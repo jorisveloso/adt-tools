@@ -2837,6 +2837,56 @@ domínio), não do diálogo**. O aviso do `filtrarGrid` vale como risco a confer
 `&lt;`) — o DOM decodificaria sozinho, o XML cru não: sem decodificar, 28 das 8.085 células saíam
 com `&#39;` no valor.
 
+### Até onde o fetch da página vai: só o delta PARCIAL (item 117)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 117; evidência em
+`sap-accelerate/work/POC_webgui_repertorio/medicoes/item117-repertorio.md`, fases A–D). O item 74
+disse que o canal "não tem nada de específico do `action/710`". É verdade quanto ao CANAL — e falso
+quanto ao uso: o que faz o `710` passar é a **resposta** dele ser um delta **parcial** (um controle
+só, sem `sap.its.aParams`), que ninguém precisa aplicar no DOM.
+
+Com um `action/` que muda a tela, a resposta é um delta **completo** — e ninguém o aplica:
+
+| POST pelo fetch da página | resposta | o DOM depois | a sessão |
+|---|---|---|---|
+| `vkey/0` (ENTER, mesma dynpro) | 200, completo, 1,45 MB, `cuatitle` igual | inalterado | **viva** — a roda voltou a pedir fragmento (194 → 222) |
+| `vkey/3` (F3, voltar) | 200, completo, 136 KB, `cuatitle` **"ABAP: execução do programa"**, `dynpro` `SAPMS38M` | **inalterado** — ainda a lista, com as 222 linhas | **descolada** |
+
+Depois do `vkey/3` o servidor está na tela de seleção e o navegador mostra a lista. A partir daí a
+roda **parou de pedir** fragmento (12 rodadas, 222 → 222: o grid virou órfão) e o round-trip real
+seguinte — `acionar(s, 'btn[3]')`, o "voltar" da lista — foi interpretado contra a dynpro NOVA e
+caiu no **SAP Easy Access** (`S000`/`SAPMSYST 0040`).
+
+**Não é o 500 sem `moin` (item 74).** Lá a sessão MORRE e a tela seguinte vem vazia. Aqui ela
+continua viva — só deixou de ser a que a tela mostra, e nada avisa. (O `moin` veio IGUAL na resposta
+completa: ele não serve de detector.)
+
+Por isso o canal virou primitiva **com guarda**:
+
+```js
+import { postarNaPagina, extratorDeCelulas } from './webgui.mjs';
+
+const r = await postarNaPagina(s, [
+  { post: `action/710/${sid}`, content: 'position=0&fragments=0,499;' },
+  { get: `state/ur/${sid}` },
+], { extrair: extratorDeCelulas('C102') });
+// { status: 200, tipo: 'text/xml; charset=utf-8', bytes: 2050…, ms: 518, ehDelta: true,
+//   completo: false, inicio: '<?xml…', celulas: { … }, nLinhas: 279, primeira: 1, ultima: 279 }
+```
+
+* sem `form`/`moin`, **não posta** (o 500 mata a sessão);
+* resposta que não é delta estoura com o começo do corpo;
+* **delta completo estoura** dizendo para onde o servidor foi — mas aí o estrago já está feito: o
+  que muda a tela vai por GESTO (`clicar`, `comandar`, `tecla`), que é o que faz o renderer aplicar
+  o delta;
+* `extrair` é a fonte de uma função `(corpo) => ({…})` que roda **na página** — é o que impede os
+  11,9 MB de atravessarem o CDP. O `lerGridInteiro` é escrito sobre ela.
+
+💡 **O caminho para o repertório inteiro não é este fetch — é a fila do próprio renderer**, e ela é
+alcançável: `window.mysap` expõe `oBatch` (`add`/`insert`/`replace`/`clear`, a MESMA fila do
+`its.mjs`), `addBatch`, `send`, `submitOkCode` e `oMgrs.communicaton.sendWithPromise()` — quem monta
+o XHR e **aplica o delta**. Sondado no item 117 (fase C), **não exercitado**.
+
 ### `posicionarGrid`: a linha DISTANTE na tela, num gesto (item 75)
 
 **Medido no s4h 758/250 em 2026-09-05** (fila `adt-client`, item 75; evidência em

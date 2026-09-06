@@ -1707,38 +1707,81 @@ export async function lerGrid(sessao, alvo = null, { de = 1, ate = null } = {}) 
 // o `btn[3]` trocou a tela por uma VAZIA (título `""`, 0 campo, 0 grid). Não é "degradou": é a
 // sessão perdida, sem aviso na tela. Por isso o `lerGridInteiro` estoura ANTES de postar quando a
 // página não tem `moin` — falhar cedo é mais barato que ressuscitar sessão.
+//
+// ---------- até onde o truque vai: o delta PARCIAL (item 117) ----------
+//
+// O `action/710` não tem nada de especial no canal — qualquer `action/` do `its.mjs` cabe neste
+// POST. O que é especial é a RESPOSTA dele: um delta **PARCIAL** (um controle só, sem
+// `sap.its.aParams`), que ninguém precisa aplicar no DOM. Medido no s4h 758/250 em 06/09/2026
+// (`sap-accelerate/work/POC_webgui_repertorio`, fase B, mesma lista do RSPARAM) o que acontece
+// quando a resposta é um delta **COMPLETO**:
+//
+//   • `vkey/0` (ENTER, MESMA dynpro) — 200, delta completo de 1,45 MB, `cuatitle` igual. O DOM não
+//     mudou e a tela seguiu inteira: a roda continuou pedindo fragmento (194→222). **Inócuo, porque
+//     o servidor não saiu do lugar.**
+//   • `vkey/3` (F3, voltar) — 200, delta completo de 136 KB com `cuatitle` **"ABAP: execução do
+//     programa"** e `dynpro` `SAPMS38M`: o servidor SAIU da lista. O DOM continuou mostrando
+//     "Exibir parâmetro de perfil" com o grid e as 222 linhas de sempre — **uma tela que mente**. E
+//     a partir daí: a roda **parou de pedir** fragmento (12 rodadas, 222→222 — o grid virou órfão),
+//     e o round-trip REAL seguinte (`btn[3]`, o "voltar" da lista) foi interpretado contra a dynpro
+//     NOVA e caiu no **SAP Easy Access** (`S000`/`SAPMSYST 0040`), não na tela de seleção.
+//
+// Ou seja: a sessão não morre (como no 500 sem `moin`) — ela **descola**. Quem dirige pela tela
+// passa a gesticular contra uma dynpro que não existe mais, e o desfecho é silencioso.
+//
+// ⚠️ **Por isso o `postarNaPagina` ESTOURA quando a resposta é um delta completo.** Pelo fetch da
+// página só passa `action/` cuja resposta seja PARCIAL (é o caso do `710` do fragmento); o que muda
+// a tela vai por GESTO (`clicar`, `comandar`, `tecla`), que é o que faz o renderer aplicar o delta.
+// O `moin` também não ajuda a detectar nada aqui: ele veio IGUAL na resposta completa (mais uma
+// confirmação de que não é contador).
+//
+// 💡 Aberto, e é o caminho para o repertório inteiro: o renderer tem a MESMA fila por dentro e ela
+// é ALCANÇÁVEL da página — `window.mysap.oBatch.add({ post, content })` (mais `mysap.addBatch`,
+// `mysap.send`, `mysap.submitOkCode`, `mysap.oMgrs.communicaton.sendWithPromise()`), medido na
+// fase C. Injetar o comando NA FILA DELE faria o próprio framework postar e aplicar o delta — mas
+// isso não foi medido, e é item próprio da fila.
 
 /**
- * PURO: a expressão JS que pede um FRAGMENTO do ALV **de dentro da página** e devolve as células já
- * extraídas — `{ status, tipo, bytes, ms, celulas, nLinhas, ehDelta, inicio }`.
+ * PURO: o JS que POSTA um batch do `its.mjs` **na sessão da própria página** — o canal do item 74,
+ * sem nada específico do ALV. Devolve `{ status, tipo, bytes, ms, ehDelta, completo, inicio }`, mais
+ * o que o `extrair` devolver.
  *
- * É o mesmo batch do `batchFragmento` do `its.mjs` (`action/710` com `position`+`fragments`, mais o
- * `get state/ur`), postado na URL do `action` da própria página. `de`/`ate` são 0-BASED (é o que o
- * protocolo usa); o `lsMatrixRowIndex` que volta nas células é 1-based.
+ * `extrair` é a FONTE de uma função `(corpo) => ({…})` que roda **na página**, sobre o corpo cru, e
+ * cujo resultado é mesclado no retorno. É por ela que os megabytes não atravessam o CDP.
  *
- * ⚠️ O corpo tem MEGABYTES (11,9 MB para 1617 linhas) e **não atravessa o CDP**: a extração das
- * células acontece aqui, na página, e só a matriz volta. Trazer o corpo seria trocar 48 ms por uma
- * serialização de 11,9 MB no WebSocket.
+ * ⚠️ `completo: true` = a resposta traz `sap.its.aParams`, isto é, o servidor MUDOU de tela e este
+ * DOM não aplicou nada (§ acima). Quem chama pelo `postarNaPagina` estoura nesse caso.
  */
-export const jsFragmentoDoGrid = (sid, cid, de, ate, { tetoMs = 180000 } = {}) => `(async () => {
+export const jsPostarNaPagina = (batch, { tetoMs = 180000, extrair = null, prefixo = 240 } = {}) => `(async () => {
   const t0 = performance.now();
   const form = document.getElementById('webguiform0');
   if (!form) return { erro: 'a página não tem o form webguiform0 — não há para onde postar' };
   if (typeof window.moin !== 'string' || !window.moin) return { erro: 'a página não tem o moin' };
-  const batch = [
-    { post: 'action/710/' + ${JSON.stringify(String(sid))}, content: 'position=${Number(de)}&fragments=${Number(de)},${Number(ate)};' },
-    { get: 'state/ur/' + ${JSON.stringify(String(sid))} },
-  ];
   let res, corpo;
   try {
     res = await fetch(form.getAttribute('action') + 'batch/json?~RG_WEBGUI=X&', {
-      method: 'POST', credentials: 'same-origin', body: JSON.stringify(batch),
+      method: 'POST', credentials: 'same-origin', body: ${JSON.stringify(JSON.stringify(batch))},
       signal: AbortSignal.timeout(${Number(tetoMs)}),
       headers: { 'Content-Type': 'application/json;charset=UTF-8', Accept: 'multipart/mixed', moin: window.moin },
     });
     corpo = await res.text();
   } catch (e) { return { erro: 'o POST falhou — ' + String((e && e.message) || e) }; }
-  const ms = Math.round(performance.now() - t0);
+  const r = { status: res.status, tipo: res.headers.get('content-type'), bytes: corpo.length,
+    ms: Math.round(performance.now() - t0),
+    ehDelta: corpo.indexOf('<delta-update') >= 0,
+    completo: corpo.indexOf('sap.its.aParams') >= 0,
+    inicio: corpo.slice(0, ${Number(prefixo)}) };
+  // o título da tela que o SERVIDOR passou a mostrar — só serve para o diagnóstico do delta completo
+  if (r.completo) { const t = /cuatitle\\s*:\\s*'((?:[^'\\\\]|\\\\.)*)'/.exec(corpo); r.titulo = t ? t[1] : null; }
+  ${extrair ? `try { Object.assign(r, (${extrair})(corpo)); } catch (e) { r.erroExtrator = String((e && e.message) || e); }` : ''}
+  return r;
+})()`;
+
+/**
+ * PURO: a fonte do extrator de CÉLULAS de um grid — `(corpo) => ({ celulas, nLinhas, primeira,
+ * ultima })`, para rodar na página sobre o XML cru da resposta.
+ */
+export const extratorDeCelulas = (cid) => `(corpo) => {
   const re = new RegExp('id="grid#' + ${JSON.stringify(String(cid))} + '#([0-9]+),([0-9]+)#if"[^>]*lsdata=\\'([^\\']*)\\'', 'g');
   // ⚠ o corpo é XML CRU: o \`lsdata\` vem com entidade (\`&#39;\`, \`&lt;\`), que o DOM decodificaria
   // sozinho e aqui ninguém decodifica. Sem isto 28 das 8085 células saíam com "&#39;" no valor.
@@ -1761,11 +1804,53 @@ export const jsFragmentoDoGrid = (sid, cid, de, ate, { tetoMs = 180000 } = {}) =
     (celulas[m[1]] = celulas[m[1]] || {})[c] = v ? String(v.value) : '';
   }
   const linhas = Object.keys(celulas).map(Number).sort((a, b) => a - b);
-  return { status: res.status, tipo: res.headers.get('content-type'), bytes: corpo.length, ms,
-    ehDelta: corpo.indexOf('<delta-update') >= 0, nLinhas: linhas.length,
-    primeira: linhas[0] ?? null, ultima: linhas[linhas.length - 1] ?? null,
-    inicio: corpo.slice(0, 240), celulas };
-})()`;
+  return { celulas, nLinhas: linhas.length, primeira: linhas[0] ?? null, ultima: linhas[linhas.length - 1] ?? null };
+}`;
+
+/**
+ * PURO: a expressão JS que pede um FRAGMENTO do ALV **de dentro da página** e devolve as células já
+ * extraídas — `{ status, tipo, bytes, ms, celulas, nLinhas, ehDelta, inicio }`.
+ *
+ * É o mesmo batch do `batchFragmento` do `its.mjs` (`action/710` com `position`+`fragments`, mais o
+ * `get state/ur`), postado na URL do `action` da própria página. `de`/`ate` são 0-BASED (é o que o
+ * protocolo usa); o `lsMatrixRowIndex` que volta nas células é 1-based.
+ *
+ * ⚠️ O corpo tem MEGABYTES (11,9 MB para 1617 linhas) e **não atravessa o CDP**: a extração das
+ * células acontece aqui, na página, e só a matriz volta. Trazer o corpo seria trocar 48 ms por uma
+ * serialização de 11,9 MB no WebSocket.
+ */
+export const jsFragmentoDoGrid = (sid, cid, de, ate, { tetoMs = 180000 } = {}) => jsPostarNaPagina([
+  { post: `action/710/${String(sid)}`, content: `position=${Number(de)}&fragments=${Number(de)},${Number(ate)};` },
+  { get: `state/ur/${String(sid)}` },
+], { tetoMs, extrair: extratorDeCelulas(cid) });
+
+/**
+ * POSTa um batch do `its.mjs` na sessão **desta página** e devolve o que voltou, já classificado.
+ * É o canal do `lerGridInteiro`, aberto para quem precisar de outro `action/`.
+ *
+ * `extrair` roda na página (§ `jsPostarNaPagina`); `quem` é o nome que aparece nas mensagens de erro.
+ *
+ * ⚠️ **Só passa por aqui `action/` cuja resposta seja um delta PARCIAL.** Se o servidor devolver um
+ * delta COMPLETO, este estoura — mas o estrago já está feito: a dynpro do servidor mudou e este DOM
+ * não aplicou nada (§ o bloco acima, item 117). Depois disso a tela desta sessão não vale mais.
+ */
+export async function postarNaPagina(sessao, batch, { tetoMs = 180000, extrair = null, quem = 'postarNaPagina' } = {}) {
+  const r = await avaliar(sessao, jsPostarNaPagina(batch, { tetoMs, extrair }));
+  if (r?.erro) throw new Error(`webgui: ${quem} — ${r.erro}`);
+  // ⚠ o 500 do POST sem `moin` MATA a sessão (§ acima) — qualquer resposta que não seja delta
+  // para aqui, com o começo do corpo, em vez de virar "0 linha" sem causa.
+  if (r.status !== 200 || !r.ehDelta) {
+    throw new Error(`webgui: ${quem} — o ITS respondeu ${r.status} ${r.tipo} (${r.bytes} B), não um delta: ${String(r.inicio).replace(/\s+/g, ' ').slice(0, 160)}`);
+  }
+  if (r.completo) {
+    throw new Error(`webgui: ${quem} — a resposta é um delta COMPLETO (${r.bytes} B, tela "${r.titulo ?? '?'}"): o servidor MUDOU de dynpro `
+      + 'e o DOM desta página não aplicou nada. A tela desta sessão não vale mais — o grid vira órfão e o próximo gesto é '
+      + 'interpretado contra a dynpro nova. Pelo fetch da página só passa action/ de resposta PARCIAL (o 710 do fragmento); '
+      + 'o que muda a tela vai por gesto (clicar, comandar, tecla).');
+  }
+  if (r.erroExtrator) throw new Error(`webgui: ${quem} — o extrator falhou sobre a resposta (${r.bytes} B): ${r.erroExtrator}`);
+  return r;
+}
 
 /** PURO: o próximo `de` (1-based) que a faixa ainda não cobre, ou `null` quando ela está inteira. */
 export function faltaNaFaixaDoBloco(celulas = {}, de = 1, ate = 0) {
@@ -1820,14 +1905,11 @@ export async function lerGridInteiro(sessao, alvo = null, { de = 1, ate = null, 
   for (let proximo = ini; proximo !== null && proximo <= fim;) {
     const antes = Object.keys(celulas).length;
     const ultima = Math.min(proximo + lote - 1, fim);
-    const r = await avaliar(sessao, jsFragmentoDoGrid(sid, g.id, proximo - 1, ultima - 1, { tetoMs }));
-    if (r?.erro) throw new Error(`webgui: lerGridInteiro — ${r.erro}`);
+    const r = await postarNaPagina(sessao, [
+      { post: `action/710/${sid}`, content: `position=${proximo - 1}&fragments=${proximo - 1},${ultima - 1};` },
+      { get: `state/ur/${sid}` },
+    ], { tetoMs, extrair: extratorDeCelulas(g.id), quem: 'lerGridInteiro' });
     pedidos++; bytes += Number(r.bytes || 0);
-    // ⚠ o 500 do POST sem `moin` MATA a sessão (§ acima) — qualquer resposta que não seja delta
-    // para o laço aqui, com o começo do corpo, em vez de virar "0 linha" sem causa.
-    if (r.status !== 200 || !r.ehDelta) {
-      throw new Error(`webgui: lerGridInteiro — o ITS respondeu ${r.status} ${r.tipo} (${r.bytes} B), não um delta: ${String(r.inicio).replace(/\s+/g, ' ').slice(0, 160)}`);
-    }
     for (const [linha, cels] of Object.entries(r.celulas || {})) if (!celulas[linha]) celulas[linha] = cels;
     if (Object.keys(celulas).length === antes) { truncado = true; break; }
     proximo = faltaNaFaixaDoBloco(celulas, ini, fim);

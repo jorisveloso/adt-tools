@@ -17,7 +17,7 @@ import {
   SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo, recusa,
   pinosDeCertificado, bandeirasDeCertificado, explicarErroDeNavegacao,
   jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
-  jsFragmentoDoGrid, faltaNaFaixaDoBloco,
+  jsFragmentoDoGrid, faltaNaFaixaDoBloco, jsPostarNaPagina, postarNaPagina, extratorDeCelulas,
   estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
   jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
@@ -1257,6 +1257,61 @@ test('webgui: resposta que não é delta volta com status e começo do corpo (é
   expect(r.ehDelta).toBe(false);
   expect(r.inicio).toContain('Application Server Error');
   expect(r.celulas).toEqual({});
+});
+
+// ---------- até onde o fetch da página vai: o delta PARCIAL (item 117) ----------
+
+test('webgui: a resposta com sap.its.aParams é um delta COMPLETO — e vem com o título da tela NOVA', async () => {
+  // o corpo é o do F3 medido: o servidor saiu da lista e foi para a tela de seleção do SA38
+  const corpo = "<delta-update><start-script>sap.its.aParams = {cuatitle:'ABAP: execução do programa',"
+    + "dynpro:'SAPMS38M','t-code':'SA38'}</start-script></delta-update>";
+  const { r } = await rodarFragmento(jsPostarNaPagina([{ post: 'vkey/3/ses[0]' }, { get: 'state/ur' }]),
+    { resposta: respostaDe(corpo) });
+  expect(r.ehDelta).toBe(true);
+  expect(r.completo).toBe(true);
+  expect(r.titulo).toBe('ABAP: execução do programa');
+});
+
+test('webgui: o fragmento do ALV é delta PARCIAL — é por isso que ele passa pelo fetch da página', async () => {
+  const { r } = await rodarFragmento(jsFragmentoDoGrid('wnd[0]/x', 'C102', 0, 1),
+    { resposta: respostaDe('<delta-update><span id="grid#C102#1,1#if"></span></delta-update>') });
+  expect(r.completo).toBe(false);
+});
+
+test('webgui: o extrator roda NA PÁGINA e o que ele devolve entra no resultado', async () => {
+  const { r } = await rodarFragmento(jsPostarNaPagina([{ get: 'state/ur' }], { extrair: '(corpo) => ({ tamanho: corpo.length })' }),
+    { resposta: respostaDe('<delta-update>12345</delta-update>') });
+  expect(r.tamanho).toBe('<delta-update>12345</delta-update>'.length);
+  const quebrado = await rodarFragmento(jsPostarNaPagina([{ get: 'state/ur' }], { extrair: '(corpo) => corpo.naoExiste()' }),
+    { resposta: respostaDe('<delta-update></delta-update>') });
+  expect(quebrado.r.erroExtrator).toMatch(/naoExiste/);
+});
+
+// a sessão falsa devolve a resposta pronta: aqui o que se testa são as GUARDAS, não a expressão
+const sessaoQueResponde = (valor) => ({ cmd: async () => ({ result: { value: valor } }) });
+
+test('webgui: postarNaPagina ESTOURA no delta COMPLETO — o servidor mudou de dynpro e o DOM não aplicou', async () => {
+  const s = sessaoQueResponde({ status: 200, tipo: 'text/xml; charset=utf-8', bytes: 136343, ms: 190,
+    ehDelta: true, completo: true, titulo: 'ABAP: execução do programa', inicio: '<?xml version="1.0"' });
+  await expect(postarNaPagina(s, [{ post: 'vkey/3/ses[0]' }])).rejects
+    .toThrow(/delta COMPLETO \(136343 B, tela "ABAP: execução do programa"\)/);
+  await expect(postarNaPagina(s, [{ post: 'vkey/3/ses[0]' }], { quem: 'lerGridInteiro' })).rejects
+    .toThrow(/^webgui: lerGridInteiro —/);
+});
+
+test('webgui: postarNaPagina passa o delta PARCIAL e para no que não é delta (o 500 sem moin)', async () => {
+  const parcial = { status: 200, tipo: 'text/xml; charset=utf-8', bytes: 8, ms: 5, ehDelta: true, completo: false, inicio: '<delta' };
+  await expect(postarNaPagina(sessaoQueResponde(parcial), [{ post: 'action/710/x' }])).resolves.toBe(parcial);
+  const morto = { status: 500, tipo: 'text/html; charset=utf-8', bytes: 9837, ms: 12, ehDelta: false, completo: false,
+    inicio: '<html><head><title>Application Server Error</title>' };
+  await expect(postarNaPagina(sessaoQueResponde(morto), [{ post: 'action/710/x' }])).rejects
+    .toThrow(/o ITS respondeu 500 .*Application Server Error/);
+  await expect(postarNaPagina(sessaoQueResponde({ erro: 'a página não tem o moin' }), [])).rejects.toThrow(/não tem o moin/);
+});
+
+test('webgui: o extrator de células é o mesmo para qualquer grid — o CID entra na regex', () => {
+  expect(extratorDeCelulas('C102')).toContain('"C102"');
+  expect(extratorDeCelulas('C7')).toContain('"C7"');
 });
 
 test('webgui: o avanço do laço é pelo que FALTA (o servidor devolve no mínimo uma janela)', () => {
