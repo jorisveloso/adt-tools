@@ -1972,7 +1972,9 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
 * Popup (`wnd[1]`) — `/o` e `/nend` abrem um, e ele **vem no mesmo `delta-update`**
   (`lerResposta` sinaliza `popup: true`; `lerTela` devolve `popup` com textos e botões por SID —
   e avisa que a `wnd[0]/usr` foi esvaziada); falta medir como responder (item 23). Table control
-  (o steploop, que não é o ALV) e upload/download por esta via também não.
+  (o steploop, que não é o ALV) continua por medir.
+* ~~Upload/download por esta via~~ **medidos** — os dois são o **ITSDoc**: download no item 45
+  (§ "Exportar a lista por ARQUIVO"), upload no item 72 (§ "SUBIR arquivo para o SAP").
 
 ## O ALV: ler as LINHAS do grid, sem varrer célula
 
@@ -2183,18 +2185,23 @@ o `sap.its.arrITSDocParams`. Cada método é um POST **fora do batch**, na URL q
 
 | `ITSDocMethod` | o POST | a resposta |
 |---|---|---|
-| `Query` (`CD`) | `<URL>query?RetQuery=<caminho>` | vazia |
+| `Query` (`CD`/`FL`/`FE`/`DE`) | `<URL>query?RetQuery=<caminho\|tamanho\|1\|0>` | vazia |
 | `FileSaveDialog` | `<URL>filesavedialog?FileName=…&FileEncoding=…` | vazia |
+| `FileOpenDialog` | `<URL>fileopendialog?` + `FileEncoding=…&count=1&FileName0=…` **no corpo** | vazia |
 | `Export` | `<URL>get` | **o arquivo** |
+| `Import` | `<URL>post`, multipart `LOCALFILE1` — **leva o arquivo** | vazia |
 | `GuiSapInfo` + `Method:'ClipboardExport'` | `<URL>clipboardexport` | **o texto** |
-| `Import` | `<URL>post` (FormData `LOCALFILE1`) | a via de ENTRADA — não medida (fila 72) |
 
 Depois de CADA um, o controle volta à dynpro com o trio fixo do renderer (`OK_ITSDOC`):
 `okcode/ses[0]` = `=OK`, `vkey/0/ses[0]`, `state/ur`. Sem ele o programa fica esperando o frontend.
+O laço inteiro está em **`atenderItsdoc(sessao, resposta, opts)`** — é dele que `exportarLista` vive,
+e é ele que a via de ENTRADA (§ abaixo) usa.
 
-⚠ **O `Query CD` é uma pergunta de verdade, e a resposta é usada.** Respondendo vazio, o servidor
-repete o `CD`; respondendo `Z:\`, ele avança com `DefPath:'Z:\'`. O `Z:\` é a raiz do filesystem
-VIRTUAL que o renderer inventa para o browser (`nfstosfs`), não disco de ninguém.
+⚠ **O `Query` é uma pergunta de verdade, tem QUATRO sub-verbos, e responder o errado DERRUBA o
+programa** (item 72): `CD` = qual o diretório corrente (responder `Z:\`; vazio faz o servidor
+repetir o `CD`), `FL` = o TAMANHO do arquivo em bytes, `FE` = o arquivo existe (`1`/`0`), `DE` = o
+diretório existe (`1`/`0`). A CG3Y pergunta `FE`, e respondendo `Z:\` deu **dump**. O `Z:\` é a raiz
+do filesystem VIRTUAL que o renderer inventa para o browser (`nfstosfs`), não disco de ninguém.
 ⚠ **Arquivo grande vem FATIADO**: o HTML veio em dois `Export` (5 120 000 B + 1 643 878 B). Daí
 `exportarLista` acumular `partes` e concatenar.
 ⚠ **`planilha` não passa por aqui**: abre outro popup (*Export As*) e não chega ao ITSDoc.
@@ -2226,3 +2233,56 @@ Não é falta de descoberta — é ausência de comando, por três medições in
    clipboard são `760 COPYCLIPBOARDFAILED` (avisar que o cliente falhou) e `772` (o *cut*).
 
 Quem quer o texto usa o *Exportar → Clipboard* (radio 5), que é ITSDoc — e está medido acima.
+
+## SUBIR arquivo para o SAP — o ITSDoc de ENTRADA (item 72)
+
+O par exato da exportação. Medido no s4h 758/250 em 06/09/2026 pela **CG3Z** (frontend → servidor de
+aplicação), com contra-prova pela CG3Y (`work/POC_webgui_import/medicoes/item72-import.md`).
+
+```js
+const s = await abrirTransacao(cfg, 'CG3Z');
+if (lerTela(s).popup) await acionar(s, { sid: 'wnd[1]/tbar[0]/btn[0]' });   // a nota 1949906
+preencher(s, { sid: 'wnd[1]/usr/ctxtRCGFILETR-FTFRONT' }, 'Z:\qualquer.bin');   // nome VIRTUAL
+preencher(s, { sid: 'wnd[1]/usr/txtRCGFILETR-FTAPPL' }, '/usr/sap/trans/x.bin'); // o destino real
+preencher(s, { sid: 'wnd[1]/usr/ctxtRCGFILETR-FTFTYPE' }, 'BIN');
+await enviar(s);
+let r = await acionar(s, { sid: 'wnd[1]/tbar[0]/btn[14]' });                     // "Carregar"
+if (s.sids.some((x) => x.sid === 'wnd[2]/usr/btnSPOP-OPTION1')) {                // "sobregravar?"
+  r = await acionar(s, { sid: 'wnd[2]/usr/btnSPOP-OPTION1' });
+}
+const { ultima } = await atenderItsdoc(s, r, { dado: meuBuffer, arquivo: 'Z:\qualquer.bin' });
+ultima.mensagem;  // S "File Z:\qualquer.bin foi transferido para /usr/sap/trans/x.bin"
+```
+
+**O nome do arquivo de origem é uma FICÇÃO.** `Z:\qualquer.bin` não existe em disco nenhum — é o
+endereço no filesystem virtual do renderer, e serve só para a dynpro ter o que mostrar e o `Import`
+ter o que pedir. O byte que sobe é o `dado` que se passa ao `atenderItsdoc`.
+
+⚠ **O POST do `Import` NÃO leva `Content-type` nem `X-Requested-With`.** No renderer,
+`UpDownSendRequest(url, null, "X", …)`, e o `"X"` é justamente o que desliga os dois — quem manda é o
+`multipart/form-data; boundary=…` do `FormData` (campo `LOCALFILE1`, `Blob` de
+`application/octet-stream`). Pôr o `Content-type` à mão quebra o boundary. O `updown` do `its.mjs` já
+faz essa bifurcação; ela existe só por causa disto.
+
+**Medido:** 57 B de texto e 256 KB de binário aleatório num POST só, `sha256` idêntico na ida e na
+volta (subiu por CG3Z, voltou por CG3Y). 1 volta do ITSDoc para subir (`Import`), 2 para baixar
+(`Query(FE)` → `Export`). Teto de tamanho não medido — o renderer tem um `maximum file size` e o
+`UpDownSendRequest` trata **413** explicitamente.
+
+### O `FileOpenDialog` — escolher o arquivo em vez de digitar
+
+F4 no campo de origem (`acionar(s, alvo, { evento: 'FieldHelpPress' })` → `vkey/4`) traz
+`ITSDocMethod:'FileOpenDialog'` com `Title`, `Filter`, `DefFile`, `DefPath` e `MultiSelection`.
+Respondê-lo **preenche o campo da dynpro** — medido. E, ao contrário do `FileSaveDialog`, ele manda
+os parâmetros no **corpo** (`FileEncoding=…&count=1&FileName0=…`), com a URL terminada em `?`. As duas
+formas convivem no mesmo módulo do renderer; não se deduz uma da outra.
+
+### Os desvios da CG3Z que não são ITSDoc
+
+Dynpro comum — se respondem pelo SID do botão, não por tecla:
+
+| quando | janela | como sair |
+|---|---|---|
+| ao abrir a transação (nota SAP 1949906) | `SAPMSSY0120` em `wnd[1]` | `wnd[1]/tbar[0]/btn[0]` |
+| destino fora do diretório lógico (`EHS_FTAPPL_2` = `/usr/sap/trans/`) | `SAPMSDYP10` em `wnd[2]` | não há saída — corrija o destino |
+| o arquivo de destino já existe | `SAPLSPO1300` em `wnd[2]` | `btnSPOP-OPTION1` (Sim) / `OPTION2` (Não) |

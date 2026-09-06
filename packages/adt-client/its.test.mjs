@@ -739,16 +739,52 @@ test('its: itsdocDoDelta lê o pedido do frontend — objeto JS (chave sem aspas
 
 test('its: pedidoDoItsdoc traduz cada método do ITSDoc no verbo que o renderer POSTa', () => {
   const doc = (corpo) => itsdocDoDelta(corpo);
-  expect(pedidoDoItsdoc(doc(ITSDOC_QUERY))).toEqual({ caminho: `${ITSDOC_URL}query?RetQuery=Z%3A%5C`, conteudo: false });
-  expect(pedidoDoItsdoc(doc(ITSDOC_SALVAR), { arquivo: 'Z:\\rsparam.txt' })).toEqual({
-    caminho: `${ITSDOC_URL}filesavedialog?FileName=Z%3A%5Crsparam.txt&FileEncoding=4110`, conteudo: false });
+  const so = (p) => ({ corpo: '', conteudo: false, envia: false, ...p });
+  expect(pedidoDoItsdoc(doc(ITSDOC_QUERY))).toEqual(so({ caminho: `${ITSDOC_URL}query?RetQuery=Z%3A%5C` }));
+  expect(pedidoDoItsdoc(doc(ITSDOC_SALVAR), { arquivo: 'Z:\\rsparam.txt' })).toEqual(
+    so({ caminho: `${ITSDOC_URL}filesavedialog?FileName=Z%3A%5Crsparam.txt&FileEncoding=4110` }));
   // só estes dois trazem DADO na resposta — é neles que a exportação sai
-  expect(pedidoDoItsdoc(doc(ITSDOC_EXPORT))).toEqual({ caminho: `${ITSDOC_URL}get`, conteudo: true });
-  expect(pedidoDoItsdoc(doc(ITSDOC_CLIPBOARD))).toEqual({ caminho: `${ITSDOC_URL}clipboardexport`, conteudo: true });
+  expect(pedidoDoItsdoc(doc(ITSDOC_EXPORT))).toEqual(so({ caminho: `${ITSDOC_URL}get`, conteudo: true }));
+  expect(pedidoDoItsdoc(doc(ITSDOC_CLIPBOARD))).toEqual(so({ caminho: `${ITSDOC_URL}clipboardexport`, conteudo: true }));
   // método não previsto não trava a dynpro: cancela
-  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'FileBrowser' })).toEqual({ caminho: 'u/cancel', conteudo: false });
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'FileBrowser' })).toEqual(so({ caminho: 'u/cancel' }));
   // o GuiSapInfo de OUTRO Method não é o clipboard
   expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'GuiSapInfo', Method: 'ClipboardImport' }).caminho).toBe('u/cancel');
+});
+
+// ---------- o ITSDoc: a via de ENTRADA (item 72) ----------
+// Copiados das respostas do s4h 758/250 de 06/09/2026, subindo arquivo pela CG3Z e conferindo pela
+// CG3Y (POC_webgui_import/medicoes/raw/e-2-carregar.txt, i-1-f4.txt, g-volta1.txt).
+const ITSDOC_IMPORT = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {URL:'${ITSDOC_URL}',action:'invoke_itsdoc',FileName:'Z:\\\\item72.txt',ITSDocMethod:'Import'};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
+const ITSDOC_ABRIR = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {URL:'${ITSDOC_URL}',Title:'File origem em frontend',DefExt:'',Filter:'Files importação/exportação (*.dat)|*.dat|Tds.os files (*.*)|*.*||',action:'invoke_itsdoc',DefFile:'substanc.dat',DefPath:'%LOCALAPPDATA%\\\\',ITSDocMethod:'FileOpenDialog',WithEncoding:'',MultiSelection:''};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
+const ITSDOC_QUERY_FE = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {URL:'${ITSDOC_URL}',Query:'FE',Title:'',action:'invoke_itsdoc',RetLong:0,FileName:'Z:\\\\item72_volta.txt',Environment:'',ITSDocMethod:'Query'};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
+
+test('its: pedidoDoItsdoc — o Import POSTa o ARQUIVO, e o FileOpenDialog leva os parâmetros no CORPO', () => {
+  // o Import é o único pedido que LEVA dado; a resposta dele é vazia
+  expect(pedidoDoItsdoc(itsdocDoDelta(ITSDOC_IMPORT), { dado: Buffer.from('oi') })).toEqual({
+    caminho: `${ITSDOC_URL}post`, corpo: '', conteudo: false, envia: true });
+  // o FileOpenDialog manda `count`/`FileName0` no corpo (função `g` do fsmutil), não na URL
+  expect(pedidoDoItsdoc(itsdocDoDelta(ITSDOC_ABRIR), { arquivo: 'Z:\\item72.txt' })).toEqual({
+    caminho: `${ITSDOC_URL}fileopendialog?`,
+    corpo: 'FileEncoding=&count=1&FileName0=Z%3A%5Citem72.txt', conteudo: false, envia: false });
+  // `WithEncoding` ligado leva o encoding (presumido pelo renderer, não medido)
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'FileOpenDialog', WithEncoding: 'X' }, { arquivo: 'Z:\\a.txt', encoding: '4110' }).corpo)
+    .toBe('FileEncoding=4110&count=1&FileName0=Z%3A%5Ca.txt');
+});
+
+test('its: pedidoDoItsdoc — cada sub-verbo do Query tem a SUA resposta (responder CD a todos dá dump)', () => {
+  const q = (Query) => ({ URL: 'u/', ITSDocMethod: 'Query', Query });
+  const dado = Buffer.alloc(57);
+  // CD: o diretório corrente. FL: o tamanho. FE: existe? DE: o diretório existe?
+  expect(pedidoDoItsdoc(q('CD')).caminho).toBe('u/query?RetQuery=Z%3A%5C');
+  expect(pedidoDoItsdoc(q('FL'), { dado }).caminho).toBe('u/query?RetQuery=57');
+  expect(pedidoDoItsdoc(q('FE'), { dado }).caminho).toBe('u/query?RetQuery=1');
+  expect(pedidoDoItsdoc(q('DE')).caminho).toBe('u/query?RetQuery=1');
+  // sem arquivo em mãos, o frontend não tem o que oferecer
+  expect(pedidoDoItsdoc(q('FL')).caminho).toBe('u/query?RetQuery=0');
+  expect(pedidoDoItsdoc(itsdocDoDelta(ITSDOC_QUERY_FE)).caminho).toBe(`${ITSDOC_URL}query?RetQuery=0`);
+  // sub-verbo desconhecido: o renderer não POSTa nada, só devolve o controle
+  expect(pedidoDoItsdoc(q('XX')).caminho).toBe(null);
 });
 
 test('its: OK_ITSDOC devolve o controle à dynpro — o mesmo trio do updown_send_okcode', () => {

@@ -1104,7 +1104,7 @@ export async function lerGrid(sessao, alvo = null, { de = 1, ate = null, lote = 
     linhas: linhasDoGrid(dentro, g.colunas ?? []), pedidos, bytes, ms: Date.now() - t0, truncado };
 }
 
-// ---------- a via de SAÍDA: o ITSDoc (exportar por arquivo) ----------
+// ---------- o ITSDoc: a via de ARQUIVO, nas duas direções (exportar e importar) ----------
 
 /**
  * PURO: o `sap.its.arrITSDocParams` que o delta trouxe — ou `null` quando o delta não pede nada ao
@@ -1142,52 +1142,89 @@ const RAIZ_NFS = 'Z:\\';
 const ecodificar = (s) => encodeURIComponent(String(s ?? '')).replace(/%20/g, '+');
 
 /**
- * PURO: o pedido que ATENDE um `arrITSDocParams` — `{ caminho, conteudo }`, onde `conteudo: true`
- * diz que a RESPOSTA desse POST é o dado (e não um simples "ok"). É a tradução do despacho do
- * renderer (`invoke_itsdoc`), método a método:
+ * PURO: o pedido que ATENDE um `arrITSDocParams` — `{ caminho, corpo, conteudo, envia }`, onde
+ * `conteudo: true` diz que a RESPOSTA desse POST é o dado (e não um simples "ok") e `envia: true`
+ * diz que o POST leva o ARQUIVO (multipart). É a tradução do despacho do renderer
+ * (`invoke_itsdoc`), método a método:
  *
- * | `ITSDocMethod`                 | pedido                                     | a resposta é |
- * |---|---|---|
- * | `Query` (`CD`)                 | `query?RetQuery=<caminho>`                 | vazia |
- * | `FileSaveDialog`               | `filesavedialog?FileName=…&FileEncoding=…` | vazia |
- * | `Export`                       | `get`                                      | **o arquivo** |
- * | `GuiSapInfo`/`ClipboardExport` | `clipboardexport`                          | **o texto** |
- * | qualquer outro                 | `cancel`                                   | vazia |
+ * | `ITSDocMethod`                 | pedido                                       | leva | a resposta é |
+ * |---|---|---|---|
+ * | `Query` (`CD`)                 | `query?RetQuery=<caminho>`                   | — | vazia |
+ * | `Query` (`FL`/`FE`/`DE`)       | `query?RetQuery=<tamanho|1|0>`               | — | vazia |
+ * | `FileSaveDialog`               | `filesavedialog?FileName=…&FileEncoding=…`   | — | vazia |
+ * | `FileOpenDialog`               | `fileopendialog?` + `FileName0=…` no CORPO   | — | vazia |
+ * | `Export`                       | `get`                                        | — | **o arquivo** |
+ * | `Import`                       | `post`                                       | **o arquivo** | vazia |
+ * | `GuiSapInfo`/`ClipboardExport` | `clipboardexport`                            | — | **o texto** |
+ * | qualquer outro                 | `cancel`                                     | — | vazia |
  *
- * ⚠️ O `Query CD` pergunta o DIRETÓRIO CORRENTE do frontend, e a resposta vira o `DefPath` do passo
- * seguinte — medido: respondendo `Z:\` o `FileSaveDialog` voltou com `DefPath:'Z:\'`.
+ * ⚠️ O `Query` tem QUATRO sub-verbos e a resposta é DIFERENTE em cada um (`Query` no renderer):
+ * `CD` = diretório corrente (o caminho), `FL` = o TAMANHO do arquivo em bytes, `FE` = o arquivo
+ * existe? (`1`/`0`), `DE` = o diretório existe? (`1`/`0`). Responder `CD` para todos DERRUBA o
+ * programa: medido em 06/09/2026 que a CG3Y pergunta `Query:'FE'` e recebendo `Z:\` deu **dump**
+ * (`work/POC_webgui_import/medicoes/item72-import.md`). O `dado` é quem decide o `FL`/`FE`: com
+ * arquivo em mãos o frontend "tem" o arquivo (`FE=1`, `FL=<bytes>`); sem, não tem (`0`/`0`).
+ * ⚠️ O `CD` do renderer responde `sfstonfs("")`, que em Windows é a própria raiz `Z:\` — medido no
+ * item 45 que responder VAZIO faz o servidor repetir o `CD`.
+ * ⚠️ `caminho: null` é "não POSTe nada, só devolva o controle" — é o `default` do switch do `Query`.
  */
-export function pedidoDoItsdoc(doc, { caminho = RAIZ_NFS, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110' } = {}) {
+export function pedidoDoItsdoc(doc, { caminho = RAIZ_NFS, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', dado = null } = {}) {
   const url = doc?.URL ?? '';
   const metodo = doc?.ITSDocMethod;
-  if (metodo === 'Query') return { caminho: `${url}query?RetQuery=${ecodificar(caminho)}`, conteudo: false };
-  if (metodo === 'FileSaveDialog') return { caminho: `${url}filesavedialog?FileName=${ecodificar(arquivo)}&FileEncoding=${encoding}`, conteudo: false };
-  if (metodo === 'Export') return { caminho: `${url}get`, conteudo: true };
-  if (metodo === 'GuiSapInfo' && doc?.Method === 'ClipboardExport') return { caminho: `${url}clipboardexport`, conteudo: true };
-  return { caminho: `${url}cancel`, conteudo: false };
+  const pedido = (p, extra = {}) => ({ caminho: p, corpo: '', conteudo: false, envia: false, ...extra });
+  if (metodo === 'Query') {
+    const resposta = {
+      CD: ecodificar(caminho),
+      FL: String(dado ? dado.length : 0),
+      FE: dado ? '1' : '0',
+      DE: '1',
+    }[doc?.Query];
+    if (resposta === undefined) return pedido(null);
+    return pedido(`${url}query?RetQuery=${resposta}`);
+  }
+  if (metodo === 'FileSaveDialog') return pedido(`${url}filesavedialog?FileName=${ecodificar(arquivo)}&FileEncoding=${encoding}`);
+  // O renderer manda os parâmetros do FileOpenDialog no CORPO, não na URL (função `g` do fsmutil) —
+  // e `count`/`FileName<n>` são a multisseleção. `FileEncoding` só vai quando o pedido a pede.
+  if (metodo === 'FileOpenDialog') {
+    return pedido(`${url}fileopendialog?`, {
+      corpo: `FileEncoding=${doc?.WithEncoding ? encoding : ''}&count=1&FileName0=${ecodificar(arquivo)}`,
+    });
+  }
+  if (metodo === 'Export') return pedido(`${url}get`, { conteudo: true });
+  if (metodo === 'Import') return pedido(`${url}post`, { envia: true });
+  if (metodo === 'GuiSapInfo' && doc?.Method === 'ClipboardExport') return pedido(`${url}clipboardexport`, { conteudo: true });
+  return pedido(`${url}cancel`);
 }
 
+/** O campo do multipart que o renderer usa para entregar o arquivo no `Import`. */
+const CAMPO_IMPORT = 'LOCALFILE1';
+
 /**
- * O POST do ITSDoc: fora do `batch/json`, na URL que o próprio pedido trouxe, corpo vazio e
- * `x-www-form-urlencoded` — é o XHR que o renderer faz (`UpDownSendRequest`). Devolve o corpo como
- * `Buffer` (o arquivo pode ser binário).
+ * O POST do ITSDoc: fora do `batch/json`, na URL que o próprio pedido trouxe — é o XHR que o
+ * renderer faz (`UpDownSendRequest`). Devolve o corpo como `Buffer` (o arquivo pode ser binário).
+ *
+ * Duas formas, e a diferença é o terceiro argumento do renderer:
+ *   • sem arquivo — `x-www-form-urlencoded` + `X-Requested-With`, corpo vazio ou o `corpo` do pedido;
+ *   • com arquivo (`Import`) — `UpDownSendRequest(…, "X", …)`, e o `"X"` DESLIGA os dois headers:
+ *     quem manda é o `FormData` (campo `LOCALFILE1`, `Blob` de `application/octet-stream`), com o
+ *     `multipart/form-data; boundary=…` que o próprio `fetch` monta.
  */
-async function updown(sessao, caminho, { tetoMs = 180000 } = {}) {
+async function updown(sessao, { caminho, corpo = '', envia = false } = {}, { dado = null, tetoMs = 180000 } = {}) {
   const url = `${sessao.cfg.base}${caminho}`;
+  const headers = { Authorization: autorizacao(sessao.cfg), Cookie: cookieDoJar(sessao.jar) };
+  let body = corpo;
+  if (envia) {
+    if (!dado) throw new Error('its: o ITSDoc pediu Import e não há arquivo para entregar — passe `dado` (Buffer)');
+    body = new FormData();
+    body.append(CAMPO_IMPORT, new Blob([dado], { type: 'application/octet-stream' }));
+  } else {
+    headers['Content-type'] = 'application/x-www-form-urlencoded';
+    headers['X-Requested-With'] = 'XMLHttpRequest';
+  }
   const t0 = Date.now();
   let res, buf;
   try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: autorizacao(sessao.cfg),
-        'Content-type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-        Cookie: cookieDoJar(sessao.jar),
-      },
-      body: '',
-      signal: AbortSignal.timeout(tetoMs),
-    });
+    res = await fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(tetoMs) });
     buf = Buffer.from(await res.arrayBuffer());
   } catch (e) {
     throw new Error(`its: o ITSDoc falhou — ${e.cause?.code || e.name}: ${e.message}`);
@@ -1195,6 +1232,45 @@ async function updown(sessao, caminho, { tetoMs = 180000 } = {}) {
   const ms = Date.now() - t0;
   logHttp('POST', urlNoLog(url), res.status, ms, buf.length);
   return { status: res.status, tipo: res.headers.get('content-type'), bytes: buf.length, ms, corpo: buf };
+}
+
+/**
+ * ATENDE o diálogo do ITSDoc até o servidor parar de pedir — o laço do renderer, nas DUAS direções.
+ *
+ * A dynpro que quer arquivo (ler ou gravar) não fala pelo batch: ela publica um `arrITSDocParams` e
+ * PARA, esperando o frontend. Aqui esse frontend é o Node: para cada pedido, `pedidoDoItsdoc`
+ * diz o verbo, `updown` o POSTa fora do batch, e `OK_ITSDOC` devolve o controle à dynpro. Repete
+ * enquanto vier pedido.
+ *
+ * `dado` (Buffer) é o arquivo a ENTREGAR — é ele que atende o `Import` e que responde o `Query FL/FE`.
+ * Sem `dado`, o laço só recebe (`Export`, `clipboardexport`) e um `Import` estoura com o motivo.
+ *
+ * Devolve `{ conteudo (Buffer concatenado do que veio), partes, voltas, pedidos, metodos, ultima }` —
+ * `ultima` é a resposta do último `OK_ITSDOC`, já com a mensagem da dynpro ("File … foi transferido
+ * para …").
+ *
+ * ⚠️ Arquivo grande vem FATIADO na SAÍDA: o HTML do item 45 veio em dois `Export` (5 120 000 B +
+ * 1 643 878 B) — daí acumular PARTES em vez de tomar a primeira resposta pelo arquivo. Na ENTRADA
+ * não foi medido fatiamento: 256 KB subiram num POST só.
+ */
+export async function atenderItsdoc(sessao, resposta, { dado = null, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', caminho = RAIZ_NFS, voltasMax = 12, tetoMs = 180000 } = {}) {
+  const partes = [], metodos = [];
+  let r = resposta, voltas = 0, pedidos = 0;
+  for (; voltas < voltasMax; voltas++) {
+    const doc = itsdocDoDelta(r.corpo ?? '');
+    if (!doc) break;
+    metodos.push(doc.Query ? `${doc.ITSDocMethod}(${doc.Query})` : doc.ITSDocMethod);
+    const pedido = pedidoDoItsdoc(doc, { caminho, arquivo, encoding, dado });
+    if (pedido.caminho) {
+      const q = await updown(sessao, pedido, { dado, tetoMs });
+      pedidos++;
+      if (pedido.conteudo && q.bytes) partes.push(q.corpo);
+    }
+    r = await postar(sessao, OK_ITSDOC, { tetoMs });
+  }
+  const conteudo = Buffer.concat(partes);
+  detalhe(`its: atenderItsdoc — ${voltas} volta(s) [${metodos.join(' → ') || '—'}], ${pedidos} pedido(s), ${conteudo.length} B recebido(s)`);
+  return { conteudo, partes: partes.length, voltas, pedidos, metodos, ultima: r };
 }
 
 /**
@@ -1241,22 +1317,11 @@ export async function exportarLista(sessao, { formato = 'tabuladores', arquivo =
   const radio = radios[idx];
   if (!radio) throw new Error(`its: exportarLista — o popup de formato tem ${radios.length} opção(ões), não a de índice ${idx}`);
   await postar(sessao, [{ post: `action/4/${radio.sid}` }, ESTADO], { tetoMs });
-  let r = await postar(sessao, [ENTER, ESTADO], { tetoMs });
+  const r = await postar(sessao, [ENTER, ESTADO], { tetoMs });
 
-  const partes = [];
-  let voltas = 0, pedidos = 0;
-  for (; voltas < voltasMax; voltas++) {
-    const doc = itsdocDoDelta(r.corpo ?? '');
-    if (!doc) break;
-    const { caminho, conteudo } = pedidoDoItsdoc(doc, { arquivo, encoding });
-    const q = await updown(sessao, caminho, { tetoMs });
-    pedidos++;
-    if (conteudo && q.bytes) partes.push(q.corpo);
-    r = await postar(sessao, OK_ITSDOC, { tetoMs });
-  }
-  const conteudo = Buffer.concat(partes);
-  detalhe(`its: exportarLista ${formato} — ${conteudo.length} B em ${partes.length} parte(s), ${voltas} volta(s) do ITSDoc`);
-  return { formato, arquivo, conteudo, bytes: conteudo.length, partes: partes.length, voltas, pedidos, ms: Date.now() - t0 };
+  const { conteudo, partes, voltas, pedidos } = await atenderItsdoc(sessao, r, { arquivo, encoding, voltasMax, tetoMs });
+  detalhe(`its: exportarLista ${formato} — ${conteudo.length} B em ${partes} parte(s), ${voltas} volta(s) do ITSDoc`);
+  return { formato, arquivo, conteudo, bytes: conteudo.length, partes, voltas, pedidos, ms: Date.now() - t0 };
 }
 
 // ---------- dirigir ----------
