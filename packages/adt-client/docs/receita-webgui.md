@@ -3313,6 +3313,11 @@ o `sap.its.arrITSDocParams`. Cada método é um POST **fora do batch**, na URL q
 | `GuiSapInfo` + `Method:'ClipboardExport'` | `<URL>clipboardexport` | **o texto** |
 | `Execute` | **nenhum** — só o `OK_ITSDOC` de volta | — |
 
+⚠ **`GuiSapInfo` não é um método, é um ENVELOPE** (item 113): quando o `ITSDocMethod` é
+`GuiSapInfo`, o verbo verdadeiro está no campo **`Method`** — `GetTempPath`, `ClipboardExport`,
+`ClipboardImport`, `DirectoryCreate`, `DirectoryRemove`. Quem resolve é `verboDoItsdoc(doc)`. Os
+outros treze verbos, e o que a lib responde a cada um, estão no § *O ITSDoc que não é arquivo*.
+
 Depois de CADA um, o controle volta à dynpro com o trio fixo do renderer (`OK_ITSDOC`):
 `okcode/ses[0]` = `=OK`, `vkey/0/ses[0]`, `state/ur`. Sem ele o programa fica esperando o frontend.
 O laço inteiro está em **`atenderItsdoc(sessao, resposta, opts)`** — é dele que `exportarLista` vive,
@@ -3472,3 +3477,87 @@ Dynpro comum — se respondem pelo SID do botão, não por tecla:
 | ao abrir a transação (nota SAP 1949906) | `SAPMSSY0120` em `wnd[1]` | `wnd[1]/tbar[0]/btn[0]` |
 | destino fora do diretório lógico (`EHS_FTAPPL_2` = `/usr/sap/trans/`) | `SAPMSDYP10` em `wnd[2]` | não há saída — corrija o destino |
 | o arquivo de destino já existe | `SAPLSPO1300` em `wnd[2]` | `btnSPOP-OPTION1` (Sim) / `OPTION2` (Não) |
+
+## O ITSDoc que NÃO é arquivo — o servidor mandando o "frontend" listar, apagar e executar (item 113)
+
+Medido no s4h 758/250 em 06/09/2026 na **TEST_FRONT_SERVICES** — a transação PADRÃO da SAP que
+exercita os frontend services, achada pelo índice de uso do próprio sistema — e num report Z mínimo
+rodado por SA38 (`work/POC_webgui_itsdoc/medicoes/item113-nao-arquivo.md`).
+
+**A superfície existe e é grande.** No where-used do sistema (`WBCROSSGT`, cruzado com `D010INC` e
+`TSTC`), os métodos da `CL_GUI_FRONTEND_SERVICES` têm **10 736 usos** em 9 978 programas, dos quais
+**3 367 têm transação**. Não é um canto exótico: `EXECUTE` tem 439 usos (MB80, KEHA, KSEUD, SCIF_URL…),
+`FILE_DELETE` 167, `DIRECTORY_LIST_FILES` 148 (CV01N/CV02N/CV03N, MU01, J1BECD, EDOC_*), e as FMs
+clássicas ainda somam `WS_EXECUTE` 91 e `WS_QUERY` 380.
+
+### O despacho, e o que a lib responde
+
+| verbo (`ITSDocMethod`, ou `Method` sob `GuiSapInfo`) | o POST que a lib faz | por quê |
+|---|---|---|
+| `GetTempPath` | `gettemppath?RetGetTempPath=Z%3A%5Ctemp` | o temp é CONSTANTE no renderer (`updown_temp_path` = `/temp`) |
+| `DirectoryListFiles` | `directorylistfiles?` + `count=…&filename<n>=…` no CORPO | a lista que o chamador der; sem lista, `count=0` |
+| `Directory`, `FileBrowser` | `cancel` | são DIÁLOGOS — sem usuário, "cancelei" é verdade |
+| `Delete` | `delete?RetDelete=2` | 2 = não existe |
+| `DirectoryRemove` | `directoryremove?RetDirectoryRemove=2` | 2 = não existe |
+| `DirectoryCreate` | `directorycreate?RetDirectoryCreate=5` | 5 = não consegui criar |
+| `FileCopy` | `filecopy?RetFileCopy=5` | 5 = a cópia falhou |
+| `DpUrlCopy` | `dpurlcopy?RetDpUrlCopy=-1` | −1 = erro |
+| `ShowDocument` | `showdocument?RetString=3;` | 3 = não exibi |
+| `ClipboardImport` | `clipboardimport?` + `ImpClpbrdLength=-1&count=0` | clipboard vazio (com `texto`, vai linha a linha) |
+| `Execute` | **nada** — só o `OK_ITSDOC` | o renderer também não POSTa |
+| `DpGetStreamFromUrl`, e o desconhecido | `exception` | é o `T ? g(T,K) : updown_sendexception(K)` do renderer |
+
+Os códigos (`0`/`2`/`3`/`5`/`32`/`183`/`−1`) são os do próprio `webgui_min.js` — não foram
+inventados: `Delete` 0 removido · 2 não existe · 5 é diretório · 32 falhou; `DirectoryRemove` 0 · 1
+erro · 2 não existe · 5 falhou; `DirectoryCreate` 0 criado · 3 caminho não encontrado · 5 erro · 183
+já existe.
+
+⚠ **`cancel` NÃO é a resposta neutra — é uma mentira, e a dynpro segue por ela.** O renderer manda
+`cancel` só quando um DIÁLOGO é fechado; para verbo sem handler ele manda `exception`. A mesma
+TEST_FRONT_SERVICES, com `cancel` às cegas × com a tabela acima:
+
+| método | com `cancel` (o que a lib fazia) | com a resposta certa |
+|---|---|---|
+| `GET_TEMP_DIRECTORY` | *(vazio)* | `Z:\temp` |
+| `DIRECTORY_GET_CURRENT` | *(vazio)* | `Z:\` |
+| `FILE_DELETE` | `deleted, RC=0` ← **diz que apagou** | `deleted, RC=2` |
+| `DIRECTORY_DELETE` | `deleted, RC=6357109` ← lixo de memória | `deleted, RC=2` |
+| pedidos no laço | 12 | **16** — o `cancel` fez o ABAP PULAR o `Query(FE/FL)` e o `Delete` |
+
+Ou seja: cancelar às cegas não é "não fazer nada". Faz o programa **pular ramos** e **ler variável
+não atribuída** — e, no pior caso medido, concluir que apagou um arquivo que ninguém apagou.
+
+### O DirectoryListFiles, ponta a ponta
+
+```js
+const r = await atenderItsdoc(s, resposta, { arquivos: [{ nome: 'nota.xml', tamanho: 57 }, { nome: 'sub', dir: true }] });
+```
+
+O ABAP do outro lado recebeu, medido: `subrc=0`, `count=3`, e cada linha com `filename` (o `+` do
+form-urlencode volta como espaço), `filelength` e `isdir`. O `filter` do pedido é aplicado **no
+cliente** (`filtroDoItsdoc`), e `RetLong` falso corta o tamanho em 2³¹−1 — os dois como no renderer.
+Os outros doze atributos por arquivo (`ishidden`, `createdate`, `writetime`…) o renderer TAMBÉM manda
+zerados: o FS virtual dele não os tem.
+
+### O ITSDoc como superfície de ataque — o que um servidor SAP pode pedir ao cliente
+
+Vale ler antes de rodar a lib num sistema de cliente.
+
+- **No browser, o "filesystem do frontend" é um FS emulado sobre IndexedDB da própria origem**
+  (lido no `webgui_min.js`: `getDirectory`/`getFile`/`filewrite` sobre `indexedDB.open`), e
+  `nfstosfs` reescreve QUALQUER letra de unidade para a mesma raiz `Z:\`. `Delete`, `FileCopy` e
+  `DirectoryRemove` do WebGUI não alcançam o disco do usuário — alcançam essa caixa de areia.
+- **`Execute` não executa binário**: o renderer abre uma janela quando a `CommandLine` é
+  `http(s)://`/`mailto:`, e no resto faz *download/exibição* do Blob que está no FS virtual. O que
+  existe de verdade é o servidor **escolher a URL que o browser vai abrir**.
+- **Do lado do agente, o risco não é o que a lib faz; é o que alguém a faria fazer.** Uma
+  implementação "natural" — mapear `Z:\` para uma pasta real e atender `Delete`/`FileCopy`/`Execute`
+  com `fs`/`child_process` — entrega ao SERVIDOR o poder de apagar, copiar e executar no host do
+  agente, com o gesto disfarçado de "abrir uma transação". Um sistema comprometido (ou um programa Z
+  qualquer, já que qualquer ABAP pode chamar `cl_gui_frontend_services=>execute`) tem esse canal
+  aberto para todo cliente que se apresente como WebGUI.
+- **A decisão desta lib, e o invariante a manter:** o `pedidoDoItsdoc` não tem filesystem e não vai
+  ter. Ele responde papel — o código de falha de cada verbo — e o único dado que oferece é o que o
+  chamador lhe entregou explicitamente (`arquivos`, `dado`, `texto`). `Execute` nunca vira processo;
+  `Delete` nunca vira `unlink`. Quem precisar de um frontend com disco, que o construa FORA da lib e
+  saiba o que está ligando.

@@ -12,6 +12,7 @@ import {
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, popupDaSessao, popupsDaTela, telaDoDelta, lerTela, parametrosDaTela,
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
   itsdocDoDelta, pedidoDoItsdoc, atenderItsdoc, MULTIPART_IMPORT, tetoDoImport, OK_ITSDOC, FORMATOS, exportAsDoPopup,
+  verboDoItsdoc, filtroDoItsdoc, corpoDaListaDeArquivos, corpoDoClipboard, TEMP_NFS,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
   indiceDoNo, arvoreDosBrutos, arvore, expansaoDoHtml, expandirNo, colapsarNo, batchExpandirNo, batchColapsarNo, batchAcionarNo, acharNoDaArvore,
   navegarArvore, agregarMudou,
@@ -801,7 +802,8 @@ test('its: itsdocDoDelta lê o pedido do frontend — objeto JS (chave sem aspas
   // valor com aspas simples derruba o JSON.parse — devolve o `bruto`, e o pedido cai no `cancel`
   const torto = itsdocDoDelta(`sap.its.arrITSDocParams = {Title:'d'Água',ITSDocMethod:'Export'};`);
   expect(torto.bruto).toBeTruthy();
-  expect(pedidoDoItsdoc(torto).caminho).toBe('cancel');
+  // pedido ilegível é método desconhecido — e para desconhecido o renderer manda `exception` (item 113)
+  expect(pedidoDoItsdoc(torto).caminho).toBe('exception');
 });
 
 test('its: pedidoDoItsdoc traduz cada método do ITSDoc no verbo que o renderer POSTa', () => {
@@ -813,10 +815,11 @@ test('its: pedidoDoItsdoc traduz cada método do ITSDoc no verbo que o renderer 
   // só estes dois trazem DADO na resposta — é neles que a exportação sai
   expect(pedidoDoItsdoc(doc(ITSDOC_EXPORT))).toEqual(so({ caminho: `${ITSDOC_URL}get`, conteudo: true }));
   expect(pedidoDoItsdoc(doc(ITSDOC_CLIPBOARD))).toEqual(so({ caminho: `${ITSDOC_URL}clipboardexport`, conteudo: true }));
-  // método não previsto não trava a dynpro: cancela
+  // DIÁLOGO sem usuário é cancelamento de verdade — e é o único `cancel` que sobrou (item 113)
   expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'FileBrowser' })).toEqual(so({ caminho: 'u/cancel' }));
-  // o GuiSapInfo de OUTRO Method não é o clipboard
-  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'GuiSapInfo', Method: 'ClipboardImport' }).caminho).toBe('u/cancel');
+  // o GuiSapInfo de OUTRO Method É outro método — o clipboard de ENTRADA, com o texto no corpo
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'GuiSapInfo', Method: 'ClipboardImport' })).toEqual(
+    so({ caminho: 'u/clipboardimport?', corpo: 'ImpClpbrdLength=-1&count=0' }));
 });
 
 // ---------- o ITSDoc: a via de ENTRADA (item 72) ----------
@@ -852,6 +855,75 @@ test('its: pedidoDoItsdoc — cada sub-verbo do Query tem a SUA resposta (respon
   expect(pedidoDoItsdoc(itsdocDoDelta(ITSDOC_QUERY_FE)).caminho).toBe(`${ITSDOC_URL}query?RetQuery=0`);
   // sub-verbo desconhecido: o renderer não POSTa nada, só devolve o controle
   expect(pedidoDoItsdoc(q('XX')).caminho).toBe(null);
+});
+
+// ---------- o ITSDoc que NÃO é arquivo (item 113) ----------
+// Os `arrITSDocParams` abaixo são os MEDIDOS na TEST_FRONT_SERVICES do s4h 758/250 em 06/09/2026
+// (POC_webgui_itsdoc/medicoes/raw/d-cancel-voltas.json) — a transação padrão da SAP que exercita
+// os frontend services. É deles que veio o achado: `GuiSapInfo` é ENVELOPE, e o método real
+// está no `Method`.
+const ENVELOPE = (Method, extra = {}) => ({
+  URL: 'u/', Mode: '', Title: '', Method, action: 'invoke_itsdoc', DefPath: '', DestUrl: '',
+  DestFile: '', MimeType: '', Variable: '', SourceUrl: '', SourceFile: '', MimeSubType: '',
+  ITSDocMethod: 'GuiSapInfo', ...extra,
+});
+
+test('its: verboDoItsdoc — GuiSapInfo é envelope; o método real está no `Method`', () => {
+  expect(verboDoItsdoc(ENVELOPE('GetTempPath'))).toBe('GetTempPath');
+  expect(verboDoItsdoc(ENVELOPE('DirectoryCreate', { DefPath: '\\temp_dir_created' }))).toBe('DirectoryCreate');
+  expect(verboDoItsdoc({ URL: 'u/', ITSDocMethod: 'Export' })).toBe('Export');
+  // sem `Method`, o envelope não some — o `ITSDocMethod` vale
+  expect(verboDoItsdoc({ ITSDocMethod: 'GuiSapInfo' })).toBe('GuiSapInfo');
+  expect(verboDoItsdoc(null)).toBe(null);
+});
+
+test('its: pedidoDoItsdoc — os dois INOFENSIVOS: GetTempPath e DirectoryListFiles', () => {
+  // o temp é a CONSTANTE do renderer (`updown_temp_path` = "/temp" → `Z:\temp`), não %TEMP% de ninguém
+  expect(pedidoDoItsdoc(ENVELOPE('GetTempPath')).caminho).toBe('u/gettemppath?RetGetTempPath=Z%3A%5Ctemp');
+  expect(pedidoDoItsdoc(ENVELOPE('GetTempPath'), { temp: 'Z:\\outro' }).caminho).toBe('u/gettemppath?RetGetTempPath=Z%3A%5Coutro');
+  // sem lista em mãos, o frontend não tem arquivo nenhum — e isso é `count=0`, não um erro
+  const vazio = pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'DirectoryListFiles', DefPath: 'Z:\\', Filter: '*.*' });
+  expect(vazio).toMatchObject({ caminho: 'u/directorylistfiles?', corpo: 'count=0' });
+  // com lista, o formato é o do renderer — e os doze atributos vão ZERADOS, como lá
+  const um = pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'DirectoryListFiles', Filter: '*.txt' },
+    { arquivos: [{ nome: 'a.txt', tamanho: 57 }, { nome: 'b.bin', tamanho: 9 }, { nome: 'sub', dir: true }] });
+  expect(um.corpo).toBe('count=1&filename0=a.txt&filelength0=57&isdir0=0'
+    + '&ishidden0=0&issystem0=0&isreadonly0=0&isarchived0=0&isnormal0=0&iscompress0=0'
+    + '&createdate0=00000000&createtime0=000000&accessdate0=00000000&accesstime0=000000'
+    + '&writedate0=00000000&writetime0=000000');
+});
+
+test('its: corpoDaListaDeArquivos e filtroDoItsdoc — o filtro é aplicado no CLIENTE, como no renderer', () => {
+  expect(filtroDoItsdoc('*.*').test('x.txt')).toBe(true);
+  expect(filtroDoItsdoc('*.txt').test('X.TXT')).toBe(true);          // sem caixa
+  expect(filtroDoItsdoc('*.txt').test('x.txtx')).toBe(false);        // ancorado
+  expect(filtroDoItsdoc('a?.dat').test('a1.dat')).toBe(true);
+  const arqs = [{ nome: 'g.bin', tamanho: 2 ** 31 }];
+  expect(corpoDaListaDeArquivos(arqs)).toContain('filelength0=2147483647');   // RetLong falso corta em 2³¹−1
+  expect(corpoDaListaDeArquivos(arqs, { retLong: true })).toContain('filelength0=2147483648');
+  expect(corpoDaListaDeArquivos([{ nome: 'sub', dir: true }])).toContain('isdir0=1');
+  expect(corpoDaListaDeArquivos([])).toBe('count=0');
+});
+
+test('its: corpoDoClipboard — o texto linha a linha; vazio é ImpClpbrdLength=-1', () => {
+  expect(corpoDoClipboard(null)).toBe('ImpClpbrdLength=-1&count=0');
+  expect(corpoDoClipboard('uma só')).toBe('ImpClpbrdLength=1&count=1&ImpClpbrdText1=uma+s%C3%B3');
+  expect(corpoDoClipboard('a\r\nb')).toBe('ImpClpbrdLength=2&count=2&ImpClpbrdText1=a&ImpClpbrdText2=b');
+});
+
+test('its: pedidoDoItsdoc — quem MODIFICA o frontend recebe a falha do renderer, e o desconhecido recebe exception', () => {
+  // a lib não tem filesystem: nenhum destes toca disco, e nenhum deles mente dizendo "cancelei"
+  expect(pedidoDoItsdoc(ENVELOPE('DirectoryCreate', { DefPath: '\\temp_dir_created' })).caminho).toBe('u/directorycreate?RetDirectoryCreate=5');
+  expect(pedidoDoItsdoc(ENVELOPE('DirectoryRemove', { DefPath: '\\temp_dir_created' })).caminho).toBe('u/directoryremove?RetDirectoryRemove=2');
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'Delete', FileName: 'Z:\\x.txt' }).caminho).toBe('u/delete?RetDelete=2');
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'FileCopy', SourceFile: 'a', DestFile: 'b' }).caminho).toBe('u/filecopy?RetFileCopy=5');
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'DpUrlCopy' }).caminho).toBe('u/dpurlcopy?RetDpUrlCopy=-1');
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'ShowDocument', MimeType: '', KeepFile: '' }).caminho).toBe('u/showdocument?RetString=3;');
+  // Execute NÃO POSTa — o renderer só devolve o okcode, e a lib não executa nada
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'Execute', CommandLine: 'cmd.exe /c del *' }).caminho).toBe(null);
+  // e o que ninguém previu: `exception`, como o `T ? g(T,K) : updown_sendexception(K)` do renderer
+  expect(pedidoDoItsdoc({ URL: 'u/', ITSDocMethod: 'DpGetStreamFromUrl' }).caminho).toBe('u/exception');
+  expect(pedidoDoItsdoc(ENVELOPE('MetodoQueNaoExiste')).caminho).toBe('u/exception');
 });
 
 test('its: OK_ITSDOC devolve o controle à dynpro — o mesmo trio do updown_send_okcode', () => {

@@ -1210,6 +1210,78 @@ const RAIZ_NFS = 'Z:\\';
 const ecodificar = (s) => encodeURIComponent(String(s ?? '')).replace(/%20/g, '+');
 
 /**
+ * O "diretório temporário do frontend", tal como o renderer o inventa: `updown_temp_path` é a
+ * CONSTANTE `"/temp"` no `webgui_min.js`, que `sfstonfs` mostra como `Z:\temp` no Windows. Não é
+ * `%TEMP%` de ninguém — é uma pasta do FS virtual (IndexedDB). Medido no item 113.
+ */
+export const TEMP_NFS = `${RAIZ_NFS}temp`;
+
+/**
+ * PURO: o verbo REAL de um `arrITSDocParams`. **`GuiSapInfo` é um ENVELOPE**: quando o
+ * `ITSDocMethod` é `GuiSapInfo`, o método verdadeiro está em `Method` — é o que o despacho do
+ * renderer faz (`"GuiSapInfo"===K.ITSDocMethod ? R[K.Method] : R[K.ITSDocMethod]`).
+ *
+ * Medido na TEST_FRONT_SERVICES (s4h 758/250, 06/09/2026): `GetTempPath`, `ClipboardExport`,
+ * `ClipboardImport`, `DirectoryCreate` e `DirectoryRemove` chegam TODOS como
+ * `ITSDocMethod:'GuiSapInfo'`, com o nome no `Method`. Olhar só o `ITSDocMethod` (o que a lib
+ * fazia até aqui) manda cinco métodos diferentes para o mesmo galho do `switch`.
+ */
+export const verboDoItsdoc = (doc) => (doc?.ITSDocMethod === 'GuiSapInfo' && doc?.Method
+  ? doc.Method
+  : doc?.ITSDocMethod) ?? null;
+
+/**
+ * PURO: o `Filter` do pedido virado RegExp, como o renderer o traduz (função `h` do
+ * `invoke_itsdoc`): `*.*` é tudo, o `.` é literal, `*` vira `.*`, `?` vira `.?`, e a comparação é
+ * ancorada e sem caixa.
+ */
+export function filtroDoItsdoc(filtro) {
+  let f = String(filtro ?? '*');
+  if (f === '*.*' || f === '') f = '*';
+  f = f.replace(/\./g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.?');
+  return new RegExp(`^${f}$`, 'i');
+}
+
+/**
+ * PURO: o CORPO do `directorylistfiles` — a listagem de arquivos no formato do renderer.
+ *
+ * `arquivos` são `{ nome, tamanho, dir }`. Os outros doze campos por entrada (`ishidden`,
+ * `issystem`, `isreadonly`, `isarchived`, `isnormal`, `iscompress`, `create*`, `access*`,
+ * `write*`) o RENDERER TAMBÉM manda zerados — o FS virtual do browser não tem esses atributos, e
+ * a lib não inventa o que ele não tem. `RetLong` falso corta o tamanho em 2³¹−1, como lá.
+ */
+export function corpoDaListaDeArquivos(arquivos = [], { filtro = '*', retLong = false } = {}) {
+  const re = filtroDoItsdoc(filtro);
+  const TETO = 2 ** 31 - 1;
+  let n = 0, campos = '';
+  for (const a of arquivos) {
+    const nome = String(a?.nome ?? '');
+    if (!re.test(nome)) continue;
+    let tam = Number.parseInt(a?.tamanho, 10);
+    if (!Number.isFinite(tam)) tam = 0;
+    if (!retLong && tam > TETO) tam = TETO;
+    campos += `&filename${n}=${ecodificar(nome)}&filelength${n}=${tam}&isdir${n}=${a?.dir ? '1' : '0'}`
+      + `&ishidden${n}=0&issystem${n}=0&isreadonly${n}=0&isarchived${n}=0&isnormal${n}=0&iscompress${n}=0`
+      + `&createdate${n}=00000000&createtime${n}=000000&accessdate${n}=00000000&accesstime${n}=000000`
+      + `&writedate${n}=00000000&writetime${n}=000000`;
+    n++;
+  }
+  return `count=${n}${campos}`;
+}
+
+/**
+ * PURO: o CORPO do `clipboardimport` — o texto do clipboard do "frontend" linha a linha, como o
+ * renderer o monta (função `G` do fsmutil). Clipboard vazio é `ImpClpbrdLength=-1&count=0`, que é
+ * o que a lib responde quando ninguém lhe deu texto.
+ */
+export function corpoDoClipboard(texto = null) {
+  const linhas = texto === null || texto === undefined || texto === ''
+    ? [] : String(texto).replace(/\r\n/g, '\n').split('\n');
+  const campos = linhas.map((l, i) => `&ImpClpbrdText${i + 1}=${ecodificar(l)}`).join('');
+  return `ImpClpbrdLength=${linhas.length > 0 ? linhas.length : -1}&count=${linhas.length}${campos}`;
+}
+
+/**
  * PURO: o pedido que ATENDE um `arrITSDocParams` — `{ caminho, corpo, conteudo, envia }`, onde
  * `conteudo: true` diz que a RESPOSTA desse POST é o dado (e não um simples "ok") e `envia: true`
  * diz que o POST leva o ARQUIVO (multipart). É a tradução do despacho do renderer
@@ -1224,8 +1296,34 @@ const ecodificar = (s) => encodeURIComponent(String(s ?? '')).replace(/%20/g, '+
  * | `Export`                       | `get`                                        | — | **o arquivo** |
  * | `Execute`                      | **nada** — só devolve o controle             | — | — |
  * | `Import`                       | `post`                                       | **o arquivo** | vazia |
- * | `GuiSapInfo`/`ClipboardExport` | `clipboardexport`                            | — | **o texto** |
- * | qualquer outro                 | `cancel`                                     | — | vazia |
+ * | `ClipboardExport`              | `clipboardexport`                            | — | **o texto** |
+ * | `ClipboardImport`              | `clipboardimport?` + o texto no CORPO        | — | vazia |
+ * | `GetTempPath`                  | `gettemppath?RetGetTempPath=Z%3A%5Ctemp`     | — | vazia |
+ * | `DirectoryListFiles`           | `directorylistfiles?` + a lista no CORPO     | — | vazia |
+ * | `Directory` / `FileBrowser`    | `cancel` — são DIÁLOGOS, e não há usuário    | — | vazia |
+ * | `DirectoryCreate`              | `directorycreate?RetDirectoryCreate=5`       | — | vazia |
+ * | `DirectoryRemove`              | `directoryremove?RetDirectoryRemove=2`       | — | vazia |
+ * | `Delete`                       | `delete?RetDelete=2`                         | — | vazia |
+ * | `FileCopy`                     | `filecopy?RetFileCopy=5`                     | — | vazia |
+ * | `ShowDocument`                 | `showdocument?RetString=3;`                  | — | vazia |
+ * | `DpUrlCopy`                    | `dpurlcopy?RetDpUrlCopy=-1`                  | — | vazia |
+ * | `DpGetStreamFromUrl`           | `exception`                                  | — | vazia |
+ * | qualquer outro                 | **`exception`** (é o que o renderer faz)     | — | vazia |
+ *
+ * ⚠️ **`GuiSapInfo` é ENVELOPE, não método** — quem decide é `verboDoItsdoc`. Cinco dos verbos
+ * acima só chegam assim (`GetTempPath`, `ClipboardExport/Import`, `DirectoryCreate/Remove`).
+ *
+ * ⚠️ **O default NÃO é `cancel`, é `exception`** — foi o que o renderer sempre fez
+ * (`T ? g(T,K) : updown_sendexception(K)`), e o que a lib fazia até o item 113 era MENTIR: `cancel`
+ * é "o usuário fechou o diálogo", e a dynpro segue por esse ramo. `cancel` só sobra para os
+ * verbos que SÃO diálogo (`Directory`, `FileBrowser`, e um `FileOpenDialog`/`FileSaveDialog` que
+ * ninguém queira atender).
+ *
+ * ⚠️ **A lib não tem filesystem, e isto aqui é a decisão de que não vai ter** (ver
+ * `docs/receita-webgui.md`, "o ITSDoc como superfície de ataque"). Os verbos que MODIFICAM
+ * (`Delete`, `DirectoryCreate/Remove`, `FileCopy`, `DpUrlCopy`) respondem o código de FALHA do
+ * próprio renderer — o mesmo que um browser daria sobre um caminho que não existe — e `Execute`
+ * não POSTa nada. Nenhum deles toca disco: um servidor SAP não manda no disco de quem o chama.
  *
  * ⚠️ O `Query` tem QUATRO sub-verbos e a resposta é DIFERENTE em cada um (`Query` no renderer):
  * `CD` = diretório corrente (o caminho), `FL` = o TAMANHO do arquivo em bytes, `FE` = o arquivo
@@ -1237,9 +1335,10 @@ const ecodificar = (s) => encodeURIComponent(String(s ?? '')).replace(/%20/g, '+
  * item 45 que responder VAZIO faz o servidor repetir o `CD`.
  * ⚠️ `caminho: null` é "não POSTe nada, só devolva o controle" — é o `default` do switch do `Query`.
  */
-export function pedidoDoItsdoc(doc, { caminho = RAIZ_NFS, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', dado = null } = {}) {
+export function pedidoDoItsdoc(doc, { caminho = RAIZ_NFS, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110',
+  dado = null, arquivos = [], texto = null, temp = TEMP_NFS } = {}) {
   const url = doc?.URL ?? '';
-  const metodo = doc?.ITSDocMethod;
+  const metodo = verboDoItsdoc(doc);
   const pedido = (p, extra = {}) => ({ caminho: p, corpo: '', conteudo: false, envia: false, ...extra });
   if (metodo === 'Query') {
     const resposta = {
@@ -1266,8 +1365,36 @@ export function pedidoDoItsdoc(doc, { caminho = RAIZ_NFS, arquivo = `${RAIZ_NFS}
   if (metodo === 'Execute') return pedido(null);
   if (metodo === 'Export') return pedido(`${url}get`, { conteudo: true });
   if (metodo === 'Import') return pedido(`${url}post`, { envia: true });
-  if (metodo === 'GuiSapInfo' && doc?.Method === 'ClipboardExport') return pedido(`${url}clipboardexport`, { conteudo: true });
-  return pedido(`${url}cancel`);
+  if (metodo === 'ClipboardExport') return pedido(`${url}clipboardexport`, { conteudo: true });
+  if (metodo === 'ClipboardImport') return pedido(`${url}clipboardimport?`, { corpo: corpoDoClipboard(texto) });
+  // Os dois INOFENSIVOS, e os únicos que a lib responde com um "sim": o temp é a constante do
+  // renderer, e a listagem é a que o chamador entregou (vazia, se não entregou nada).
+  if (metodo === 'GetTempPath') return pedido(`${url}gettemppath?RetGetTempPath=${ecodificar(temp)}`);
+  if (metodo === 'DirectoryListFiles') {
+    return pedido(`${url}directorylistfiles?`, {
+      corpo: corpoDaListaDeArquivos(arquivos, { filtro: doc?.Filter ?? '*', retLong: !!doc?.RetLong }),
+    });
+  }
+  // Diálogos: sem usuário para escolher, "cancelar" é a resposta VERDADEIRA (é o que o renderer
+  // manda quando alguém fecha a janela) — e é a única sobrevivente do antigo default `cancel`.
+  if (metodo === 'Directory' || metodo === 'FileBrowser') return pedido(`${url}cancel`);
+  // Os que MODIFICAM o frontend: a lib não tem filesystem, então responde a FALHA que o renderer
+  // daria sobre um caminho inexistente. Os códigos são os do próprio `webgui_min.js`:
+  //   Delete           0 removido · 2 não existe · 5 é diretório · 32 remove falhou
+  //   DirectoryRemove  0 removido · 1 erro · 2 não existe · 5 remove falhou
+  //   DirectoryCreate  0 criado · 3 caminho não encontrado · 5 erro · 183 já existe
+  //   FileCopy         0 copiado · 5 cópia falhou
+  //   DpUrlCopy        0 copiado · -1 erro
+  if (metodo === 'Delete') return pedido(`${url}delete?RetDelete=2`);
+  if (metodo === 'DirectoryRemove') return pedido(`${url}directoryremove?RetDirectoryRemove=2`);
+  if (metodo === 'DirectoryCreate') return pedido(`${url}directorycreate?RetDirectoryCreate=5`);
+  if (metodo === 'FileCopy') return pedido(`${url}filecopy?RetFileCopy=5`);
+  if (metodo === 'DpUrlCopy') return pedido(`${url}dpurlcopy?RetDpUrlCopy=-1`);
+  // ShowDocument é "abra este documento no frontend": sem janela para abrir, o `RetString` de erro.
+  if (metodo === 'ShowDocument') return pedido(`${url}showdocument?RetString=3;`);
+  // O `DpGetStreamFromUrl` só aceita `file:` — e um frontend sem filesystem não tem `file:` nenhum.
+  // É exatamente o galho em que o renderer manda exception ("only file urls supported").
+  return pedido(`${url}exception`);
 }
 
 /** O campo do multipart que o renderer usa para entregar o arquivo no `Import`. */
@@ -1360,14 +1487,17 @@ async function updown(sessao, { caminho, corpo = '', envia = false } = {}, { dad
  * É por causa da saída que o `voltasMax` padrão é 40 e não 12 — e que estourá-lo agora ESTOURA, em
  * vez de devolver o arquivo truncado calado. Conta grosseira: `voltas ≈ bytes / 5 120 000 + 2`.
  */
-export async function atenderItsdoc(sessao, resposta, { dado = null, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', caminho = RAIZ_NFS, voltasMax = 40, tetoMs = 180000 } = {}) {
+export async function atenderItsdoc(sessao, resposta, { dado = null, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', caminho = RAIZ_NFS,
+  arquivos = [], texto = null, temp = TEMP_NFS, voltasMax = 40, tetoMs = 180000 } = {}) {
   const partes = [], metodos = [];
   let r = resposta, voltas = 0, pedidos = 0;
   for (; voltas < voltasMax; voltas++) {
     const doc = itsdocDoDelta(r.corpo ?? '');
     if (!doc) break;
-    metodos.push(doc.Query ? `${doc.ITSDocMethod}(${doc.Query})` : doc.ITSDocMethod);
-    const pedido = pedidoDoItsdoc(doc, { caminho, arquivo, encoding, dado });
+    // o nome REAL do verbo — `GuiSapInfo` é envelope, e um log de cinco `GuiSapInfo` iguais foi o
+    // que escondeu o `GetTempPath` até o item 113
+    metodos.push(doc.Query ? `${verboDoItsdoc(doc)}(${doc.Query})` : verboDoItsdoc(doc));
+    const pedido = pedidoDoItsdoc(doc, { caminho, arquivo, encoding, dado, arquivos, texto, temp });
     if (pedido.caminho) {
       const q = await updown(sessao, pedido, { dado, tetoMs });
       pedidos++;
