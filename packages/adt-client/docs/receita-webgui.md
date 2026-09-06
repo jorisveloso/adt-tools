@@ -207,6 +207,8 @@ try {
   // 3. dirigir
   await preencher(s, { id: 'M0:46:::2:21' }, 'T000');
   const r = await acionar(s, 'Gravar');        // 'btn[11]', 11 ou o apelido — clica e ESPERA o ABAP
+  // ⚠ `mudou` compara o CARIMBO, e ele é cego a repaint que devolve a tela igual (item 80,
+  // § "⚠ O carimbo é CEGO num repaint de grid"). Quem prova o efeito é a mensagem, abaixo.
   if (!r.mudou) throw new Error('a tela não respondeu — a ação não pegou');
 
   const depois = await lerTela(s);
@@ -610,8 +612,11 @@ Três medições que fazem o clique cair no vazio, todas resolvidas dentro de `a
 
 `apontar` ainda devolve `coberto` (por `elementFromPoint`): alvo coberto é clique perdido.
 
-E **`mudou: false` é informação**: `acionar` compara o carimbo da tela antes e depois; tela idêntica
-significa que a ação não pegou, e é assim que `btn[15]`/`btn[12]` se denunciam neste canal.
+E **`mudou: false` é informação** — mas informação **fraca**: `acionar` compara o carimbo da tela
+antes e depois, e é assim que `btn[15]`/`btn[12]` se denunciam neste canal. ⚠ Tela idêntica **não**
+prova que a ação não pegou: medido no item 80 que um round-trip completo pode repintar o grid sem
+mexer em nada do que o carimbo lê (§ "⚠ O carimbo é CEGO num repaint de grid"). Quem separa "não
+houve conversa" de "houve conversa e a tela ficou igual" é o `respondeu` — hoje só no `comandar`.
 
 ### ⚠ O contêiner que você aponta pode não ser o nó que ACIONA
 
@@ -861,6 +866,63 @@ ter vindo do gesto em teste.
 
 ⚠ O `change` **não discrimina**: apareceu nos três cenários da bisseção, inclusive no que perdeu.
 Quem discrimina é o `blur` ou o endereço do `vkey`.
+
+### ⚠ O carimbo é CEGO num repaint de grid — o sinal é o round-trip (item 80)
+
+**Medido no s4h 758/250 em 06/09/2026**
+(`sap-accelerate/work/POC_webgui_grid_edit/medicoes/item80-carimbo-repaint.md`, bruto em
+`raw/j-carimbo.json`, `k-oque-muda.json`, `l-comandar-novo.json`).
+
+O sintoma era um mistério do item 47: **o mesmo `comandar('FC01')`, na mesma sessão**, custou 4,2 s
+numa corrida e **42,8 s** na outra. Não é intermitência — é o `esperarMudanca` pagando o teto
+inteiro quando o carimbo não muda. Cinco gestos numa tela com ALV editável, **um round-trip
+completo em cada um**:
+
+| gesto | resposta do ABAP | `carimbo` |
+|---|---|---|
+| `FC01` 1ª vez (statusbar ganha msg) | 396 ms | mudou (`nEl` 873→874) |
+| `FC01` de novo (repaint IDÊNTICO) | 183 ms | **igual** |
+| escrever célula + `FC01` (o valor já está no DOM) | 2 072 ms | mudou (`nEl` 874→879) |
+| `FCZZ` (fcode que a dynpro não tem) | 186 ms | **igual** |
+| `FC03` (muda só a mensagem da statusbar) | 374 ms | **igual** |
+
+**Por quê:** os 300 caracteres que o `JS_CARIMBO` lê são o **começo** do `innerText` — título, menu
+e botões. Nem o grid nem a statusbar (que aparece no caractere ~1 000) chegam ali. Quando o carimbo
+salvou, salvou pela contagem de elementos, por acaso.
+
+Procurou-se um sinal melhor **dentro do DOM** e não existe um que seja genérico e honesto ao mesmo
+tempo: o `lsdata` do container do grid tem um `"version"` que incrementa a cada round-trip
+(`1→2→3→4`, medido) — mas só existe onde há grid; e o painel de informação do sistema reescreve
+`Tempo E2E`/`Tempo WebGUI` no `innerText` — mas depende do tema e repete quando o tempo repete.
+
+O sinal que serve já estava na sessão: **o POST do renderer e a resposta dele** (`Network.*` do
+CDP). É o que `esperarTroca` usa — round-trip **ou** carimbo, o que vier primeiro, assentando
+sempre antes de julgar (a resposta chega ~200 ms **antes** do repaint). Por isso `comandar` devolve
+`respondeu` ao lado de `mudou`:
+
+```js
+const r = await comandar(s, 'FC01', { tetoMs: 40000 });
+// { okcode:'FC01', mudou:false, respondeu:true, ms:1484, publicado:'M0:46:::0:34' }
+```
+
+| | significa |
+|---|---|
+| `respondeu: false` | **nenhuma conversa com o ABAP** — o gesto não saiu do navegador |
+| `respondeu: true, mudou: false` | houve round-trip e **a tela ficou igual** (repaint que confirma) |
+| `respondeu: true, mudou: true` | houve round-trip e a tela trocou |
+
+⚠ **`respondeu: true` NÃO quer dizer "o comando pegou".** O `FCZZ` da tabela prova: fcode
+inexistente também faz round-trip completo, o ABAP só o ignora. Quem diz se houve **efeito** é a
+mensagem (`lerTela(s).mensagem` — `null` no `FCZZ`, `ITEM47 GRAVOU…` nos outros) ou o dado.
+
+Com o teto em 40 s de propósito, os cinco gestos fecharam entre **1 476 e 1 678 ms** — quatro deles
+custariam o teto inteiro na espera antiga.
+
+⚠ **Isto ainda vale só para o `comandar`.** `acionar`/`clicar({esperarResposta})`, `ordenarGrid`,
+`filtrarGrid`, `inserirLinha`, `apagarLinhas` e `navegarMenu` continuam com `esperarMudanca` (só
+carimbo) e têm a mesma cegueira — ordenar um grid pequeno é justamente o caso em que a tela volta
+igual. Cada um precisa da sua contra-prova antes de migrar: `abrirMenu`, por exemplo, muda a tela
+**sem** round-trip nenhum, e ali o carimbo é o sinal certo.
 
 ### ⚠ OK-code que abre popup trava a `wnd[0]` — **só no NAVEGADOR**
 

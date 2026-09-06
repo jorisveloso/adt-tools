@@ -8,7 +8,7 @@ import {
   autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
-  interpretarSonda, jsComando, JS_PUBLICAR_FOCO,
+  interpretarSonda, jsComando, JS_PUBLICAR_FOCO, ehTelemetria, roundTrips,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
   criarPilhaDeDesfazer, transacional,
   SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo,
@@ -458,6 +458,28 @@ test('webgui: o OK-code leva o que foi digitado porque o blur PUBLICA o valor (i
   expect(JS_PUBLICAR_FOCO).toContain("e.id === 'ToolbarOkCode'");
   // sem campo em foco não há o que publicar — devolve null em vez de estourar
   expect(JS_PUBLICAR_FOCO).toContain('return null');
+});
+
+test('webgui: o round-trip é o sinal que o carimbo não dá (item 80)', () => {
+  // URLs BRUTAS do s4h 758/250, 06/09/2026 (POC_webgui_grid_edit/medicoes/raw/j-carimbo.json):
+  // o gesto do FC03 disparou DOIS posts, e o segundo é telemetria.
+  const dynpro = 'http://ndc-srvhana.opus-idc.com.br:8000/sap(cz1TSUQlM2FBTk9OJTNh)/bc/gui/sap/its/webgui';
+  const fesr = 'http://ndc-srvhana.opus-idc.com.br:8000/sap/bc/gui/sap/its;sap-fesr-only/webgui';
+  expect(ehTelemetria(fesr)).toBe(true);
+  expect(ehTelemetria(dynpro)).toBe(false);
+  expect(ehTelemetria(null)).toBe(false);
+
+  const post = (id, url) => ({ method: 'Network.requestWillBeSent', params: { requestId: id, request: { method: 'POST', url } } });
+  const get = (id, url) => ({ method: 'Network.requestWillBeSent', params: { requestId: id, request: { method: 'GET', url } } });
+  const resp = (id) => ({ method: 'Network.responseReceived', params: { requestId: id } });
+
+  // o gesto começa em `desde`: o que veio antes é de outro gesto e não conta
+  const eventos = [post('velho', dynpro), resp('velho'), post('A', dynpro), get('img', dynpro), post('T', fesr), resp('T')];
+  expect(roundTrips(eventos, 2)).toEqual({ enviados: 1, respondidos: 0 }); // só a telemetria voltou
+  expect(roundTrips([...eventos, resp('A')], 2)).toEqual({ enviados: 1, respondidos: 1 });
+  // sem `desde` o histórico inteiro conta — é o que faz a marca ser obrigatória em quem espera
+  expect(roundTrips(eventos)).toEqual({ enviados: 2, respondidos: 1 });
+  expect(roundTrips([], 0)).toEqual({ enviados: 0, respondidos: 0 });
 });
 
 // ── O MENU DA BARRA (item 26) ────────────────────────────────────────────────

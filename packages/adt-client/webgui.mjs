@@ -877,6 +877,84 @@ export async function esperarMudanca(sessao, antes, { tetoMs = 30000, quietoMs =
   return false;
 }
 
+/** PURO: este POST é a TELEMETRIA do WebGUI (FESR), não o round-trip da dynpro. Medido no s4h
+ * 758/250 em 06/09/2026: um gesto pode disparar DOIS POSTs, e o segundo é
+ * `…/sap/bc/gui/sap/its;sap-fesr-only/webgui` — contá-lo faria a espera achar que o ABAP
+ * respondeu antes de ter respondido. */
+export const ehTelemetria = (url) => /sap-fesr-only/.test(String(url ?? ''));
+
+/**
+ * PURO: os round-trips do renderer nos eventos CDP a partir de `desde` — `{ enviados, respondidos }`,
+ * já sem a telemetria. **É O SINAL QUE O CARIMBO NÃO DÁ**: houve conversa com o ABAP.
+ */
+export function roundTrips(eventos = [], desde = 0) {
+  const novos = eventos.slice(desde);
+  const ids = new Set();
+  for (const e of novos) {
+    if (e.method === 'Network.requestWillBeSent' && e.params?.request?.method === 'POST'
+      && !ehTelemetria(e.params?.request?.url)) ids.add(e.params.requestId);
+  }
+  const respondidos = new Set();
+  for (const e of novos) {
+    if ((e.method === 'Network.responseReceived' || e.method === 'Network.loadingFinished')
+      && ids.has(e.params?.requestId)) respondidos.add(e.params.requestId);
+  }
+  return { enviados: ids.size, respondidos: respondidos.size };
+}
+
+/**
+ * Espera o gesto FECHAR: o round-trip com o ABAP **ou** a tela trocar — o que vier primeiro — e só
+ * então deixa o DOM assentar. Devolve `{ respondeu, mudou, ms }`, e são coisas DIFERENTES.
+ *
+ * ⚠️ **O carimbo sozinho é cego, e o preço é o teto inteiro.** Medido no s4h 758/250 em 06/09/2026
+ * (item 80, `sap-accelerate/work/POC_webgui_grid_edit/medicoes/item80-carimbo-repaint.md`), cinco
+ * gestos numa tela com ALV editável, cada um com UM round-trip completo — em **três** deles o
+ * carimbo ficou idêntico:
+ *
+ * | gesto | round-trip | carimbo | por quê |
+ * |---|---|---|---|
+ * | FC01 (1ª vez, statusbar ganha msg) | 1 POST, 396 ms | mudou | `nEl` 873→874 |
+ * | FC01 de novo (repaint idêntico) | 1 POST, 183 ms | **igual** | gravou o mesmo, tela igual |
+ * | escrever + FC01 (o valor já está no DOM) | 1 POST, 2072 ms | mudou | `nEl` 874→879 |
+ * | FCZZ (fcode que a dynpro não tem) | 1 POST, 186 ms | **igual** | o servidor recebeu e ignorou |
+ * | FC03 (muda só a mensagem) | 1 POST, 374 ms | **igual** | a statusbar está DEPOIS dos 300 chars |
+ *
+ * O carimbo lê `title + nº de elementos + 300 chars do innerText` — e esses 300 chars são o
+ * CABEÇALHO (título, menu, botões), que um repaint de grid não toca. Quando ele salvou, salvou pela
+ * contagem de elementos, por acaso. É essa cegueira que explica os 4,2 s × 42,8 s do item 47
+ * (mesmo `comandar('FC01')`, mesma sessão): **não é intermitência** — quando o repaint confirma o
+ * que já estava no DOM, o carimbo não muda e a espera antiga pagava o teto inteiro.
+ *
+ * ⚠️ **`respondeu: true` NÃO quer dizer "o comando pegou".** O FCZZ acima prova: fcode inexistente
+ * também faz round-trip, o ABAP só o ignora. O que `respondeu` separa é o que antes se confundia
+ * num `mudou: false` só — *nenhuma conversa aconteceu* (`respondeu: false`) × *houve conversa e a
+ * tela ficou igual* (`respondeu: true, mudou: false`). Se o comando teve EFEITO, quem diz é a
+ * mensagem (`lerTela(s).mensagem`) ou o dado.
+ */
+export async function esperarTroca(sessao, antes, { desde = 0, tetoMs = 25000, quietoMs = 1200 } = {}) {
+  const t0 = Date.now();
+  const ate = t0 + tetoMs;
+  let respondeu = false;
+  while (Date.now() < ate) {
+    await espera(200);
+    if (roundTrips(sessao.eventos, desde).respondidos > 0) { respondeu = true; break; }
+    if (antes != null && await carimbo(sessao) !== antes) break;
+  }
+  // Assentar SEMPRE, e só depois julgar: a resposta chega ANTES do repaint (medido: resposta em
+  // 183 ms, DOM repintado em ~400 ms). Ler o carimbo no instante da resposta diria "não mudou"
+  // para tela que estava justamente trocando.
+  let c = await carimbo(sessao);
+  let vistos = sessao.eventos.length;
+  let ultimo = Date.now();
+  const limite = Date.now() + tetoMs;
+  while (Date.now() - ultimo < quietoMs && Date.now() < limite) {
+    await espera(200);
+    const d = await carimbo(sessao);
+    if (d !== c || sessao.eventos.length > vistos) { c = d; vistos = sessao.eventos.length; ultimo = Date.now(); }
+  }
+  return { respondeu, mudou: antes != null && c !== antes, ms: Date.now() - t0 };
+}
+
 /**
  * Navega e espera a dynpro montar.
  * ⚠️ "rede quieta" NÃO serve como sinal de pronto: se o servidor demora a COMEÇAR a responder, a
@@ -2803,8 +2881,12 @@ export const JS_PUBLICAR_FOCO = `(() => {
  * Manda um OK-code pela caixa de comando e espera a resposta do ABAP. LEVA junto o que foi
  * `preencher`-ido: antes do OK-code, tira o foco do campo, que é o que faz o renderer publicar o
  * valor (§ acima). `publicarValores: false` volta ao gesto cru, sem o `blur`.
- * `mudou: false` é INFORMAÇÃO: a tela ficou igual, o comando não pegou (popup aberto, fcode que a
- * dynpro não tem, ou sessão encerrada por um `/nex` anterior).
+ * Devolve `{ okcode, mudou, respondeu, ms, publicado }` — e `mudou` e `respondeu` são coisas
+ * diferentes (§ `esperarTroca`): `respondeu: false` é "nenhuma conversa com o ABAP aconteceu" (o
+ * gesto não saiu do navegador); `respondeu: true, mudou: false` é "houve round-trip e a tela ficou
+ * igual" — o caso normal de um repaint de grid que confirma o que já estava no DOM, e que a espera
+ * antiga (só carimbo) cobrava o TETO inteiro para descobrir. Se o comando teve EFEITO, quem diz é
+ * a mensagem (`lerTela`) ou o dado, nunca esses dois sinais.
  *
  * ⚠ `/n` (e `/3`) **encerra a transação**, não vai ao menu: medido no s4h 758/250 em 05/09/2026
  * (item 37, pela via HTTP) que ele cai na tela de fundo da sessão — `SMEN` só quando a sessão já
@@ -2814,11 +2896,12 @@ export async function comandar(sessao, texto, { tetoMs = 25000, publicarValores 
   const js = jsComando(texto);
   const publicado = publicarValores ? await avaliar(sessao, JS_PUBLICAR_FOCO) : null;
   const antes = await carimbo(sessao);
+  const desde = sessao.eventos.length;
   const t0 = Date.now();
   const achou = await avaliar(sessao, js);
   if (!achou) throw new Error(`webgui: comandar — a tela não tem o campo ToolbarOkCode (${texto})`);
-  const mudou = await esperarMudanca(sessao, antes, { tetoMs });
-  return { okcode: String(texto).trim(), mudou, ms: Date.now() - t0, publicado: publicado ?? null };
+  const { mudou, respondeu } = await esperarTroca(sessao, antes, { desde, tetoMs });
+  return { okcode: String(texto).trim(), mudou, respondeu, ms: Date.now() - t0, publicado: publicado ?? null };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
