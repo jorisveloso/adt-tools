@@ -54,8 +54,8 @@ function lerCauda(caminho, bytes = 512 * 1024) {
 
 const opts = lerArgs(process.argv.slice(2));
 const filas = escolherFilas(listarFilas(FILAS_DIR), opts.fila);
-const hora = () => new Date().toISOString().slice(11, 19);
-const carimbo = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
+const hora = () => agoraLocal().hora;
+const carimbo = () => agoraLocal().carimbo;
 const resumo = { filas: {} };
 const STATUS = { fechado: 'sucesso', bloqueado: 'bloqueio (aguarda o Joris)', adiar: 'adiamento', sumiu: 'item sumiu da fila' };
 

@@ -25,6 +25,19 @@ export function veredito(item, { erro } = {}) {
   };
 }
 
+/**
+ * Data e hora no fuso da MÁQUINA — quem lê o log e a fila é o Joris, em America/Sao_Paulo.
+ * O `toISOString()` que estava aqui saía em UTC: as linhas ▶/■ e a data do `adiado:` na fila
+ * ficavam 3 h à frente do relógio dele, no mesmo arquivo em que a pausa já vinha em hora local.
+ * → { data: 'AAAA-MM-DD', hora: 'HH:MM:SS', carimbo: 'AAAA-MM-DD HH:MM' }
+ */
+export function agoraLocal(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  const data = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const hora = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return { data, hora, carimbo: `${data} ${hora.slice(0, 5)}` };
+}
+
 /** Uma mensagem de erro em UMA linha — a nota da fila é uma linha; o que vem depois da quebra
  * virava linha solta no markdown e o motivo ficava truncado (medido em 05/09/2026). */
 export function umaLinha(s) {
