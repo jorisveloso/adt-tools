@@ -449,15 +449,30 @@ function escolherNaJanela(sids, todos, candidatos, janela, { alvo, nomear }) {
 // ---------- a tela do delta-update (PURO) ----------
 //
 // O `delta-update` é a tela inteira como HTML dentro de `<![CDATA[…]]>`, um bloco por região
-// (`cuaarea` = barras, `steploop0` = a dynpro, `msgarea` = a barra de mensagens, `webguiPopups` =
-// o popup). Medido no s4h 758/250 em 04/09/2026 (sap-accelerate/work/POC_webgui_okcode e
-// POC_webgui_its_lib, medicoes/raw/*): TODO POST que volta `delta` traz a tela inteira — o boot
+// (`cuaarea` = barras, `userpanel` = a dynpro (`wnd[0]/usr`), `msgarea` = a barra de mensagens,
+// `webguiPopups` = o popup). Medido no s4h 758/250 em 04/09/2026 (sap-accelerate/work/POC_webgui_okcode
+// e POC_webgui_its_lib, medicoes/raw/*): TODO POST que volta `delta` traz a tela inteira — o boot
 // (288 KB), um `enviar` só com `focus`+`value` (288 KB), o `/nSE38` (246 KB) — não um diff.
 //
-// ⚠️ A EXCEÇÃO, medida com `/nend` e `/o`: com POPUP aberto o `steploop0` vem VAZIO
-// (`<div id="steploop0" ct="PLP"></div>`) e a `wnd[0]/usr` SOME do delta — 0 SIDs, contra 48 do
-// mesmo menu sem popup; um `state/ur` posterior devolve a mesma coisa. Quem lê a tela com popup
-// aberto lê o popup: os campos da `wnd[0]` não estão lá para serem lidos.
+// ⚠️ `steploop0` NÃO é a dynpro. Nos 12 brutos varridos (POC_webgui_okcode e POC_webgui_popup,
+// medicoes/raw/*) ele é SEMPRE a MESMA casca de 119 bytes — `<div id="steploop0" ct="PLP"
+// class="lsPagelayout__panel lsPagelayout__panel--end"></div>` — com popup e sem popup, na SE16, na
+// SE38 e no SMEN. Ele não "esvazia": nunca teve nada. Os campos moram no `userpanel`.
+//
+// ⚠️ O POPUP NÃO tira a `wnd[0]/usr` do delta — a afirmação contrária, do item 21, caiu na medição
+// do item 98 (06/09/2026), reprocessando os brutos com `telaDoDelta`, sem tocar a rede:
+//   SE16/T000 com SPOP (`i58-b-nend.txt`) e com `/o` (`b-o.txt`) → 34 campos, e o `userpanel` traz
+//   os MESMOS 85 SIDs `wnd[0]/usr` do sem-popup (`c2-t000.txt`, 34 campos);
+//   SE38 com `/nend` (`f0-nend.txt`) e com F12 no SPOP (`h-vkey12.txt`) → 1 campo e 11 SIDs, como o
+//   `c4-nse38.txt` sem popup.
+// Quem lê a tela com popup aberto lê a `wnd[0]` ATRÁS do modal: `campos` é dela, `botoes` traz as
+// duas barras, e o conteúdo da modal está em `popup`.
+//
+// O ÚNICO caso medido em que o bloco `userpanel` não veio no delta é o SMEN (SAP Easy Access) com
+// popup (`d2-o.txt`, `d2-ose16.txt`, `d3-nend.txt`) — e ali isso não muda leitura nenhuma: o SMEN dá
+// 0 campos COM e SEM popup (`c5-n.txt` e `c0-boot.txt` trazem o `userpanel`, 7 SIDs `wnd[0]/usr`,
+// nenhum de entrada), porque o menu é árvore, não dynpro. Foi daí que veio a leitura de 0 do item
+// 21. Por que o `userpanel` some no SMEN com popup: NÃO medido.
 //
 // O que a via HTTP NÃO tem e o navegador tem: LAYOUT. `visivel` aqui é "não marcado invisível no
 // markup" (`lsControl--invisible`, `lsElement--invisible`, `display:none`, o `<xmp>` que embrulha os
@@ -826,10 +841,13 @@ export function telaDoDelta(corpo) {
     ...tela,
     screenId: paramDe(s, 'ScreenId'), dynpro: paramDe(s, 'dynpro'), tcode: paramDe(s, 't-code'), dnum: paramDe(s, 'd-num'),
     popup,
-    // com popup aberto a wnd[0]/usr NÃO vem no delta — quem lê `campos` vazio precisa saber por quê
-    aviso: popup && !tela.campos.length
+    // ⚠ o aviso é de ENDEREÇAMENTO, não de ausência: com modal aberta `campos`/`botoes` continuam
+    // sendo a `wnd[0]` de trás (medido no item 98 — SE16 com SPOP dá os mesmos 34 campos do sem
+    // popup). Dispara sempre que há popup; até 06/09/2026 dizia que a `wnd[0]/usr` sumia, e só não
+    // era desmentido porque a condição era `campos.length === 0` — só telas sem campo o viam.
+    aviso: popup
       ? `popup ${popup.sid} aberto${popup.atras.length ? ` (sobre ${popup.atras.join(', ')} — é a de cima que responde)` : ''}`
-        + ' — a wnd[0]/usr não vem no delta enquanto ele estiver aberto'
+        + ' — campos e botoes são a wnd[0] ATRÁS do modal; o conteúdo da modal está em popup'
       : null,
   };
 }
@@ -1068,8 +1086,9 @@ export const titulo = (sessao) => sessao.titulo;
  * tocar a rede: `{ titulo, janela, mensagem, statusbar, campos, radios, checkboxes, botoes, grids,
  * rotulos, okcode, screenId, dynpro, tcode, dnum, popup, aviso }`. Cada campo traz `sid`, `campo`
  * (o parâmetro da URL `~transaction`), `rotulo` (costurado pelo label), `dica` (o data element) e
- * `valor`. ⚠ `popup` não nulo = `wnd[1]` aberta, e aí `campos` vem vazio (o delta não traz a
- * `wnd[0]/usr`) — o `aviso` diz isso.
+ * `valor`. ⚠ `popup` não nulo = modal aberta — e aí `campos` e `botoes` são a `wnd[0]` ATRÁS dela
+ * (o popup NÃO tira a `wnd[0]/usr` do delta, item 98); o conteúdo da modal está em `popup`, e o
+ * `aviso` repete isso.
  */
 export function lerTela(sessao) {
   if (!sessao?.delta) throw new Error('its: sem delta para ler — abra a sessão (o boot traz a primeira tela)');

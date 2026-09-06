@@ -493,11 +493,14 @@ test('its: a barra de mensagens sai com a constante do tipo e o texto (o mesmo D
     .toEqual({ tipo: 'OK', texto: 'Para tabela T000 existe uma visão de atualização' });
 });
 
-test('its: com POPUP aberto o delta traz a wnd[1] e ESVAZIA a wnd[0]/usr — o modelo diz isso, e os botões do popup são por SID', () => {
+test('its: com POPUP aberto o delta traz a wnd[1] — o modelo diz isso, e os botões do popup são por SID', () => {
   const tela = telaDoDelta(DELTA_POPUP);
   expect(tela.janela).toMatchObject({ sid: 'wnd[1]', principal: false });
+  // ⚠ este delta é o do SMEN: `campos` vazio é do MENU (não tem dynpro), não do popup — ver o teste
+  // do item 98 abaixo, em que a MESMA modal convive com o campo da SE38
   expect(tela.campos).toEqual([]);
-  expect(tela.aviso).toMatch(/popup wnd\[1\] aberto — a wnd\[0\]\/usr não vem/);
+  expect(tela.aviso).toBe('popup wnd[1] aberto — campos e botoes são a wnd[0] ATRÁS do modal;'
+    + ' o conteúdo da modal está em popup');
   expect(tela.popup).toEqual({
     sid: 'wnd[1]', id: 'SAPLSPO1100_1', titulo: 'Efetuar logoff',
     textos: [
@@ -512,13 +515,56 @@ test('its: com POPUP aberto o delta traz a wnd[1] e ESVAZIA a wnd[0]/usr — o m
     campos: [],
     atras: [],                                                      // modal sozinha: nada embaixo
   });
-  // ⚠ Sim/Não NÃO são btn[n]: não entram em tela.botoes, e acionar(s, 'Sim') não os acha — é { sid }
-  expect(tela.botoes.map((b) => b.okcode)).toEqual(['btn[3]']);
+  // ⚠ Sim/Não NÃO são btn[n]: entram em tela.botoes como PUSHBUTTON DA DYNPRO (`wnd[n]/usr/…`, sem
+  // okcode — o filtro do item 81), e por isso `acionar(s, 'Sim')` não os acha: o endereço é { sid }
+  expect(tela.botoes.map((b) => [b.sid, b.okcode])).toEqual([
+    ['wnd[1]/usr/btnSPOP-OPTION1', null],
+    ['wnd[1]/usr/btnSPOP-OPTION2', null],
+    ['wnd[0]/tbar[0]/btn[3]', 'btn[3]'],
+  ]);
   const sidsDaTela = sidsDaResposta(DELTA_POPUP);
   expect(() => sidDoAlvo(sidsDaTela, { campo: 'SPOP-OPTION1' })).toThrow(/não está na tela/);
   expect(sidDoAlvo(sidsDaTela, { sid: tela.popup.botoes[0].sid })).toBe('wnd[1]/usr/btnSPOP-OPTION1');
   expect(popupDaTela(controlesDoDelta(DELTA_SE38))).toBe(null);
   expect(popupDaTela([])).toBe(null);
+});
+
+// Item 98 (06/09/2026): a MESMA modal do `/nend`, mas sobre a SE38 — a estrutura de blocos do
+// `POC_webgui_popup/medicoes/raw/f0-nend.txt`, com o `steploop0` casca vazia (é assim nos 12 brutos
+// varridos, com e sem popup) e a dynpro no `userpanel`.
+const DELTA_POPUP_SE38 = `<updates><delta-update><start-script><![CDATA[sap.its.arrSystemParams = {'d-num':'0100',dynpro:'SAPLWBABAP','t-code':'SE38'};]]></start-script><start-script><![CDATA[sap.its.aParams = {moin:'A',ScreenId:'M0:46',cuatitle:'Editor ABAP: 1ª tela'};]]></start-script>
+${cdata('webguiPopups', `<div id="webguiPopups" ct="CO">${POPUP_NEND}</div>`)}
+${cdata('steploop0', `<div id="steploop0" ct="PLP" class="lsPagelayout__panel lsPagelayout__panel--end"></div>`)}
+${cdata('cuaarea', `<div id="cuaarea" ct="CO">${OKCD_HTML}${BTN3_VOLTAR}${BTN8_SE38}</div>`)}
+${cdata('userpanel', `<div id="userpanel" ct="PLP"><div id="M0:46" ct="RL" lsdata='{"0":4.00,"4":{"SID":"wnd[0]/usr","Type":"GuiUserArea"}}'>${LABEL_SE38}${CAMPO_SE38}${RADIO_SE38}</div></div>`)}
+</delta-update></updates>`;
+
+test('its: o POPUP não tira a wnd[0]/usr do delta — a tela de trás continua legível, e o steploop0 é casca vazia dos dois lados (item 98)', () => {
+  const semPopup = telaDoDelta(DELTA_SE38);
+  const comPopup = telaDoDelta(DELTA_POPUP_SE38);
+
+  // a MESMA tela, com e sem a modal na frente: os campos da wnd[0] são os mesmos
+  expect(comPopup.popup).toMatchObject({ sid: 'wnd[1]', titulo: 'Efetuar logoff' });
+  expect(comPopup.campos).toEqual(semPopup.campos);
+  expect(comPopup.campos.map((c) => c.sid)).toEqual(['wnd[0]/usr/ctxtRS38M-PROGRAMM']);
+  expect(comPopup.radios.map((r) => r.campo)).toEqual(['RS38M-FUNC_EDIT']);
+  expect(comPopup.tcode).toBe('SE38');
+
+  // e o `steploop0` NÃO é o que muda: ele é a mesma casca vazia nos dois — a dynpro mora no `userpanel`
+  const casca = /<control-update id="steploop0"><content><!\[CDATA\[<div id="steploop0" ct="PLP"[^>]*><\/div>\]\]>/;
+  expect(DELTA_POPUP_SE38).toMatch(casca);
+  expect(DELTA_SE38).not.toMatch(casca);              // o fixture antigo põe os campos NO steploop0…
+  const usr = (d) => sidsDaResposta(d).filter((x) => x.sid.startsWith('wnd[0]/usr/')).length;
+  expect(usr(DELTA_POPUP_SE38)).toBe(usr(DELTA_SE38)); // …e o total de SIDs da wnd[0]/usr é o mesmo
+
+  // o aviso é de ENDEREÇAMENTO: campos/botoes são a de trás, o conteúdo da modal está em `popup`
+  expect(comPopup.aviso).toBe('popup wnd[1] aberto — campos e botoes são a wnd[0] ATRÁS do modal;'
+    + ' o conteúdo da modal está em popup');
+  expect(semPopup.aviso).toBe(null);
+
+  // o SMEN é o contraexemplo do item 21: 0 campos SEM popup nenhum — o menu não tem dynpro
+  expect(telaDoDelta(DELTA_ARVORE).popup).toBe(null);
+  expect(telaDoDelta(DELTA_ARVORE).campos).toEqual([]);
 });
 
 test('its: popupDaSessao lê a TELA (não o corpo) e só paga o parse quando os SIDs já dizem que há modal', () => {
@@ -598,7 +644,7 @@ test('its: com DUAS modais empilhadas o popup é a de CIMA — a de baixo fica n
   const tela = telaDoDelta(DELTA_DUAS_MODAIS);
   expect(tela.popup.sid).toBe('wnd[2]');
   expect(tela.aviso).toBe('popup wnd[2] aberto (sobre wnd[1] — é a de cima que responde)'
-    + ' — a wnd[0]/usr não vem no delta enquanto ele estiver aberto');
+    + ' — campos e botoes são a wnd[0] ATRÁS do modal; o conteúdo da modal está em popup');
   expect(janelaAtiva(sidsDaResposta(DELTA_DUAS_MODAIS))).toBe('wnd[2]');
 });
 

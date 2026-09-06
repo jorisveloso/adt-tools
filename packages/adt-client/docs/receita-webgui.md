@@ -2123,11 +2123,12 @@ título, mensagem, o campo (nome, rótulo, dica, maxlen), os 16 botões (okcode,
 markup" — o `okcd` (0×0 no navegador) sai `visivel: true`. E a `wnd[0]` (`GuiMainWindow`) mora no
 **shell do GET**, não no delta: sem popup, `tela.janela` é `null` por esta via.
 
-⚠ **"Com popup aberto o delta ESVAZIA a `wnd[0]/usr`" é FALSO** — foi conclusão do item 21 e caiu na
-medição do item 58 (05/09/2026). O que esvazia é o **bloco `steploop0`** (`<div id="steploop0"
-ct="PLP"></div>`); os campos da `wnd[0]` vêm noutro bloco do mesmo delta, e `telaDoDelta` os enxerga.
-O controle que faltava ao item 21 é a primeira linha desta tabela — reprocessando os brutos, sem
-tocar a rede:
+⚠ **"Com popup aberto o delta ESVAZIA a `wnd[0]/usr`" é FALSO** — foi conclusão do item 21, caiu na
+medição do item 58 (05/09/2026) e virou código no item 98. O `steploop0` não "esvazia": ele é
+**SEMPRE** a mesma casca de 119 bytes (`<div id="steploop0" ct="PLP" class="lsPagelayout__panel
+lsPagelayout__panel--end"></div>`) nos 12 brutos varridos, com popup e sem. A dynpro mora no bloco
+**`userpanel`**, e `telaDoDelta` a enxerga com o modal na frente. O controle que faltava ao item 21 é
+a primeira linha desta tabela — reprocessando os brutos, sem tocar a rede:
 
 | bruto | tela de trás | popup | campos `wnd[0]` |
 |---|---|---|---|
@@ -2139,16 +2140,21 @@ tocar a rede:
 | `POC_webgui_popup/raw/f0-nend.txt` | SE38 | SPOP | 1 |
 
 **O SMEN sem popup nenhum também dá 0** — o menu não tem campos de dynpro para dar. A variável era a
-tela de origem, não o modal. Toda tela com campos os manteve no delta com o popup aberto.
-⚠ O `tela.aviso` abaixo ainda repete a afirmação falsa (só não dispara porque a condição é
-`campos.length === 0`) — corrigi-lo é item na fila. `tela.popup` traz a modal ATIVA:
+tela de origem, não o modal. Toda tela com campos os manteve no delta com o popup aberto: na SE16 o
+`userpanel` com modal traz os MESMOS 85 SIDs `wnd[0]/usr` do sem-popup. O único bruto em que o bloco
+`userpanel` não veio é o **SMEN com popup** — e ali não muda leitura nenhuma (0 campos dos dois
+lados); por que ele some, não está medido.
+
+O `tela.aviso` foi reescrito no item 98: ele é de **endereçamento**, não de ausência, e dispara
+sempre que há modal (antes só quando `campos.length === 0` — ou seja, mentia justamente na tela que
+não tinha campos). `tela.popup` traz a modal ATIVA:
 
 ```js
 tela.popup   // { sid: 'wnd[1]', id: 'SAPLSPO1100_1', titulo: 'Efetuar logoff',
              //   textos: [{ sid: 'wnd[1]/usr/txtSPOP-TEXTLINE1', texto: 'Os dados não gravados serão perdidos.' }, …],
              //   botoes: [{ sid: 'wnd[1]/usr/btnSPOP-OPTION1', rotulo: 'Sim', accesskey: 'S' }, { …OPTION2, rotulo: 'Não' }],
              //   campos: [], atras: [] }
-tela.aviso   // 'popup wnd[1] aberto — a wnd[0]/usr não vem no delta enquanto ele estiver aberto'
+tela.aviso   // 'popup wnd[1] aberto — campos e botoes são a wnd[0] ATRÁS do modal; o conteúdo da modal está em popup'
 ```
 
 ##### Modais EMPILHADAS: o popup é a de CIMA (item 70)
@@ -2167,14 +2173,15 @@ popupsDaTela(controlesDoDelta(s.delta)) // [{ sid: 'wnd[1]', titulo: 'Sessões A
                                         //  { sid: 'wnd[2]', titulo: 'Informação', atras: ['wnd[1]'] }]
 tela.popup.sid                          // 'wnd[2]' — a de CIMA
 tela.popup.atras                        // ['wnd[1]']
-tela.aviso                              // 'popup wnd[2] aberto (sobre wnd[1] — é a de cima que responde) — …'
+tela.aviso                              // 'popup wnd[2] aberto (sobre wnd[1] — é a de cima que responde) — campos e botoes são a wnd[0] …'
 ```
 
 ⚠ Até 05/09/2026 o `popupDaTela` era `find(Type === 'GuiModalWindow')` — a **primeira do markup**,
 que é a de BAIXO: sobre o `d2-ose16.txt` devolvia a `wnd[1]` "Sessões ABAP" com os botões dela, e
 quem lia o popup lia o de trás. Mesmo defeito de ordem-de-markup do item 42, § abaixo.
 
-⚠ Os botões do popup (`btnSPOP-OPTION1`) **não são `btn[n]`**: não entram em `tela.botoes` e
+⚠ Os botões do popup (`btnSPOP-OPTION1`) **não são `btn[n]`**: entram em `tela.botoes` como
+pushbutton da dynpro (`wnd[n]/usr/…`, `okcode: null` — o filtro do item 81), e por isso
 `acionar(s, 'Sim')` não os acha — o endereço é `acionar(s, { sid: tela.popup.botoes[0].sid })`.
 **Responder pelo SID está medido** (item 23, `POC_webgui_popup/medicoes/dirigir-popup.md`): o SID do
 botão dispara, o apelido estoura e a **tecla não fecha o popup** (F12 voltou `pegou: true` e o modal
