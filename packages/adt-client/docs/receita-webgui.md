@@ -737,7 +737,8 @@ E **`mudou: false` é informação** — mas informação **fraca**: `acionar` c
 antes e depois, e é assim que `btn[15]`/`btn[12]` se denunciam neste canal. ⚠ Tela idêntica **não**
 prova que a ação não pegou: medido no item 80 que um round-trip completo pode repintar o grid sem
 mexer em nada do que o carimbo lê (§ "⚠ O carimbo é CEGO num repaint de grid"). Quem separa "não
-houve conversa" de "houve conversa e a tela ficou igual" é o `respondeu` — hoje só no `comandar`.
+houve conversa" de "houve conversa e a tela ficou igual" é o `respondeu`, que `acionar` e
+`clicar({esperarResposta})` devolvem desde o item 126 (§ "⚠ O carimbo é CEGO…").
 
 ### ⚠ O contêiner que você aponta pode não ser o nó que ACIONA
 
@@ -1120,11 +1121,35 @@ mensagem (`lerTela(s).mensagem` — `null` no `FCZZ`, `ITEM47 GRAVOU…` nos out
 Com o teto em 40 s de propósito, os cinco gestos fecharam entre **1 476 e 1 678 ms** — quatro deles
 custariam o teto inteiro na espera antiga.
 
-⚠ **Isto ainda vale só para o `comandar`.** `acionar`/`clicar({esperarResposta})`, `ordenarGrid`,
-`filtrarGrid`, `inserirLinha`, `apagarLinhas` e `navegarMenu` continuam com `esperarMudanca` (só
-carimbo) e têm a mesma cegueira — ordenar um grid pequeno é justamente o caso em que a tela volta
-igual. Cada um precisa da sua contra-prova antes de migrar: `abrirMenu`, por exemplo, muda a tela
-**sem** round-trip nenhum, e ali o carimbo é o sinal certo.
+#### Quem espera pelo round-trip — e quem NÃO deve (item 126)
+
+Cada gesto ganhou a sua contra-prova antes de migrar (s4h 758/250, 06/09/2026, mesmo report
+`ZJBV_ALV47_EDIT`; bruto em `POC_webgui_grid_edit/medicoes/raw/m-contraprova.json` e
+`n-prova{,2}.json`, leitura em `medicoes/item126-sinal-nos-gestos.md`). O sensor mede o gesto **sem
+mudá-lo**: marca carimbo e `eventos.length` antes, lê `roundTrips` e o carimbo depois.
+
+| gesto | round-trips | carimbo | espera ANTIGA | espera NOVA |
+|---|---|---|---|---|
+| `clicar("Conteudo", {esperarResposta})` | 1 | mudou | 1 746 ms | 1 855 ms |
+| `clicar("Gravar", {esperarResposta})` | 1 | **IGUAL** | **30 239 ms** (teto) | **1 728 ms** |
+| `ordenarGrid` desc / asc | 1 cada | mudou / **IGUAL** | 2 147 / 2 130 ms | 2 297 / 2 240 ms |
+| `filtrarGrid` filtra / limpa | 2-3 (um por clique) | mudou | 3 945 / 5 729 ms | 4 056 / 6 089 ms |
+| `inserirLinha` | 1 | mudou | 1 749 ms | 1 685 ms |
+| `apagarLinhas` | 1 | mudou | 1 981 ms | 1 836 ms |
+| **`abrirMenu`** (CONTROLE) | **0** | mudou | 340 ms | *não migrado* |
+
+Migraram para `esperarTroca`: `clicar({esperarResposta})` — e com ele `acionar` —, `ordenarGrid`,
+`filtrarGrid`, `inserirLinha`, `apagarLinhas` e `duplicarLinha` (que usa o mesmo `gestoDeLinha`).
+Todos passaram a devolver `respondeu` ao lado do que já devolviam, e nenhuma guarda de efeito
+(ícone do cabeçalho, contagem de linhas) falhou em duas corridas.
+
+⚠ **`abrirMenu` é a FRONTEIRA e ficou de fora:** ele muda a tela com **zero** round-trip (o menu da
+barra é inflado no cliente, dos `<xmp>` do boot — § item 82). Onde não há conversa com o ABAP o
+carimbo é o único sinal. O mesmo vale para `marcarColuna` e `selecionarLinhas`, que são puro
+cliente por definição.
+
+⚠ **Ainda em `esperarMudanca`, e cada um precisa da sua contra-prova:** `acionarNoMenuDoGrid`,
+`navegarMenu` (depende do `abrirMenu`) e `acionarNo` (árvore). Estão na fila `adt-client`.
 
 ### ⚠ OK-code que abre popup trava a `wnd[0]` — **só no NAVEGADOR**
 

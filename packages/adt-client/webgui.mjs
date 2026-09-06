@@ -1077,6 +1077,20 @@ export function roundTrips(eventos = [], desde = 0) {
  * num `mudou: false` só — *nenhuma conversa aconteceu* (`respondeu: false`) × *houve conversa e a
  * tela ficou igual* (`respondeu: true, mudou: false`). Se o comando teve EFEITO, quem diz é a
  * mensagem (`lerTela(s).mensagem`) ou o dado.
+ *
+ * **Quem espera por aqui — e quem NÃO deve.** Migrados por contra-prova no item 126 (s4h 758/250,
+ * 06/09/2026, `POC_webgui_grid_edit/medicoes/item126-sinal-nos-gestos.md`): `comandar`,
+ * `clicar({ esperarResposta })` — e portanto `acionar` —, `ordenarGrid`, `filtrarGrid`,
+ * `inserirLinha`, `apagarLinhas` e `duplicarLinha`. Cada gesto desses faz **1 round-trip** (o
+ * `filtrarGrid` faz 2-3, um por clique seu), e o pior caso medido antes da migração foi o clique
+ * em "Gravar" por `clicar({ esperarResposta })`: **30 239 ms de teto** para um round-trip que
+ * fechou em ~1,5 s — depois, **1 728 ms**, em duas corridas.
+ *
+ * ⚠️ **`abrirMenu` NÃO usa isto, e é a FRONTEIRA.** Medido no mesmo par de corridas: ele muda a
+ * tela com **ZERO round-trip** (342 e 363 ms, `enviados: 0`) — o menu da barra é inflado no
+ * cliente, dos `<xmp>` que o boot deixou (§ item 82). Onde não há conversa com o ABAP o carimbo é
+ * o único sinal, e aqui não haveria o que ouvir. Vale para todo gesto puro-cliente —
+ * `marcarColuna`, `selecionarLinhas`, o clique simples na célula.
  */
 export async function esperarTroca(sessao, antes, { desde = 0, tetoMs = 25000, quietoMs = 1200 } = {}) {
   const t0 = Date.now();
@@ -3305,8 +3319,10 @@ export async function marcarColuna(sessao, alvo = null, coluna) {
  * await ordenarGrid(s, null, 'NOME', { ordem: 'desc' }); // decrescente
  * ```
  *
- * Devolve `{ id, coluna, nome, ordem, total, linhas, ms }` — `linhas` já é a tabela NA ORDEM NOVA
- * (o bloco que a tela tem).
+ * Devolve `{ id, coluna, nome, ordem, respondeu, total, linhas, ms }` — `linhas` já é a tabela NA
+ * ORDEM NOVA (o bloco que a tela tem), e `respondeu` é o round-trip por que se esperou
+ * (§ `esperarTroca`, item 126: medido 1 POST por ordenação, 2,1-2,3 s; ordenar de volta à ordem
+ * de origem deixa o carimbo IGUAL, e é aí que a espera antiga arriscava o teto).
  *
  * ⚠️ **Ordenar por outra coluna SUBSTITUI o critério** (medido: com a coluna 2 em `desc`, ordenar a
  * 3 zerou o ícone da 2). Vários critérios de uma vez é `ordenarGridPorVarias`, que é outro gesto —
@@ -3322,8 +3338,9 @@ export async function ordenarGrid(sessao, alvo = null, coluna, { ordem = 'asc', 
   const m = await marcarColuna(sessao, alvo, coluna);
   const b = await botaoDaBarra(sessao, m, dir === 'desc' ? 'SORT_DSC' : 'SORT_ASC');
   const antes = await carimbo(sessao);
+  const desde = sessao.eventos.length;
   await clicar(sessao, { id: b.id });
-  await esperarMudanca(sessao, antes, { tetoMs });
+  const { respondeu } = await esperarTroca(sessao, antes, { desde, tetoMs });
   const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
   if (modal?.length) throw new Error(`webgui: ordenarGrid — o ALV abriu o diálogo "${modal[0].titulo}" (${modal[0].id}) em vez de ordenar: `
     + 'a coluna não chegou marcada ao servidor. Feche-o antes de qualquer outro gesto — ou use `ordenarGridPorVarias`, '
@@ -3332,7 +3349,8 @@ export async function ordenarGrid(sessao, alvo = null, coluna, { ordem = 'asc', 
   if (est.ordem !== dir) throw new Error(`webgui: ordenarGrid — pedi ${dir} na coluna ${m.coluna} (${m.nome}) e o cabeçalho ficou ${JSON.stringify(est)}`);
   const t = await lerGrid(sessao, { id: m.id });
   detalhe(`webgui: ordenarGrid ${m.id} — coluna ${m.coluna} (${m.nome}) em ${dir}, ${t.total} linha(s)`);
-  return { id: m.id, sid: m.sid, coluna: m.coluna, nome: m.nome, ordem: dir, total: t.total, linhas: t.linhas, ms: Date.now() - t0 };
+  return { id: m.id, sid: m.sid, coluna: m.coluna, nome: m.nome, ordem: dir, respondeu,
+    total: t.total, linhas: t.linhas, ms: Date.now() - t0 };
 }
 
 /**
@@ -3345,7 +3363,9 @@ export async function ordenarGrid(sessao, alvo = null, coluna, { ordem = 'asc', 
  * await filtrarGrid(s, null, 'NOME', { de: '' });               // LIMPA o filtro da coluna
  * ```
  *
- * Devolve `{ id, coluna, nome, de, ate, filtrada, total, linhas, ms }`.
+ * Devolve `{ id, coluna, nome, de, ate, filtrada, respondeu, total, linhas, ms }` — `respondeu` é
+ * o round-trip do clique em Executar (§ `esperarTroca`, item 126). São DOIS gestos com espera
+ * aqui, um por clique (abrir o diálogo e executá-lo); medido 2-3 POSTs e 3,8-6,1 s no total.
  *
  * ⚠️ **O campo do diálogo é um `ctxt` e CONVERTE PARA MAIÚSCULAS** — medido: filtrar `tres` (que
  * existe, em minúsculas) devolveu **0 linhas** sem erro nenhum. Valor minúsculo em coluna
@@ -3359,8 +3379,9 @@ export async function filtrarGrid(sessao, alvo = null, coluna, { de = '', ate = 
   const m = await marcarColuna(sessao, alvo, coluna);
   const b = await botaoDaBarra(sessao, m, 'MB_FILTER');
   let antes = await carimbo(sessao);
+  let desde = sessao.eventos.length;
   await clicar(sessao, { id: b.id });
-  await esperarMudanca(sessao, antes, { tetoMs });
+  await esperarTroca(sessao, antes, { desde, tetoMs });
   const low = await avaliar(sessao, jsPorSid('DYN001-LOW'));
   if (!low) {
     const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
@@ -3378,13 +3399,14 @@ export async function filtrarGrid(sessao, alvo = null, coluna, { de = '', ate = 
   const ok = await avaliar(sessao, jsPorSid('wnd[1]/tbar[0]/btn[0]'));
   if (!ok) throw new Error('webgui: filtrarGrid — o diálogo de filtro não tem o botão Executar (wnd[1]/tbar[0]/btn[0])');
   antes = await carimbo(sessao);
+  desde = sessao.eventos.length;
   await clicar(sessao, { id: ok.id });
-  await esperarMudanca(sessao, antes, { tetoMs });
+  const { respondeu } = await esperarTroca(sessao, antes, { desde, tetoMs });
   const est = estadoDoCabecalho((await avaliar(sessao, jsCabecalhoDoGrid(m.id)) ?? []).find((h) => h.coluna === m.coluna)?.icone);
   const t = await lerGrid(sessao, { id: m.id });
   detalhe(`webgui: filtrarGrid ${m.id} — coluna ${m.coluna} (${m.nome}) ${de === '' ? 'LIMPA' : `= ${de}${ate === '' ? '' : `..${ate}`}`}, ${t.total} linha(s)`);
   return { id: m.id, sid: m.sid, coluna: m.coluna, nome: m.nome, de, ate, filtrada: est.filtrada,
-    total: t.total, linhas: t.linhas, ms: Date.now() - t0 };
+    respondeu, total: t.total, linhas: t.linhas, ms: Date.now() - t0 };
 }
 
 /**
@@ -3849,12 +3871,13 @@ export const FCODES_DE_LINHA = {
 async function gestoDeLinha(sessao, g, fcode, tetoMs) {
   const b = await botaoDaBarra(sessao, g, fcode);
   const antes = await carimbo(sessao);
+  const desde = sessao.eventos.length;
   await clicar(sessao, { id: b.id });
-  await esperarMudanca(sessao, antes, { tetoMs });
+  const { respondeu } = await esperarTroca(sessao, antes, { desde, tetoMs });
   const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
   if (modal?.length) throw new Error(`webgui: o ALV abriu o diálogo "${modal[0].titulo}" (${modal[0].id}) em vez de executar "${fcode}". `
     + 'Feche-o antes de qualquer outro gesto — o `lerTela.popup` NÃO o enxerga (item 121).');
-  return lerGrid(sessao, { id: g.id });
+  return { ...await lerGrid(sessao, { id: g.id }), respondeu };
 }
 
 /**
@@ -3867,8 +3890,9 @@ async function gestoDeLinha(sessao, g, fcode, tetoMs) {
  * await inserirLinha(s, null, { antesDe: 2 });                        // empurra a 2 para baixo
  * ```
  *
- * Devolve `{ id, sid, linha, modo, total, linhas, valores, pendente, ms }` — `linha` é onde ela
- * ficou (o fim, ou o próprio `antesDe`) e `linhas` é o bloco já com ela.
+ * Devolve `{ id, sid, linha, modo, respondeu, total, linhas, valores, pendente, ms }` — `linha` é
+ * onde ela ficou (o fim, ou o próprio `antesDe`), `linhas` é o bloco já com ela e `respondeu` é o
+ * round-trip por que se esperou (§ `esperarTroca`, item 126: 1 POST, ~1,7 s).
  *
  * ⚠️ **Isto NÃO grava** (§ acima): a linha existe na tabela interna do ABAP e em lugar nenhum do
  * banco até o programa gravar — `comandar(s, '<fcode de gravar>')`.
@@ -3902,8 +3926,8 @@ export async function inserirLinha(sessao, alvo = null, { antesDe = null, valore
   const fim = valores ? await lerGrid(sessao, { id: g.id }) : d;
   detalhe(`webgui: inserirLinha ${g.id} — linha ${linha} (${modo}), ${n} → ${d.total} linha(s)`
     + `${valores ? `, ${Object.keys(escritos).length} célula(s) PENDENTE(s)` : ''}; NADA GRAVADO ainda`);
-  return { id: g.id, sid: alvoDaBarra.sid, linha, modo, total: d.total, linhas: fim.linhas,
-    valores: escritos, pendente: !!valores, ms: Date.now() - t0 };
+  return { id: g.id, sid: alvoDaBarra.sid, linha, modo, respondeu: d.respondeu, total: d.total,
+    linhas: fim.linhas, valores: escritos, pendente: !!valores, ms: Date.now() - t0 };
 }
 
 /**
@@ -3914,7 +3938,8 @@ export async function inserirLinha(sessao, alvo = null, { antesDe = null, valore
  * await apagarLinhas(s, null, [1, 3]);   // as duas de uma vez
  * ```
  *
- * Devolve `{ id, sid, pedidas, antes, total, linhas, ms }`, com `linhas` já renumerado.
+ * Devolve `{ id, sid, pedidas, antes, respondeu, total, linhas, ms }`, com `linhas` já
+ * renumerado e `respondeu` sendo o round-trip por que se esperou (§ `esperarTroca`, item 126).
  *
  * ⚠️ **Isto NÃO grava** (§ acima) — a linha só sai do banco quando o programa gravar, e só se ele
  * fizer `DELETE`: um `MODIFY FROM TABLE` deixa a linha apagada no banco, calado.
@@ -3936,7 +3961,8 @@ export async function apagarLinhas(sessao, alvo = null, linhas = [], { tetoMs = 
   if (d.total !== n - pedidas.length) throw new Error(`webgui: apagarLinhas — pedi ${pedidas.length} linha(s) de ${n} e o ALV ${g.id} `
     + `ficou com ${d.total}, não ${n - pedidas.length}. O programa recusou a exclusão (ou o botão fez outra coisa).`);
   detalhe(`webgui: apagarLinhas ${g.id} — [${pedidas.join(', ')}] fora, ${n} → ${d.total} linha(s); NADA GRAVADO ainda`);
-  return { id: g.id, sid: s.sid ?? g.sid, pedidas, antes: n, total: d.total, linhas: d.linhas, ms: Date.now() - t0 };
+  return { id: g.id, sid: s.sid ?? g.sid, pedidas, antes: n, respondeu: d.respondeu,
+    total: d.total, linhas: d.linhas, ms: Date.now() - t0 };
 }
 
 /** PURO: as colunas em que duas linhas do bloco diferem (ignora o `_linha`, que é posição). */
@@ -3993,8 +4019,9 @@ export async function duplicarLinha(sessao, alvo = null, { linha, valores = null
   detalhe(`webgui: duplicarLinha ${g.id} — a ${origem} virou também a ${copia}, ${n} → ${d.total} linha(s)`
     + `; a cópia ${difere.length ? `difere em ${difere.join(', ')}` : 'é IDÊNTICA à origem (chave incluída)'}`
     + '; NADA GRAVADO ainda');
-  return { id: g.id, sid: s.sid ?? b.sid ?? g.sid, origem, linha: copia, total: d.total, linhas: fim.linhas,
-    valores: escritos, difere, identica: !difere.length, pendente: !!valores, ms: Date.now() - t0 };
+  return { id: g.id, sid: s.sid ?? b.sid ?? g.sid, origem, linha: copia, respondeu: d.respondeu,
+    total: d.total, linhas: fim.linhas, valores: escritos, difere, identica: !difere.length,
+    pendente: !!valores, ms: Date.now() - t0 };
 }
 
 export async function print(sessao, arquivo) {
@@ -4317,12 +4344,22 @@ export async function cliqueDireito(sessao, p, { modificadores = 0 } = {}) {
  * suspenso, `document.title` vazio); com `acionar`, o `mudou: false` teria denunciado em 30 s.
  * Quem precisa SABER que a ação pegou usa `acionar` e lê o `mudou`.
  *
+ * ⚠️ **Com `esperarResposta` a espera é a do ROUND-TRIP (§ `esperarTroca`), não a do carimbo** — e
+ * vem `respondeu` junto de `mudou`. Medido no item 126 (s4h 758/250, 06/09/2026): o clique no
+ * botão "Gravar" do `ZJBV_ALV47_EDIT` responde em ~1,5 s e deixa a tela IGUAL (a mensagem cai
+ * depois dos 300 chars que o carimbo lê); com a espera antiga ele pagava o TETO inteiro —
+ * **30 239 ms → 1 728 ms**. `respondeu: false` é "o gesto não saiu do navegador";
+ * `respondeu: true, mudou: false` é "houve conversa e a tela ficou igual". Nenhum dos dois diz que
+ * a ação PEGOU: quem diz é a `mensagem` ou o dado.
+ * ⚠️ O teto dessa espera é o **`tetoRespostaMs`** (30 s), não o `tetoMs` — este continua sendo o de
+ * achar o alvo na tela, e misturar os dois faria um botão lento parecer botão ausente.
+ *
  * `{ cliques: 2 }` é o DUPLO clique, que em três controles é o gesto — e não um clique repetido:
  * a célula do ALV (drill-down; o clique simples não gera requisição nenhuma, a seleção é puro
  * cliente — item 75), o nó da árvore (expande, colapsa e aciona a folha — item 86) e o ícone dela.
  * Onde o gesto é o duplo, o clique simples não é "meio caminho": ele não sai no fio.
  */
-export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false, descer = true, dentro = null, icone = null, cliques = 1 } = {}) {
+export async function clicar(sessao, alvo, { tetoMs = 20000, tetoRespostaMs = 30000, esperarResposta = false, descer = true, dentro = null, icone = null, cliques = 1 } = {}) {
   const ate = Date.now() + tetoMs;
   let p = null;
   while (Date.now() < ate && !p) {
@@ -4341,11 +4378,14 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = f
   }
   const antes = esperarResposta ? await carimbo(sessao) : null;
   const janelaAntes = esperarResposta ? (await estadoDaAcao(sessao)).janela : null;
+  const desde = sessao.eventos.length;
   await clique(sessao, p, { cliques });
   if (esperarResposta) {
-    p.mudou = await esperarMudanca(sessao, antes);
+    const { mudou, respondeu } = await esperarTroca(sessao, antes, { desde, tetoMs: tetoRespostaMs });
+    p.mudou = mudou;
+    p.respondeu = respondeu;
     // o que o ABAP DISSE e onde a tela está — e o alarme do popup que não saiu da frente (item 100)
-    Object.assign(p, await fecharGesto(sessao, { gesto: nomeDoAlvo(alvo), janelaAntes, mudou: p.mudou }));
+    Object.assign(p, await fecharGesto(sessao, { gesto: nomeDoAlvo(alvo), janelaAntes, mudou, respondeu }));
   }
   return p;
 }
@@ -4355,6 +4395,10 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = f
  * formas do `okcodeDe`: `acionar(s, 'btn[11]')`, `acionar(s, 11)` e `acionar(s, 'Gravar')`.
  * ⚠️ `mudou: false` é INFORMAÇÃO: a tela ficou igual, a ação não pegou (é assim que `btn[15]` e
  * `btn[12]` se denunciam neste canal).
+ *
+ * Vem junto o `respondeu` (§ `esperarTroca`, item 126) — `mudou: false, respondeu: true` é
+ * "houve round-trip e a tela ficou igual", que é o caso normal do repaint que confirma o que já
+ * estava no DOM, e não mais um teto de 30 s para descobrir.
  *
  * Vem junto o `{ mensagem, janela }` do `fecharGesto` (item 100): a mensagem é o COMENTÁRIO do
  * ABAP sobre a ação — foi ela que explicou o falso positivo do item 59 na via HTTP — e `janela` é
