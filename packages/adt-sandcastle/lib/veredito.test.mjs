@@ -122,3 +122,13 @@ test('agoraLocal: data e hora do FUSO DA MÁQUINA, não UTC', () => {
   // o UTC do toISOString saía adiantado em America/Sao_Paulo (-03:00) — era a origem do desencontro
   expect(agoraLocal(d).hora).not.toBe(d.toISOString().slice(11, 19));
 });
+
+test('escolherFilas: prefixo com *, lista por vírgula, sem duplicata e sem casar é erro', () => {
+  const todas = [{ nome: 'adt-client' }, { nome: 'adt-query' }, { nome: 'adt-tools' }, { nome: 'sap-accelerate' }];
+  expect(escolherFilas(todas)).toEqual(['adt-client', 'adt-query', 'adt-tools', 'sap-accelerate']);
+  expect(escolherFilas(todas, 'adt*')).toEqual(['adt-client', 'adt-query', 'adt-tools']);
+  expect(escolherFilas(todas, 'adt-query, sap-accelerate')).toEqual(['adt-query', 'sap-accelerate']);
+  expect(escolherFilas(todas, 'adt*,adt-query')).toEqual(['adt-client', 'adt-query', 'adt-tools']);
+  expect(() => escolherFilas(todas, 'zz*')).toThrow(/nenhuma fila começa com "zz"/);
+  expect(() => escolherFilas(todas, 'inexistente')).toThrow(/não existe/);
+});

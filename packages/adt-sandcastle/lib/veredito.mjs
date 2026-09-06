@@ -105,12 +105,28 @@ export function esperaDoLimite(erro, { agora = Date.now(), padraoMs = 10 * 60_00
   return alvo.getTime() - agora + 60_000;
 }
 
-/** Quais filas rodar: uma pelo nome, ou todas (ordem alfabética — a mesma da fila "ativa"). */
+/**
+ * Quais filas rodar, na ordem alfabética (a mesma da fila "ativa"). Sem `nome`, todas. Com `nome`:
+ * um nome, uma LISTA separada por vírgula, ou um PREFIXO terminado em `*` — `adt*` pega as três
+ * filas da lib e deixa a do cliente de fora, para outro runner tocá-la em paralelo.
+ * Pedido que não casa com nada é erro: silenciar viraria "rodei tudo" sem rodar nada.
+ */
 export function escolherFilas(todas, nome) {
   const nomes = todas.map((f) => f.nome);
   if (!nome) return nomes;
-  if (!nomes.includes(nome)) throw new Error(`fila "${nome}" não existe — há: ${nomes.join(', ') || '(nenhuma)'}`);
-  return [nome];
+  const escolhidas = [];
+  for (const pedido of String(nome).split(',').map((s) => s.trim()).filter(Boolean)) {
+    if (pedido.endsWith('*')) {
+      const prefixo = pedido.slice(0, -1);
+      const casam = nomes.filter((n) => n.startsWith(prefixo));
+      if (!casam.length) throw new Error(`nenhuma fila começa com "${prefixo}" — há: ${nomes.join(', ') || '(nenhuma)'}`);
+      escolhidas.push(...casam);
+    } else {
+      if (!nomes.includes(pedido)) throw new Error(`fila "${pedido}" não existe — há: ${nomes.join(', ') || '(nenhuma)'}`);
+      escolhidas.push(pedido);
+    }
+  }
+  return [...new Set(escolhidas)];
 }
 
 /** Os argumentos da linha de comando → opções. `--fila x --max 3 --modelo m --idle 1800 --dry`.

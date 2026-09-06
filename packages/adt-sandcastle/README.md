@@ -8,12 +8,13 @@ a **fila**, não a resposta do agente, para decidir o que fazer.
 ```
 pnpm --filter adt-sandcastle start                      # todas as filas, até acabar ou Ctrl+C
 pnpm --filter adt-sandcastle start -- --fila adt-client --max 3
+pnpm --filter adt-sandcastle start -- --fila 'adt*'        # só as filas da lib
 pnpm --filter adt-sandcastle start -- --dry             # só lista o que rodaria, em todas as filas
 ```
 
 | opção | padrão | o que é |
 |---|---|---|
-| `--fila <nome>` | todas, em ordem alfabética | qual fila de `packages/adt-todo/docs/filas` |
+| `--fila <nome>` | todas, em ordem alfabética | qual(is) fila(s) de `packages/adt-todo/docs/filas`: um nome, uma lista por vírgula, ou um prefixo com `*` (`adt*` deixa a fila do cliente para outro runner) |
 | `--max <n>` | sem teto | teto de sessões por fila; sem ele roda **até a fila acabar ou até o Ctrl+C** (termina a tarefa corrente e não começa outra; segundo Ctrl+C sai na hora) |
 | `--modelo <id>` | `claude-opus-5` | modelo do `claudeCode()` |
 | `--idle <s>` | 1800 | `idleTimeoutSeconds` — medição longa fica muda por minutos |
