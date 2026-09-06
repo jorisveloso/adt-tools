@@ -14,7 +14,7 @@ import {
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
   criarPilhaDeDesfazer, transacional,
   indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore, assinaturaDaArvore, JS_ARVORE,
-  SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo,
+  SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo, recusa,
   pinosDeCertificado, bandeirasDeCertificado, explicarErroDeNavegacao,
   jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
   jsFragmentoDoGrid, faltaNaFaixaDoBloco,
@@ -944,6 +944,90 @@ test('webgui: o rótulo é aria-label → title → texto, e a pilha do botão c
   const cand = descendentes(LI_MISTO).filter((e) => H.motivo(e) && H.area(e) > 0);
   expect(cand.length).toBe(6);
   expect(H.externos(cand).map((e) => e.id)).toEqual(['btnMistoAdd', 'iconeMistoDet']);
+});
+
+// ─── endereçar pelo ÍCONE: a via que atravessa o idioma (item 109) ─────────
+// Medido no s4h 758/250 em 06/09/2026 (UI5 1.114.0, `medicoes/item109-icone.md`): o mesmo botão
+// rende `aria-label` "Adicionar" (PT), "Add" (EN) e "Hinzufügen" (DE), e o `data-sap-ui-icon-content`
+// fica U+E058 nos três. `IconPool.getIconInfo('add').content` devolve esse caractere; `'ADD'` não
+// existe (sensível a maiúsculas) e nome desconhecido devolve `undefined`.
+
+const CHAR = { add: '', 'detail-view': '', 'add-product': '' };
+const POOL_FALSA = {
+  getIconInfo: (n) => (CHAR[n] ? { name: n, uri: `sap-icon://${n}`, content: CHAR[n], text: 'Adicionar' } : undefined),
+  getIconNames: () => Object.keys(CHAR),
+};
+const resolverComPool = (raiz, opts, pool = POOL_FALSA) =>
+  new Function('getComputedStyle', 'window', 'ALVO', `return ${jsAlvoEfetivo('ALVO', opts)}`)(
+    (e) => ({ cursor: e.cursor }), pool ? { sap: { ui: { core: { IconPool: pool } } } } : {}, raiz);
+const comIcone = (id, nome, extra = {}) => ({
+  id, tag: 'SPAN', classe: 'sapUiIcon', cursor: 'pointer', area: 199, ...extra,
+  attrs: { 'data-sap-ui-icon-content': CHAR[nome], ...(extra.attrs ?? {}) },
+});
+// o `sap.m.Button({ icon })` guarda o caractere no `-img`, não no <button> (medido)
+const BOTAO_ICONE = (id, nome) => ({
+  id, tag: 'BUTTON', marcador: true, area: 1440, filhos: [
+    { id: `${id}-inner`, tag: 'SPAN', cursor: 'pointer', area: 1300, filhos: [
+      { id: `${id}-img`, tag: 'SPAN', classe: 'sapUiIcon', cursor: 'pointer', area: 138,
+        attrs: { 'data-sap-ui-icon-content': CHAR[nome] } }] }],
+});
+
+test('webgui: `{ icone }` acha o gesto pelo caractere da fonte, não pelo rótulo', () => {
+  const li = criarNo({ id: 'liIcones', tag: 'LI', cursor: 'auto', area: 9500, filhos: [
+    { id: '__text0', tag: 'SPAN', cursor: 'text', area: 2005 },
+    comIcone('iconeAdd', 'add', { attrs: { 'aria-label': 'Hinzufügen' } }),
+    comIcone('iconeDet', 'detail-view', { attrs: { 'aria-label': 'Detailsicht' } })] });
+  // o rótulo está em ALEMÃO e o pedido é o nome do ícone — é isso que o `{ dentro }` não faz
+  expect(resolverComPool(li, { icone: 'add' }).id).toBe('iconeAdd');
+  expect(resolverComPool(li, { icone: 'sap-icon://detail-view' }).id).toBe('iconeDet');
+  // sensível a maiúsculas e a nome inexistente: a pool não conhece, e não se sorteia alvo
+  expect(resolverComPool(li, { icone: 'ADD' })).toBe(null);
+  expect(resolverComPool(li, { icone: 'nao-existe-mesmo' })).toBe(null);
+  // ícone que a pool conhece mas que não está na tela
+  expect(resolverComPool(li, { icone: 'add-product' })).toBe(null);
+});
+
+test('webgui: `{ icone }` SOBE do caractere até o gesto — e não além dele', () => {
+  // o caractere mora no `-img`; quem aciona é o botão (medido: a ação certa disparou)
+  const misto = criarNo({ id: 'liMisto', tag: 'LI', cursor: 'auto', area: 9500, filhos: [
+    { id: '__text1', tag: 'SPAN', cursor: 'text', area: 2005 },
+    BOTAO_ICONE('btnIconeAdd', 'add'), comIcone('iconeMistoDet', 'detail-view')] });
+  expect(resolverComPool(misto, { icone: 'add' }).id).toBe('btnIconeAdd-img');
+  // contêiner ACIONÁVEL por fora (CustomListItem type=Active): a subida para no primeiro gesto, e
+  // o clique NÃO vira "press da linha" — medido no lab, saiu `ativo:adicionar`, não `ativo:linha`
+  const ativo = criarNo({ id: 'liAtivo', tag: 'LI', cursor: 'pointer', marcador: true, area: 24000,
+    filhos: [BOTAO_ICONE('btnAtivoAdd', 'add')] });
+  expect(resolverComPool(ativo, { icone: 'add' }).id).toBe('btnAtivoAdd-img');
+});
+
+test('webgui: `{ icone }` sem casamento único devolve null, e sem IconPool não tenta adivinhar', () => {
+  const duplo = criarNo({ id: 'liDuplo', tag: 'LI', cursor: 'auto', area: 9500,
+    filhos: [comIcone('iconeDup1', 'add'), comIcone('iconeDup2', 'add')] });
+  expect(resolverComPool(duplo, { icone: 'add' })).toBe(null);
+  // página sem UI5: o caractere pode até estar no DOM, mas nome → caractere não existe sem a pool
+  expect(resolverComPool(duplo, { icone: 'add' }, null)).toBe(null);
+  // ícone invisível não é gesto
+  const oculto = criarNo({ id: 'liOculto', tag: 'LI', cursor: 'auto', area: 9500,
+    filhos: [comIcone('icoOculto', 'add', { invisivel: true })] });
+  expect(resolverComPool(oculto, { icone: 'add' })).toBe(null);
+  // as duas vias juntas seriam duas regras de escolha para um gesto só
+  expect(() => jsAlvoEfetivo('X', { dentro: 'Adicionar', icone: 'add' })).toThrow(/OU \{ icone \}/);
+});
+
+test('webgui: a recusa de `{ icone }` separa as três faltas — página, nome e tela', () => {
+  const alvo = { id: 'liMisto' };
+  const gestos = [{ nome: 'btn', rotulo: 'Hinzufügen' }];
+  expect(recusa({ pool: false, gestos, icones: [{ nome: null, codigo: 'U+E058' }] }, alvo, { icone: 'add' }))
+    .toMatch(/precisa da IconPool.*não tem UI5 carregado/s);
+  expect(recusa({ pool: true, caractere: null, gestos, icones: [{ nome: 'add' }] }, alvo, { icone: 'ADD' }))
+    .toMatch(/não conhece o ícone "ADD".*os ícones em id liMisto são: "add"/s);
+  expect(recusa({ pool: true, caractere: '', casaram: ['i1', 'i2'], gestos }, alvo, { icone: 'add' }))
+    .toMatch(/casa com 2 gestos \(i1, i2\)/);
+  expect(recusa({ pool: true, caractere: '', casaram: [], gestos, icones: [{ nome: 'add' }] }, alvo, { icone: 'add-product' }))
+    .toMatch(/nenhum gesto usa o ícone "add-product" — os ícones de lá são: "add"/);
+  // a via por rótulo continua com as frases dela
+  expect(recusa({ casaram: ['a', 'b'], gestos }, alvo, { dentro: 'a' })).toMatch(/o rótulo "a" casa com 2 gestos/);
+  expect(recusa({ casaram: [], gestos }, alvo, { dentro: 'Add' })).toMatch(/nenhum gesto tem rótulo "Add"/);
 });
 
 test('webgui: a marca de ação se LÊ no DOM — e o Unified Renderer declara a dele', () => {

@@ -2866,6 +2866,13 @@ export async function print(sessao, arquivo) {
 // dispara SEMPRE o **Detalhe** — não é "não pegou", é o gesto ERRADO. Por isso `{ dentro: '<rótulo>' }`,
 // que escolhe pelo `aria-label`/`title`/texto do descendente; e por isso o `clicar`, quando desce
 // sem `dentro` havendo vários, DIZ que escolheu por tamanho e lista os rótulos.
+//
+// ⚠️ **O rótulo é TRADUZIDO — o ícone não.** Medido no s4h 758/250 em 06/09/2026 (item 109,
+// `POC_ui5_clicar_descendente/medicoes/item109-icone.md`): a MESMA página em PT/EN/DE rende o botão
+// como "Adicionar"/"Add"/"Hinzufügen" e o `data-sap-ui-icon-content` como `U+E058` nos três —
+// `{ dentro: 'Adicionar' }` acionou só em PT, `{ icone: 'add' }` acionou nos três. Quem traduz o
+// nome no caractere é a `IconPool` da própria página, então `{ icone }` vale onde há UI5 (Fiori,
+// FLP Designer) e não no dynpro do Unified Renderer — a recusa diz qual das faltas foi.
 
 /**
  * PURO: as marcas de ação que se LEEM no DOM, sem perguntar ao framework. As três primeiras linhas
@@ -2893,7 +2900,18 @@ export const SELETOR_ACIONAVEL = [
  *
  * `externos` tira da lista quem está DENTRO de outro da própria lista: um `sap.m.Button` publica 4
  * nós acionáveis encaixados (button > inner > content > bdi, todos com o mesmo rótulo), e contá-los
- * como 4 gestos faria toda linha parecer ambígua. */
+ * como 4 gestos faria toda linha parecer ambígua.
+ *
+ * `pool`/`caractere`/`comIcone` são a via NEUTRA DE IDIOMA (item 109): o rótulo é traduzido, o
+ * CARACTERE do ícone não. Medido no s4h 758/250 em 06/09/2026 (UI5 1.114.0,
+ * `POC_ui5_clicar_descendente/medicoes/item109-icone.md`): `IconPool.getIconInfo('add').content` é
+ * `U+E058` com a página em PT, EN e DE, enquanto o `aria-label` do mesmo botão vira
+ * "Adicionar"/"Add"/"Hinzufügen". `getIconInfo` aceita `'add'` e `'sap-icon://add'`, é sensível a
+ * maiúsculas (`'ADD'` não existe) e devolve `undefined` no nome desconhecido — daí `caractere`
+ * distinguir "sem pool" (null da `pool`) de "nome que a pool não conhece".
+ *
+ * `comIcone` SOBE do nó que carrega o atributo até o primeiro ancestral acionável: num
+ * `sap.m.Button({ icon })` o caractere fica no `-img`, e o gesto é o `<button>`. */
 export const JS_ACIONAVEL = `(() => {
   const SEL = ${JSON.stringify(SELETOR_ACIONAVEL)};
   const visivel = (e) => !!(e && e.nodeType === 1 && (e.offsetWidth || e.offsetHeight));
@@ -2917,7 +2935,37 @@ export const JS_ACIONAVEL = `(() => {
   };
   const externos = (lista) => lista.filter((e) => !lista.some((o) => o !== e && o.contains && o.contains(e)));
   const casa = (e, alvo) => { const r = norm(rotulo(e)); return !!r && r.includes(norm(alvo)); };
-  return { SEL, visivel, motivo, area, desc, norm, rotulo, externos, casa };
+  const ATTR_ICONE = 'data-sap-ui-icon-content';
+  const pool = () => {
+    try {
+      const s = window.sap;
+      if (!s || !s.ui) return null;
+      const P = (s.ui.require && s.ui.require('sap/ui/core/IconPool')) || (s.ui.core && s.ui.core.IconPool) || null;
+      return P && P.getIconInfo ? P : null;
+    } catch (x) { return null; }
+  };
+  const caractere = (nome) => {
+    const P = pool();
+    if (!P || !nome) return null;
+    try { const i = P.getIconInfo(String(nome).replace(/^sap-icon:\\/\\//, '')); return (i && i.content) || null; }
+    catch (x) { return null; }
+  };
+  const iconeDe = (e) => (e && e.getAttribute ? e.getAttribute(ATTR_ICONE) : null) || '';
+  const gestoDoIcone = (e, raiz) => { let n = e; while (n && n !== raiz) { if (motivo(n)) return n; n = n.parentElement; } return null; };
+  const comIcone = (raiz, ch) => !ch ? [] : externos([...raiz.querySelectorAll('*')]
+    .filter((e) => iconeDe(e) === ch && visivel(e))
+    .map((e) => gestoDoIcone(e, raiz)).filter(Boolean));
+  // o caminho do ERRO: dizer QUAIS ícones havia lá, pelo nome quando a pool sabe devolvê-lo
+  const nomeDoChar = (ch) => {
+    const P = pool();
+    if (!P || !P.getIconNames) return null;
+    try { return (P.getIconNames() || []).find((n) => { const i = P.getIconInfo(n); return i && i.content === ch; }) || null; }
+    catch (x) { return null; }
+  };
+  const iconesDe = (raiz) => [...new Set([...raiz.querySelectorAll('*')].filter((e) => iconeDe(e) && visivel(e)).map(iconeDe))]
+    .map((ch) => ({ nome: nomeDoChar(ch), codigo: 'U+' + ch.charCodeAt(0).toString(16).toUpperCase() }));
+  return { SEL, visivel, motivo, area, desc, norm, rotulo, externos, casa,
+           ATTR_ICONE, pool, caractere, iconeDe, gestoDoIcone, comIcone, nomeDoChar, iconesDe };
 })()`;
 
 /**
@@ -2928,14 +2976,25 @@ export const JS_ACIONAVEL = `(() => {
  * `{ dentro: '<rótulo>' }` escolhe o gesto pelo RÓTULO em vez do tamanho, e IMPLICA a descida. Ele
  * devolve `null` quando nenhum casa **ou** quando casa mais de um: escolher no empate seria o mesmo
  * chute que ele existe para evitar — quem chama recebe erro com a lista, não um gesto sorteado.
+ *
+ * `{ icone: 'add' }` é a MESMA regra pelo ícone, e é a via que atravessa idioma (item 109): o
+ * rótulo do gesto é traduzido, o caractere da fonte SAP-icons não. Vale só onde há UI5 na página —
+ * quem traduz `'add'` no caractere é a `IconPool`, e sem ela isto devolve `null` (o `apontar` diz
+ * qual das duas faltas foi). As duas vias juntas não fazem sentido: escolha uma.
  */
-export function jsAlvoEfetivo(js, { descer = true, dentro = null } = {}) {
-  if (!descer && !dentro) return `(${js})`;
+export function jsAlvoEfetivo(js, { descer = true, dentro = null, icone = null } = {}) {
+  if (dentro && icone) throw new Error('webgui: use { dentro } (rótulo) OU { icone } (nome do sap-icon), não os dois');
+  if (!descer && !dentro && !icone) return `(${js})`;
   return `(() => {
     const raiz = ${js};
     if (!raiz) return null;
     const H = ${JS_ACIONAVEL};
     const DENTRO = ${JSON.stringify(dentro)};
+    const ICONE = ${JSON.stringify(icone)};
+    if (ICONE) {
+      const casaram = H.comIcone(raiz, H.caractere(ICONE));
+      return casaram.length === 1 ? casaram[0] : null;
+    }
     if (!DENTRO && H.motivo(raiz)) return raiz;
     const cand = [...raiz.querySelectorAll('*')].filter((e) => H.motivo(e) && H.area(e) > 0);
     if (DENTRO) {
@@ -2965,10 +3024,15 @@ export function jsAlvoEfetivo(js, { descer = true, dentro = null } = {}) {
  * `gestos` (os acionáveis INDEPENDENTES, com o rótulo de cada um — é a lista que se endereça com
  * `{ dentro }`). Com `{ dentro }` sem casamento único, volta com `recebeu: null` e `casaram`
  * preenchido — cabe a quem chama recusar; aqui não se sorteia alvo.
+ *
+ * Com `{ icone }`, a recusa vem com o que a distingue: `pool` (havia IconPool na página),
+ * `caractere` (a pool conhecia o nome) e `icones` (os ícones que existem lá dentro, pelo nome
+ * quando a pool sabe devolvê-lo). Sem isso, "não achei" não diz se o erro foi o nome, a página ou
+ * a tela.
  */
-export async function apontar(sessao, alvo, { descer = true, dentro = null } = {}) {
+export async function apontar(sessao, alvo, { descer = true, dentro = null, icone = null } = {}) {
   const js = jsDoAlvo(alvo);
-  const efetivo = jsAlvoEfetivo(js, { descer, dentro });
+  const efetivo = jsAlvoEfetivo(js, { descer, dentro, icone });
   const rolou = await avaliar(sessao, `(() => {
     const e = ${efetivo};
     if (!e) return false;
@@ -2985,9 +3049,14 @@ export async function apontar(sessao, alvo, { descer = true, dentro = null } = {
     const cand = [...raiz.querySelectorAll('*')].filter((z) => H.motivo(z) && H.area(z) > 0)
       .sort((a, c) => H.area(a) - H.area(c));
     const gestos = H.externos(cand).map((z) => ({ nome: H.desc(z), rotulo: H.rotulo(z), porQue: H.motivo(z) }));
+    const ICONE = ${JSON.stringify(icone)};
+    const ch = ICONE ? H.caractere(ICONE) : null;
     if (!e) return { recebeu: null, de: H.desc(raiz), desceu: false, porQue: null, gestos,
-                     dentro: ${JSON.stringify(dentro)},
-                     casaram: H.externos(cand.filter((z) => H.casa(z, ${JSON.stringify(dentro)}))).map(H.desc),
+                     dentro: ${JSON.stringify(dentro)}, icone: ICONE,
+                     pool: ICONE ? !!H.pool() : null, caractere: ch,
+                     icones: ICONE ? H.iconesDe(raiz) : [],
+                     casaram: ICONE ? H.comIcone(raiz, ch).map(H.desc)
+                       : H.externos(cand.filter((z) => H.casa(z, ${JSON.stringify(dentro)}))).map(H.desc),
                      candidatos: cand.slice(0, 8).map(H.desc) };
     const b = e.getBoundingClientRect();
     const x = b.x + b.width / 2, y = b.y + b.height / 2;
@@ -3004,6 +3073,35 @@ export async function apontar(sessao, alvo, { descer = true, dentro = null } = {
 /** PURO: como um gesto se chama numa mensagem — o rótulo é o que se digita em `{ dentro }`; o nome
  * do nó só entra quando não há rótulo (ícone sem tooltip existe). */
 export const nomeDoGesto = (g) => (g?.rotulo ? `"${g.rotulo}"` : `<sem rótulo> (${g?.nome})`);
+
+/** PURO: por que o gesto foi RECUSADO, na frase que diz o que fazer em seguida. Com `{ icone }` são
+ * três faltas diferentes e o remédio de cada uma é outro: sem UI5 na página não há tradução de nome
+ * nenhuma (cai no `{ dentro }` ou no id); com UI5 e nome desconhecido o erro é de digitação (o nome
+ * é o de `sap-icon://<nome>`, minúsculo e com hífen); e o ícone que simplesmente não está na tela
+ * lista os que estão. Ambiguidade nunca vira sorteio — nas duas vias. */
+export function recusa(p, alvo, { dentro = null, icone = null } = {}) {
+  const onde = nomeDoAlvo(alvo);
+  const gestos = (p?.gestos ?? []).map(nomeDoGesto).join(', ') || '(nenhum)';
+  if (icone) {
+    const iconesLa = (p?.icones ?? []).map((i) => i.nome ? `"${i.nome}"` : i.codigo).join(', ') || '(nenhum)';
+    if (p?.pool === false) {
+      return `{ icone: '${icone}' } precisa da IconPool do UI5 para virar caractere, e esta página não tem UI5 carregado`
+        + ` — endereçe por { dentro: '<rótulo>' } ou pelo id do descendente; os gestos em ${onde} são: ${gestos}`;
+    }
+    if (!p?.caractere) {
+      return `a IconPool não conhece o ícone "${icone}" — o nome é o de sap-icon://<nome>, minúsculo e com hífen`
+        + ` (add, detail-view); os ícones em ${onde} são: ${iconesLa}`;
+    }
+    if ((p?.casaram ?? []).length > 1) {
+      return `dentro de ${onde} o ícone "${icone}" casa com ${p.casaram.length} gestos (${p.casaram.join(', ')})`
+        + ` — seja mais específico ou endereçe o descendente direto`;
+    }
+    return `dentro de ${onde} nenhum gesto usa o ícone "${icone}" — os ícones de lá são: ${iconesLa}; os gestos: ${gestos}`;
+  }
+  return (p?.casaram ?? []).length > 1
+    ? `dentro de ${onde} o rótulo "${dentro}" casa com ${p.casaram.length} gestos (${p.casaram.join(', ')}) — seja mais específico ou endereçe o descendente direto`
+    : `dentro de ${onde} nenhum gesto tem rótulo "${dentro}" — os gestos de lá são: ${gestos}`;
+}
 
 /** Os modificadores do CDP (`Input.dispatchMouseEvent.modifiers`), que são um mapa de bits. */
 export const MOD = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
@@ -3031,25 +3129,20 @@ export async function clique(sessao, p, { modificadores = 0 } = {}) {
  * suspenso, `document.title` vazio); com `acionar`, o `mudou: false` teria denunciado em 30 s.
  * Quem precisa SABER que a ação pegou usa `acionar` e lê o `mudou`.
  */
-export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false, descer = true, dentro = null } = {}) {
+export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false, descer = true, dentro = null, icone = null } = {}) {
   const ate = Date.now() + tetoMs;
   let p = null;
   while (Date.now() < ate && !p) {
-    p = await apontar(sessao, alvo, { descer, dentro });
+    p = await apontar(sessao, alvo, { descer, dentro, icone });
     if (!p) await espera(400);
   }
   if (!p) throw new Error(`webgui: clicar — ${nomeDoAlvo(alvo)} não está na tela (${tetoMs} ms)`);
-  if (!p.recebeu) {
-    const lista = (p.gestos ?? []).map(nomeDoGesto).join(', ') || '(nenhum)';
-    throw new Error(p.casaram?.length > 1
-      ? `webgui: clicar — dentro de ${nomeDoAlvo(alvo)} o rótulo "${dentro}" casa com ${p.casaram.length} gestos (${p.casaram.join(', ')}) — seja mais específico ou endereçe o descendente direto`
-      : `webgui: clicar — dentro de ${nomeDoAlvo(alvo)} nenhum gesto tem rótulo "${dentro}" — os gestos de lá são: ${lista}`);
-  }
+  if (!p.recebeu) throw new Error(`webgui: clicar — ${recusa(p, alvo, { dentro, icone })}`);
   if (p.desceu) {
     // Um gesto só: a descida é determinada (item 40). VÁRIOS: a escolha saiu do TAMANHO, que é
     // chute — medido no s4h em 05/09/2026 (item 68), a linha "Adicionar" (botão) + "Detalhe"
     // (ícone) sempre cai no DETALHE, porque o ícone é menor. Isso não pode passar calado.
-    const varios = !dentro && (p.gestos ?? []).length > 1;
+    const varios = !dentro && !icone && (p.gestos ?? []).length > 1;
     detalhe(`webgui: ${nomeDoAlvo(alvo)} não aciona nada — o gesto foi no descendente ${p.recebeu} (${p.porQue})`
       + (varios ? `; havia ${p.gestos.length} gestos lá dentro e a escolha foi por TAMANHO — mande no certo com { dentro: '<rótulo>' }: ${p.gestos.map(nomeDoGesto).join(', ')}` : ''));
   }

@@ -800,9 +800,11 @@ await clicar(s, { id: 'liCatalogo' }, { dentro: 'Adicionar' });  // sai no botã
   acento (`endereco` acha `Endereço`). Medido: um `sap.ui.core.Icon` com tooltip rende
   `aria-label="Adicionar"` no controle e `title="Adicionar"` no recheio; um `sap.m.Button` **não tem
   nenhum dos dois** — só o `innerText`.
-- **Não há via por nome de ícone.** `sap-icon://add` **não chega ao DOM**: o que existe é
-  `data-sap-ui-icon-content`, o *caractere* da fonte SAP-icons, e a classe genérica `sapUiIcon`.
-  Endereçar "por `sap-icon`" foi **descartado por medição**, não por gosto.
+- **O nome do ícone não chega ao DOM** — `sap-icon://add` vira o *caractere* da fonte SAP-icons em
+  `data-sap-ui-icon-content`. Quem traduz o nome nesse caractere é a **IconPool**, e é isso que dá
+  a via `{ icone }` do § seguinte; **casar pelo texto `sap-icon://…` no DOM continua impossível**.
+- **O rótulo é TRADUZIDO** — `{ dentro: 'Adicionar' }` não casa num sistema em EN/DE. Use
+  `{ icone }` quando o gesto for um ícone (§ seguinte), ou o id do descendente.
 - **Sem casamento ÚNICO, o `clicar` levanta erro com a lista** — nunca sorteia. Medido: `dentro:
   'Excluir'` → `nenhum gesto tem rótulo "Excluir" — os gestos de lá são: "Adicionar", "Detalhe"`;
   `dentro: 'a'` (casa com os dois) → `casa com 2 gestos (…) — seja mais específico`. Nas duas, zero
@@ -813,6 +815,48 @@ await clicar(s, { id: 'liCatalogo' }, { dentro: 'Adicionar' });  // sai no botã
   com rótulo. Um `sap.m.Button` publica 4 nós acionáveis encaixados (`button > -inner > -content >
   -BDI-content`, todos `cursor: pointer`); eles colapsam em **um** gesto — senão toda linha com
   botão pareceria ambígua.
+
+### `{ icone: 'add' }` — a via que atravessa o IDIOMA (só onde há UI5)
+
+**Medido no s4h 758/250 em 06/09/2026** (fila `adt-client`, item 109, UI5 1.114.0 —
+`sap-accelerate/work/POC_ui5_clicar_descendente/medicoes/item109-icone.md`). O rótulo do § acima é
+traduzido; o caractere do ícone não. A **mesma** página carregada em três idiomas:
+
+| idioma | `aria-label` do botão | `data-sap-ui-icon-content` | `{ dentro: 'Adicionar' }` | `{ icone: 'add' }` |
+|---|---|---|---|---|
+| PT | `Adicionar` | `U+E058` | acionou | acionou |
+| EN | `Add` | `U+E058` | **recusou** | acionou |
+| DE | `Hinzufügen` | `U+E058` | **recusou** | acionou |
+
+```js
+await clicar(s, { id: 'liCatalogo' }, { icone: 'add' });          // nome de sap-icon://add
+await clicar(s, { id: 'liCatalogo' }, { icone: 'sap-icon://add' }); // a URI inteira também vale
+```
+
+- **Quem traduz nome → caractere é a `IconPool`**, dentro da página:
+  `sap.ui.core.IconPool.getIconInfo('add').content` → `U+E058`. Medido que o namespace global já
+  existe desde o primeiro script do boot (antes do `attachInit`, e mesmo com
+  `data-sap-ui-libs=""`); o `sap.ui.require('sap/ui/core/IconPool')` **síncrono** só passa a
+  responder depois que alguém requereu o módulo (4 ms pela via assíncrona). Por isso a lib tenta o
+  `require` síncrono **e** o global, nessa ordem.
+- **O caractere pode estar num DESCENDENTE do gesto**: num `sap.m.Button({ icon })` ele fica no
+  `-img`. A busca sobe do nó do atributo até o **primeiro** ancestral acionável — e para aí. Medido
+  numa linha `CustomListItem type="Active"` (a linha inteira clicável, com um botão dentro): o
+  clique disparou `ativo:adicionar`, **não** o `press` da linha.
+- **Recusa com o motivo separado** — as três faltas pedem remédios diferentes, e zero ação é
+  disparada em qualquer delas:
+  | falta | mensagem |
+  |---|---|
+  | página sem UI5 | `{ icone: 'add' } precisa da IconPool do UI5 para virar caractere, e esta página não tem UI5 carregado` |
+  | nome que a pool não conhece (`ADD`, `nao-existe`) | `a IconPool não conhece o ícone "ADD" — o nome é o de sap-icon://<nome>, minúsculo e com hífen` |
+  | ícone que não está na tela | `nenhum gesto usa o ícone "add-product" — os ícones de lá são: "add", "detail-view"` |
+  | dois gestos com o mesmo ícone | `o ícone "add" casa com 2 gestos (iconeDup1, iconeDup2)` |
+- **`getIconInfo` é sensível a maiúsculas** (`'ADD'` não existe) e aceita `'add'` ou
+  `'sap-icon://add'`. Nome desconhecido devolve `undefined` — não estoura.
+- **`{ dentro }` e `{ icone }` juntos são recusados** na montagem do JS: são duas regras de escolha
+  para um gesto só.
+- ⚠ **`{ icone }` não serve ao WebGUI/dynpro** — lá não há UI5 na página, e a recusa diz exatamente
+  isso. No canal dynpro o endereço é o SID do controle.
 
 ## A caixa de comando (OK-code) **pelo navegador**
 
