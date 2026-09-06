@@ -1113,8 +1113,9 @@ canal:
 - **A árvore inteira também está no DOM da via CDP, invisível?** O navegador recebe o mesmo
   delta-update que traz os 146 itens. Se estiver, a cascata de cliques daqui vira uma leitura só
   (fila item 82).
-- **Folha de menu que abre POPUP** antes de navegar: o `mudou` da via HTTP não distingue "abriu
-  modal" de "trocou de tela" (fila item 83).
+- ~~Folha de menu que abre POPUP~~ **medida** (item 83): o `mudou` diz QUE mudou, nunca O QUE —
+  quem separa "abriu modal" de "trocou de tela" é o `popup` que a via HTTP agora devolve
+  (§ "A folha de menu que abre POPUP" abaixo).
 
 ### O mesmo menu pela via HTTP pura — um POST, sem Chrome
 
@@ -1150,6 +1151,44 @@ As três linhas juntas: o comando é o `4` (o `3` é recusado no mesmo SID), o e
 item, e `action/4` em nó COM submenu é aceito e inócuo — "abrir" é gesto de UI, não de protocolo.
 Só a folha vira POST. A guarda do item desabilitado (`lsdata[5] === false`, item 48) vale igual e
 custa **zero rede**: os 11 cinzas dos 146 já vieram no delta.
+
+### A folha de menu que abre POPUP — `mudou` diz QUE mudou, nunca O QUE
+
+**Medido no s4h 758/250 em 2026-09-06** (item 83, `medicoes/item83-menu-popup.md`), sempre de uma
+SE38 limpa, uma sessão por caso:
+
+| caminho | `mudou` | dynpro | `popup` |
+|---|---|---|---|
+| `Sistema > Status...`            | `true` | SE38/SAPLWBABAP **igual** | `wnd[1]` "Sistema: status" |
+| `Ajuda > Configurações...`       | `true` | **igual** | `wnd[1]` "Configurações individuais…" |
+| `Utilitários > Configurações...` | `true` | **igual** | `wnd[1]` "Configurações específicas…" |
+| `Sistema > Serviços > Reporting` | `true` | SE38 → **SA38/SAPMS38M** | `null` |
+
+As quatro são `forma: 'delta'`, `pegou: true`, `mudou: true`. **O `mudou` sozinho não separa "abriu
+modal" de "trocou de tela"** — e a dynpro tampouco, porque a modal vem no MESMO delta sem trocá-la.
+(O carimbo do item 59 já pega as três primeiras por causa da `janelaAtiva`; o veredito ANTIGO, de só
+título + dynpro, dava `false` nelas. O que faltava era **dizer qual das duas coisas** foi.)
+
+Quem diz é o `popup` que `navegarMenu` devolve — o objeto, com título e botões por SID:
+
+```js
+const r = await navegarMenu(s, 'Sistema > Status...');
+const veredito = !r.mudou ? 'nada' : r.popup ? 'popup' : 'tela';   // uma expressão, sem 2º lerTela
+r.popup.botoes.map((b) => b.rotulo);   // ['Detalhes', 'Avançar', 'Navegar', …, 'Cancelar']
+```
+
+⚠ **Com uma modal já aberta o menu MENTE.** Medido: os 146 itens continuam no delta (os mesmos 7 da
+barra) e `navegarMenu` resolve o caminho sem reclamar, mas o `action/4` volta **`multipart`,
+`pegou: false`** — o modal engole o gesto. Leia `popup` **antes** de navegar; responda a modal
+primeiro. (A guarda que faria isso lançar ainda não existe — fila item 131.)
+
+⚠ **`temPopup` não é `popup`.** `lerResposta().temPopup` é um farejador do **corpo** (`regex` por
+`wnd[n>0]`, ~0 ms) e vale `false` num `multipart` **mesmo com a modal aberta** — foi exatamente o
+que o passo 3 mediu. Quem quer o estado da TELA lê `popup`/`popupDaSessao(s)`/`lerTela(s).popup`, ou
+o `janela` que todo `postar` devolve (`wnd[0]` ou a modal de maior índice). O objeto custa os 8–17 ms
+de `controlesDoDelta` num delta de 300 KB, e por isso `popupDaSessao` só o paga quando os SIDs já
+dizem que há modal. Até 06/09/2026 o booleano se chamava `popup` — e `r.popup?.sid` dava `undefined`
+em silêncio.
 
 ## A ÁRVORE do SAP Easy Access — o outro menu, o único que enxerga os FAVORITOS
 
@@ -2111,7 +2150,7 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   O que fica: as teclas fora do mapa (F1, F2, F5–F7, F9, F10, `Ctrl+Fn`) e a distinção F12 ×
   Shift+F3 — `vkey(s, n)` continua no módulo para MEDIR, não para afirmar.
 * Popup (`wnd[1]`) — `/o` e `/nend` abrem um, e ele **vem no mesmo `delta-update`**
-  (`lerResposta` sinaliza `popup: true`; `lerTela` devolve `popup` com textos e botões por SID —
+  (`lerResposta` sinaliza `temPopup: true` — do CORPO, item 83; `lerTela` devolve `popup` com textos e botões por SID —
   e avisa que a `wnd[0]/usr` foi esvaziada); falta medir como responder (item 23). Table control
   (o steploop, que não é o ALV) continua por medir.
 * ~~Upload/download por esta via~~ **medidos** — os dois são o **ITSDoc**: download no item 45

@@ -9,7 +9,7 @@ import {
   OKCD, ESTADO, BOOT, ENTER, batchPreencher, batchAcionar, batchComandar, batchVkey,
   decodificarEntidades, cabecalhoDoShell, paramDe, passosDoMultipart, sidsDaResposta, lerResposta,
   sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla, janelaAtiva, janelaDoSid, ativa,
-  atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, popupsDaTela, telaDoDelta, lerTela, parametrosDaTela,
+  atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, popupDaSessao, popupsDaTela, telaDoDelta, lerTela, parametrosDaTela,
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
   itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS, exportAsDoPopup,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
@@ -118,7 +118,7 @@ test('its: os aParams saem por nome — chave nua (cuatitle) e chave com aspas (
 test('its: lerResposta — delta = pegou; multipart = NÃO pegou e diz por quê; o status HTTP é 200 nos dois', () => {
   const d = lerResposta({ status: 200, tipo: 'text/xml; charset=utf-8', corpo: DELTA });
   expect(d).toMatchObject({ forma: 'delta', pegou: true, tipo: 'text/xml', titulo: 'Data Browser: tabela T000: tela de seleção',
-    screenId: 'M0:46', dynpro: '/1BCDWB/DBT000', tcode: 'SE16', dnum: '1000', moin: 'C7F627FE0F462E80', popup: false, motivo: null });
+    screenId: 'M0:46', dynpro: '/1BCDWB/DBT000', tcode: 'SE16', dnum: '1000', moin: 'C7F627FE0F462E80', temPopup: false, motivo: null });
   expect(d.erros).toEqual([]);
 
   const m = lerResposta({ status: 200, tipo: 'multipart/mixed; boundary=SAP_RESTGUI_BATCH_STEP', corpo: MULTIPART });
@@ -143,7 +143,12 @@ test('its: logoff e sessão morta têm forma própria', () => {
   expect(lerResposta({ status: 500, tipo: 'text/html', corpo: 'x' }).forma).toBe('outra');
   // popup (wnd[1]) vem no MESMO delta-update — medido com /o e /nend
   const comPopup = DELTA.replace('"SID":"wnd[0]/sbar_msg"', '"SID":"wnd[1]"');
-  expect(lerResposta({ status: 200, tipo: 'text/xml', corpo: comPopup }).popup).toBe(true);
+  expect(lerResposta({ status: 200, tipo: 'text/xml', corpo: comPopup }).temPopup).toBe(true);
+  // ⚠ o farejador é do CORPO, não da tela: o multipart não declara SID nenhum, e mesmo com a modal
+  // aberta ele volta `false` (item 83, passo 3). Quem quer a TELA lê `popupDaSessao`/`lerTela`.
+  expect(lerResposta({ status: 200, tipo: 'multipart/mixed', corpo: '--x\nX-Code: -101\n' }).temPopup).toBe(false);
+  // e o nome antigo (`popup`, colidindo com o OBJETO do lerTela) não volta pela porta dos fundos
+  expect(lerResposta({ status: 200, tipo: 'text/xml', corpo: comPopup }).popup).toBeUndefined();
 });
 
 test('its: os SIDs saem do lsdata, com tipo, campo e okcode — e sem repetir o mesmo endereço', () => {
@@ -514,6 +519,21 @@ test('its: com POPUP aberto o delta traz a wnd[1] e ESVAZIA a wnd[0]/usr — o m
   expect(sidDoAlvo(sidsDaTela, { sid: tela.popup.botoes[0].sid })).toBe('wnd[1]/usr/btnSPOP-OPTION1');
   expect(popupDaTela(controlesDoDelta(DELTA_SE38))).toBe(null);
   expect(popupDaTela([])).toBe(null);
+});
+
+test('its: popupDaSessao lê a TELA (não o corpo) e só paga o parse quando os SIDs já dizem que há modal', () => {
+  const comModal = { sids: sidsDaResposta(DELTA_POPUP), delta: DELTA_POPUP };
+  expect(popupDaSessao(comModal)).toMatchObject({ sid: 'wnd[1]', titulo: 'Efetuar logoff' });
+
+  // sem modal declarada, `janelaAtiva` é wnd[0] e o delta nem é parseado — a resposta é null
+  expect(popupDaSessao({ sids: sidsDaResposta(DELTA_SE38), delta: DELTA_SE38 })).toBe(null);
+  expect(popupDaSessao({ sids: [], delta: '' })).toBe(null);
+  expect(popupDaSessao(undefined)).toBe(null);
+
+  // ⚠ o caso do item 83, passo 3: o POST voltou `multipart` e o `postar` NÃO troca `sids`/`delta`.
+  // O farejador do corpo diria "sem popup"; a TELA continua com a modal na frente, e é ela que vale.
+  expect(lerResposta({ status: 200, tipo: 'multipart/mixed', corpo: '--x\nX-Code: -101\n' }).temPopup).toBe(false);
+  expect(popupDaSessao(comModal)?.sid).toBe('wnd[1]');
 });
 
 // ---- a JANELA do alvo (item 42) ----------------------------------------------------------

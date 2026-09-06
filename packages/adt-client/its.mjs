@@ -236,7 +236,15 @@ export function lerResposta({ status = null, tipo = '', corpo = '' } = {}) {
     parcial: forma === 'delta' && !/sap\.its\.aParams/.test(s),
     titulo: paramDe(s, 'cuatitle'), screenId: paramDe(s, 'ScreenId'), dynpro: paramDe(s, 'dynpro'),
     tcode: paramDe(s, 't-code'), dnum: paramDe(s, 'd-num'), moin: paramDe(s, 'moin'),
-    popup: /"SID":"wnd\[[1-9]\d*\]"/.test(s),   // wnd[1] no mesmo delta-update (medido: /o, /nend)
+    // ⚠️ `temPopup` é um FAREJADOR do CORPO, não o estado da tela: "este delta-update declara
+    // alguma `wnd[n>0]`". Custa ~0 ms (regex) contra os 8–17 ms de `controlesDoDelta` num delta de
+    // 300 KB, e por isso fica aqui — mas ele MENTE por omissão em `multipart`, que não tem SIDs
+    // nenhum: medido em 06/09/2026 (item 83) que um `action/4` recusado com a modal na frente volta
+    // `temPopup: false` **com a modal ainda aberta**. Quem quer o estado da TELA lê `lerTela(s).popup`
+    // (o objeto, com título e botões) ou o `janela` que o `postar` devolve.
+    // Até 06/09/2026 isto se chamava `popup` — o mesmo nome do OBJETO do `lerTela`, e `r.popup?.sid`
+    // dava `undefined` em silêncio. O nome mudou para a colisão não voltar.
+    temPopup: /"SID":"wnd\[[1-9]\d*\]"/.test(s),   // wnd[1] no mesmo delta-update (medido: /o, /nend)
     motivo: forma === 'delta' ? null
       : forma === 'multipart' ? (erros.map((e) => `${e.codigo} ${e.status}`).join('; ') || 'X-Code 0 em tudo — nada mudou')
       : forma === 'logoff' ? 'sessão encerrada pelo logoff'
@@ -779,6 +787,19 @@ export function popupDaTela(brutos = []) {
 }
 
 /**
+ * O popup ATIVO da SESSÃO — o `popupDaTela` sobre o último delta, ou `null` quando a tela está em
+ * `wnd[0]`. É a forma barata de perguntar "tem modal na frente, e qual?".
+ *
+ * O atalho é o `janelaAtiva` sobre os SIDs que o `postar` já extraiu: sem modal declarada a
+ * resposta seria `null` de qualquer jeito, e assim ela sai **sem** o parse dos controles — medido
+ * em 06/09/2026 (item 83) que `controlesDoDelta` custa 8–17 ms num delta de 300 KB, contra ~0 ms
+ * do farejador. Com modal, paga-se o parse uma vez e vem o objeto inteiro (título, botões, campos).
+ */
+export const popupDaSessao = (sessao) => (janelaAtiva(sessao?.sids ?? []) !== 'wnd[0]'
+  ? popupDaTela(controlesDoDelta(sessao?.delta ?? ''))
+  : null);
+
+/**
  * PURO: o MODELO da tela a partir de um `delta-update` — o `montarTela` do webgui.mjs sobre os
  * controles do XML, mais o que só o XML sabe (`screenId`, `dynpro`, `tcode`, `dnum`) e o `popup`.
  * É o mesmo modelo do `lerTela` do navegador: `{ titulo, janela, mensagem, statusbar, campos
@@ -989,13 +1010,19 @@ export async function postar(sessao, batch, { tetoMs = 30000 } = {}) {
   }
   if (lida.forma === 'logoff' || lida.forma === 'sem-sessao') sessao.aberta = false;
   lida.carimbo = sessao.carimbo;
+  // A janela ATIVA da TELA — `wnd[0]`, ou a modal de maior índice. Ao contrário do `temPopup` (que
+  // fareja o CORPO da resposta), esta sobrevive ao `multipart`: um POST recusado não traz SID
+  // nenhum, mas a modal que estava na frente continua lá. É o fato BARATO — os SIDs já foram
+  // extraídos — que distingue "tem modal na frente" de "wnd[0] livre" (item 83). O `postar` já a
+  // calculava para o aviso do item 59; agora ela sai no resultado.
+  lida.janela = sessao.sids.length ? janelaAtiva(sessao.sids) : null;
   lida.mensagem = lida.forma === 'delta' && !lida.parcial ? mensagemDosSids(sessao.sids) : null;
   lida.mudou = mudouDaTela(lida, antes.carimbo, sessao.carimbo);
   sessao.ultimo = lida;
   detalhe(`its: ${lida.forma} em ${ms} ms${lida.pegou ? ` — "${lida.titulo}"` : ` — ${lida.motivo}`}${lida.mudou === false ? ' — a tela NÃO mudou' : ''}`);
   if (lida.mensagem) detalhe(`its: mensagem ${lida.mensagem.tipo ?? '?'}: "${lida.mensagem.texto}"`);
   // ⚠ o AVISO alto: a resposta veio boa, nada mudou e o popup continua lá — o falso positivo do item 59.
-  const janela = lida.forma === 'delta' && !lida.parcial ? janelaAtiva(sessao.sids) : null;
+  const janela = lida.forma === 'delta' && !lida.parcial ? lida.janela : null;
   if (lida.pegou && lida.mudou === false && janela && janela !== 'wnd[0]' && antes.janela === janela) {
     aviso(`its: a ação não mudou NADA e o popup ${janela} continua aberto${lida.mensagem ? ` — "${lida.mensagem.texto}"` : ''}`
       + ' — popup se responde pelo SID do botão (lerTela(s).popup.botoes), não por tecla nem por apelido.');
@@ -1321,7 +1348,7 @@ export async function exportarLista(sessao, { formato = 'tabuladores', arquivo =
     throw new Error('its: exportarLista — a tela não tem o botão "File local..." (wnd[0]/tbar[1]/btn[45]); é uma lista ALV?');
   }
   await acionar(sessao, botao, { tetoMs });
-  const radios = (popupDaTela(controlesDoDelta(sessao.delta ?? ''))?.campos ?? [])
+  const radios = (popupDaSessao(sessao)?.campos ?? [])
     .filter((c) => /radSPOPLI-SELFLAG\[\d+,0\]$/.test(c.sid));
   const radio = radios[idx];
   if (!radio) throw new Error(`its: exportarLista — o popup de formato tem ${radios.length} opção(ões), não a de índice ${idx}`);
@@ -1329,7 +1356,7 @@ export async function exportarLista(sessao, { formato = 'tabuladores', arquivo =
   let r = await postar(sessao, [ENTER, ESTADO], { tetoMs });
   // o formato PLANILHA não vai ao ITSDoc pelo Avançar: ele abre o popup "Export As", e quem
   // dispara é o "Exportar para..." de lá (item 73).
-  if (exportAsDoPopup(popupDaTela(controlesDoDelta(sessao.delta ?? '')))) {
+  if (exportAsDoPopup(popupDaSessao(sessao))) {
     ({ r } = await dispararExportAs(sessao, { nome: nomeDoArquivo(arquivo), tetoMs, de: 'exportarLista' }));
   }
 
@@ -1365,7 +1392,7 @@ export function exportAsDoPopup(popup) {
 
 /** Preenche o nome e aciona o "Exportar para..." do Export As — a segunda etapa do gesto planilha. */
 async function dispararExportAs(sessao, { nome = null, tetoMs = 180000, de = 'exportar' } = {}) {
-  const cx = exportAsDoPopup(popupDaTela(controlesDoDelta(sessao.delta ?? '')));
+  const cx = exportAsDoPopup(popupDaSessao(sessao));
   if (!cx) throw new Error(`its: ${de} — a tela não abriu o popup "Export As" (GS_EXPORT-FILE_NAME + btn[20]); o formato planilha passa por ele`);
   if (nome) preencher(sessao, { sid: cx.nome }, nome);
   const r = await acionar(sessao, { sid: cx.botao }, { tetoMs });
@@ -1584,8 +1611,28 @@ export { acharCaminhoDeMenu };
  *
  * Ao contrário da via do navegador, aqui **não há cascata**: o caminho inteiro é resolvido no
  * delta que já está em mãos e só a FOLHA vira POST (`action/4/<SID>`). Devolve
- * `{ caminho, passos, folha, mudou, ...lerResposta }`; `mudou: false` é INFORMAÇÃO — o comando
- * pegou e a tela ficou igual.
+ * `{ caminho, passos, folha, mudou, popup, ...lerResposta }`; `mudou: false` é INFORMAÇÃO — o
+ * comando pegou e a tela ficou igual.
+ *
+ * ⚠ **`mudou` não diz O QUE mudou, e é aí que uma folha de menu engana.** Medido no s4h 758/250 em
+ * 06/09/2026 (item 83, `POC_webgui_menu/medicoes/item83-menu-popup.md`), de uma SE38 limpa:
+ *
+ * | caminho | `mudou` | dynpro | `popup` |
+ * |---|---|---|---|
+ * | `Sistema > Status...`            | `true` | SE38/SAPLWBABAP **igual** | `wnd[1]` "Sistema: status" |
+ * | `Ajuda > Configurações...`       | `true` | **igual**                 | `wnd[1]` "Configurações individuais…" |
+ * | `Utilitários > Configurações...` | `true` | **igual**                 | `wnd[1]` "Configurações específicas…" |
+ * | `Sistema > Serviços > Reporting` | `true` | SE38 → **SA38/SAPMS38M**  | `null` |
+ *
+ * As quatro linhas são `forma: 'delta'`, `pegou: true`, `mudou: true` — **o `mudou` sozinho não
+ * separa "abriu modal" de "trocou de tela"**. Quem separa é o `popup`: não-nulo, a tela pediu
+ * resposta e a `wnd[0]/usr` está atrás dele; nulo com `mudou: true`, a navegação aconteceu.
+ * (O veredito ANTIGO, de só título + dynpro, dava `false` nas três primeiras — o carimbo do item 59
+ * já as pegava por causa da `janelaAtiva`; o que faltava era DIZER qual das duas coisas foi.)
+ *
+ * ⚠ **Com uma modal já aberta o menu MENTE**: os 146 itens continuam no delta e `navegarMenu` os
+ * resolve sem reclamar, mas o `action/4` volta `multipart`/`pegou: false` — o modal engole o gesto
+ * (medido no mesmo item 83, passo 3). Leia `popup` ANTES de navegar; responda a modal primeiro.
  *
  * Com `{ acionar: false }` nada é postado: devolve `{ filhos }` do último nó — é como se DESCOBRE
  * o menu de uma tela (a árvore inteira já está no delta, custo zero de rede).
@@ -1596,10 +1643,12 @@ export { acharCaminhoDeMenu };
 export async function navegarMenu(sessao, caminho, { acionar: aciona = true, ...opts } = {}) {
   const { caminho: partes, passos, alvo, filhos } = acharCaminhoDeMenu(itensDeMenu(sessao), caminho);
   if (!alvo.habilitado) throw new Error(`its: navegarMenu — "${alvo.rotulo}" está DESABILITADO nesta tela (${alvo.sid ?? alvo.id}); o action/4 não faria nada`);
-  if (!aciona || alvo.submenu) return { caminho: partes, passos, folha: null, filhos, mudou: false };
+  if (!aciona || alvo.submenu) return { caminho: partes, passos, folha: null, filhos, mudou: false, popup: popupDaSessao(sessao) };
   // o `mudou` vem do `postar` — carimbo ANTES × DEPOIS, não só título e dynpro (item 59)
   const r = await despachar(sessao, [{ post: `action/4/${alvo.sid ?? alvo.id}` }], opts);
-  return { ...r, caminho: partes, passos, folha: alvo };
+  // ...e o `popup` diz O QUE mudou: modal na frente, ou a tela nova. Sai da TELA (não do corpo da
+  // resposta), então continua certo mesmo quando o POST volta `multipart` com a modal ainda aberta.
+  return { ...r, caminho: partes, passos, folha: alvo, popup: popupDaSessao(sessao) };
 }
 
 // ---------- a ÁRVORE do SAP Easy Access (item 50) ----------
