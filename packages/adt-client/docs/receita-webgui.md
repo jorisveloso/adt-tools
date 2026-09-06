@@ -1960,7 +1960,9 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   `delta-update`"). ~~O grid sai só como cabeçalho~~ **feito** (item 25): `lerGrid` traz as LINHAS
   do ALV pelo `RequestData` (§ "O ALV: ler as LINHAS do grid"), e ~~pelo navegador só o cabeçalho~~
   **feito** (item 46): o `lerGrid` do `webgui.mjs` lê o BLOCO do DOM sem tocar a rede (§ "Pelo
-  NAVEGADOR"). ~~Célula editável~~ **feita** (item 47): `escreverCelula` pelo navegador, com o ciclo
+  NAVEGADOR"); ~~e pelo navegador o alcance para no bloco~~ **resolvido** (item 74):
+  `lerGridInteiro` posta o `action/710` DENTRO da sessão da página e traz a tabela toda
+  (§ "`lerGridInteiro`"). ~~Célula editável~~ **feita** (item 47): `escreverCelula` pelo navegador, com o ciclo
   escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
   na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
   só existe no despejo DOM), e no grid faltam **ordenar/filtrar** e **selecionar linha**.
@@ -2083,7 +2085,64 @@ requisição; quem move é a **roda** (`Input.dispatchMouseEvent` `type: 'mouseW
 perto do fim do bloco o próprio ITS dispara um `action/710` (`fragments=166,173;`) que acrescenta 28
 linhas. Mas é o **mesmo pedido** que a via HTTP faz, ao **mesmo preço** — 8,97 KB gzipados por 28
 linhas nos dois canais —, só que em fatias de 28 e a ~2,9 s por rodada: **~222 rodadas, ~11 min**
-para as 1617 linhas, contra 4 pedidos e **2,3 s** do `its.lerGrid`. Para a tabela inteira: via HTTP.
+para as 1617 linhas. Quem lê a tabela inteira é o `lerGridInteiro`, logo abaixo.
+
+### `lerGridInteiro`: a tabela toda **na sessão da tela** (item 74)
+
+**Medido no s4h 758/250 em 2026-09-05** (fila `adt-client`, item 74; evidência em
+`sap-accelerate/work/POC_webgui_fragmento/medicoes/item74-fragmento.md`). O `lerGrid` acima alcança
+só o bloco; o `its.lerGrid` alcança tudo mas **em outra sessão**, que não vê o filtro nem a ordem
+desta tela. O `lerGridInteiro` junta os dois: posta o **mesmo `action/710`** do `its.mjs`, mas de
+**dentro da página**, com o `action` e o `moin` que ela já carrega.
+
+```js
+import { abrirNavegador, ir, urlWebgui, acionar, lerGridInteiro } from './webgui.mjs';
+
+await acionar(s, 'btn[28]');                       // ordena o ALV NESTA tela
+const g = await lerGridInteiro(s);                 // e a leitura sai na ordem NOVA
+// { id: 'C102', sid: 'wnd[0]/usr/cntlGRID1/shellcont/shell', colunas: [ … ], total: 1617,
+//   de: 1, ate: 1617, linhas: [ … ], pedidos: 4, bytes: 11930653, ms: 2383, truncado: false }
+
+await lerGridInteiro(s, { id: 'C102' }, { de: 900, ate: 910, lote: 1000 });
+```
+
+A página tem as três peças do POST, e nenhuma delas precisa de credencial nova: o **`action`** (o
+token da sessão, no `<form id="webguiform0">`), o **`moin`** (`var` global) e o **cookie**
+`SAP_SESSIONID`, que é `HttpOnly` — não aparece no `document.cookie` e não precisa aparecer: o
+`fetch` same-origin o manda sozinho. O `Authorization` sai pelo `Network.setExtraHTTPHeaders` do
+`abrirNavegador`.
+
+| | `lerGrid` (bloco) | `lerGridInteiro` | `its.lerGrid` |
+|---|---|---|---|
+| alcance | 166 de 1617 | **1617 de 1617** | 1617 de 1617 |
+| custo (1617 × 5) | — (0 requisição) | 4 pedidos, 11,9 MB, **2,4 s** | 4 pedidos, 12,4 MB, 1,9 s |
+| sessão | a da tela | **a da tela** | outra |
+| vê o filtro/ordem da tela | sim | **sim** | não |
+
+Quatro fatos medidos:
+
+1. **O `moin` NÃO é contador de sequência.** Ele não muda entre a tela de seleção e a lista, e o
+   POST que o **próprio framework** manda ao rolar leva exatamente o mesmo valor do `window.moin`.
+   Não há nada a incrementar — e por isso não há o que dessincronizar.
+2. **⚠ Mas o header `moin` é OBRIGATÓRIO, e omiti-lo MATA A SESSÃO.** O mesmo POST sem ele voltou
+   **HTTP 500 `Application Server Error`** (9,8 KB de HTML) e, dali em diante, a sessão virou casca:
+   a roda ainda POSTAVA (`fragments=194,203;`) mas o bloco não crescia mais, e o `btn[3]` trocou a
+   tela por uma **vazia** (título `""`, 0 campo, 0 grid). Não é "degradou": é a sessão perdida, sem
+   aviso na tela. Por isso `lerGridInteiro` estoura **antes** de postar quando a página não tem
+   `moin`.
+3. **Com o `moin`, o POST é inócuo** — contra-prova com positiva de controle antes e depois:
+   rolando até o framework pedir sozinho, ele pediu antes (bloco 166→194) e **continuou pedindo
+   depois** do nosso POST (194→222, em 3 rodadas), e o round-trip `btn[3]` trouxe a tela de seleção
+   viva. O DOM não muda: a resposta é um delta **parcial** que ninguém aplica.
+4. **O dado é o mesmo, e a ordem é desta tela.** 8.085 de 8.085 células iguais às do `its.lerGrid`.
+   Com o ALV ordenado por `btn[28]`, o `lerGridInteiro` devolveu `_CPARG0, _DW, _IG, _PF, abap/aab`
+   e a sessão HTTP paralela, no mesmo instante, `Autostart, CPU_CORES, DIR_ATRA, …` — a ordem
+   original. É exatamente o que a segunda sessão não consegue ver.
+
+**⚠ O corpo tem MEGABYTES e não atravessa o CDP.** A extração das células acontece **na página**
+(~48 ms para 11,9 MB) e só a matriz volta. E lá o `lsdata` vem com **entidade HTML** (`&#39;`,
+`&lt;`) — o DOM decodificaria sozinho, o XML cru não: sem decodificar, 28 das 8.085 células saíam
+com `&#39;` no valor.
 
 ## Escrever numa célula do ALV — e provar que gravou (item 47)
 

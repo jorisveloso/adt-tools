@@ -14,6 +14,7 @@ import {
   SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo,
   pinosDeCertificado, bandeirasDeCertificado, explicarErroDeNavegacao,
   jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
+  jsFragmentoDoGrid, faltaNaFaixaDoBloco,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -975,4 +976,81 @@ test('webgui: a coluna se endereça pelo NOME do ColumnIDs (é como o action/622
   // a coluna 0 é a caixa de seleção da linha, não é dado — pedir 0 é erro de quem chama
   expect(() => indiceDaColuna(cols, 0)).toThrow(/1-based/);
   expect(() => indiceDaColuna([], 'X')).toThrow(/tem 0: nenhuma/);
+});
+
+// ---------- o ALV inteiro pelo fetch da própria página (item 74) ----------
+
+// o mesmo harness do bloco, mas a expressão é ASSÍNCRONA e precisa de `window`, `fetch` e do form
+const rodarFragmento = (js, { form = { getAttribute: () => '/sap(TOK)/bc/gui/sap/its/webgui/' },
+  moin = '9410E7BF9FDCCC03', resposta } = {}) => {
+  const chamadas = [];
+  const fetchFalso = async (url, opts) => { chamadas.push({ url, opts }); return resposta; };
+  const documento = { getElementById: (id) => (id === 'webguiform0' ? form : null) };
+  const janela = { moin };
+  return new Function('document', 'window', 'fetch', `return ${js}`)(documento, janela, fetchFalso)
+    .then((r) => ({ r, chamadas }));
+};
+const respostaDe = (corpo, { status = 200, tipo = 'text/xml; charset=utf-8' } = {}) =>
+  ({ status, headers: { get: () => tipo }, text: async () => corpo });
+
+test('webgui: o fragmento vai no MESMO batch do its.mjs, com o action e o moin DA PÁGINA', async () => {
+  const { r, chamadas } = await rodarFragmento(
+    jsFragmentoDoGrid('wnd[0]/usr/cntlGRID1/shellcont/shell', 'C102', 0, 499),
+    { resposta: respostaDe('<delta-update></delta-update>') });
+  expect(chamadas).toHaveLength(1);
+  const [{ url, opts }] = chamadas;
+  expect(url).toBe('/sap(TOK)/bc/gui/sap/its/webgui/batch/json?~RG_WEBGUI=X&');
+  expect(opts.method).toBe('POST');
+  expect(opts.credentials).toBe('same-origin');           // é o cookie HttpOnly da sessão da tela
+  expect(opts.headers.moin).toBe('9410E7BF9FDCCC03');     // ⚠ sem ele o ITS devolve 500 e a sessão morre
+  expect(JSON.parse(opts.body)).toEqual([
+    { post: 'action/710/wnd[0]/usr/cntlGRID1/shellcont/shell', content: 'position=0&fragments=0,499;' },
+    { get: 'state/ur/wnd[0]/usr/cntlGRID1/shellcont/shell' },
+  ]);
+  expect(r.status).toBe(200);
+  expect(r.ehDelta).toBe(true);
+});
+
+test('webgui: as células saem do lsdata com a ENTIDADE decodificada (o XML cru não é o DOM)', async () => {
+  // o corpo é o do delta de verdade: `&#39;` no valor, a coluna 0 sem `#if`, e outro grid junto
+  const corpo = [
+    '<delta-update>',
+    `<span id="grid#C102#1,1#if" ct="CBS" lsdata='{"21":{"value":"Autostart"}}'>Autostart</span>`,
+    `<span id="grid#C102#1,5#if" ct="CBS" lsdata='{"21":{"value":"Max num of unused seg&#39;s"}}'>x</span>`,
+    `<span id="grid#C102#2,1#if" ct="CBS" lsdata='{"21":{"value":"CPU_CORES"}}'>CPU_CORES</span>`,
+    `<td id="grid#C102#1,0" lsdata='{"7":{"SID":"…","Type":"SAPTABLECSSELECTIONCELL"}}'></td>`,
+    `<span id="grid#C999#1,1#if" ct="CBS" lsdata='{"21":{"value":"de outro grid"}}'>y</span>`,
+    '</delta-update>',
+  ].join('');
+  const { r } = await rodarFragmento(jsFragmentoDoGrid('wnd[0]/x', 'C102', 0, 1),
+    { resposta: respostaDe(corpo) });
+  expect(r.celulas).toEqual({ 1: { 1: 'Autostart', 5: "Max num of unused seg's" }, 2: { 1: 'CPU_CORES' } });
+  expect(r.nLinhas).toBe(2);
+  expect(r.primeira).toBe(1);
+  expect(r.ultima).toBe(2);
+});
+
+test('webgui: sem form ou sem moin o fragmento NEM POSTA — falhar cedo é mais barato que ressuscitar sessão', async () => {
+  const semForm = await rodarFragmento(jsFragmentoDoGrid('wnd[0]/x', 'C102', 0, 1), { form: null });
+  expect(semForm.r.erro).toMatch(/webguiform0/);
+  expect(semForm.chamadas).toHaveLength(0);
+  const semMoin = await rodarFragmento(jsFragmentoDoGrid('wnd[0]/x', 'C102', 0, 1), { moin: null });
+  expect(semMoin.r.erro).toMatch(/moin/);
+  expect(semMoin.chamadas).toHaveLength(0);
+});
+
+test('webgui: resposta que não é delta volta com status e começo do corpo (é o 500 que mata a sessão)', async () => {
+  const { r } = await rodarFragmento(jsFragmentoDoGrid('wnd[0]/x', 'C102', 0, 1),
+    { resposta: respostaDe('<html><head><title>Application Server Error</title>', { status: 500, tipo: 'text/html; charset=utf-8' }) });
+  expect(r.status).toBe(500);
+  expect(r.ehDelta).toBe(false);
+  expect(r.inicio).toContain('Application Server Error');
+  expect(r.celulas).toEqual({});
+});
+
+test('webgui: o avanço do laço é pelo que FALTA (o servidor devolve no mínimo uma janela)', () => {
+  expect(faltaNaFaixaDoBloco({ 1: {}, 2: {}, 3: {} }, 1, 3)).toBe(null);
+  expect(faltaNaFaixaDoBloco({ 1: {}, 3: {} }, 1, 3)).toBe(2);
+  expect(faltaNaFaixaDoBloco({}, 5, 10)).toBe(5);
+  expect(faltaNaFaixaDoBloco({ 1: {} }, 1, 0)).toBe(null);          // faixa vazia
 });

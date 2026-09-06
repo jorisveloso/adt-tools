@@ -1169,13 +1169,14 @@ export async function botoes(sessao) {
 //     `1..166` a `1..362`, contíguo, sem perder o começo (fase J). Então este `lerGrid` devolve
 //     tudo o que a sessão já trouxe, não só o que está à vista.
 //
-// ⚠️ **Passar do bloco NÃO é trabalho deste módulo.** Medido (fases C e J): clique sintético e
-// PageDown não movem a janela nem geram requisição; quem move é a RODA (`Input.dispatchMouseEvent`
-// type `mouseWheel`), e ao chegar perto do fim do bloco o próprio ITS dispara um `action/710`
-// (`fragments=166,173;`) que acrescenta 28 linhas. Mas é o MESMO pedido que a via HTTP faz, ao
-// mesmo preço — 8,97 KB gzipados por 28 linhas nos dois canais (fase K) — só que em fatias de 28 e
-// a ~2,9 s por rodada: **~222 rodadas, ~11 min** para as 1617 linhas, contra 4 pedidos e **2,3 s**
-// do `its.lerGrid`. Rolar por roda para ler não vale: para a tabela INTEIRA, use `its.mjs`.
+// ⚠️ **Passar do bloco ROLANDO não é trabalho deste módulo.** Medido (fases C e J): clique
+// sintético e PageDown não movem a janela nem geram requisição; quem move é a RODA
+// (`Input.dispatchMouseEvent` type `mouseWheel`), e ao chegar perto do fim do bloco o próprio ITS
+// dispara um `action/710` (`fragments=166,173;`) que acrescenta 28 linhas. Mas é o MESMO pedido que
+// a via HTTP faz, ao mesmo preço — 8,97 KB gzipados por 28 linhas nos dois canais (fase K) — só que
+// em fatias de 28 e a ~2,9 s por rodada: **~222 rodadas, ~11 min** para as 1617 linhas.
+// Rolar por roda para ler não vale — **quem lê a tabela inteira é o `lerGridInteiro` (§ abaixo)**,
+// que posta o mesmo `action/710` DENTRO desta sessão e traz as 1617 em ~1,9 s.
 
 /**
  * PURO: a expressão JS que despeja o BLOCO de um grid — `{ cid, sid, colunas, total, celulas }`,
@@ -1285,8 +1286,8 @@ export function linhasDoBloco(celulas = {}, colunas = [], { de = 1, ate = null }
  *
  * Devolve `{ id, sid, colunas, total, bloco: { de, ate, n }, de, ate, linhas, parcial, editando, ms }`.
  * ⚠️ **`parcial: true` é a resposta normal, não erro:** significa que a tabela tem mais linhas do
- * que o bloco (`bloco.ate < total`) — as que faltam não estão no DOM e este módulo não vai buscá-las
- * (§ acima). Para a tabela inteira: `its.lerGrid` na via HTTP.
+ * que o bloco (`bloco.ate < total`) — as que faltam não estão no DOM e esta função não vai buscá-las
+ * (§ acima). Para a tabela inteira NESTA MESMA sessão: `lerGridInteiro`.
  * ⚠️ **`editando` ≠ `null` é aviso de dado NÃO PUBLICADO:** aquela célula está em campo de entrada
  * e o valor da leitura é o que está DIGITADO (`editando.digitado`), que pode divergir do que o
  * servidor tem (`editando.servidor`) até alguém publicá-lo (§ `escreverCelula`).
@@ -1306,6 +1307,156 @@ export async function lerGrid(sessao, alvo = null, { de = 1, ate = null } = {}) 
   return { id: g.id, sid: b.sid ?? g.sid, colunas: b.colunas, total, bloco,
     de: ini, ate: fim, linhas, parcial: bloco.ate !== null && bloco.ate < total,
     editando: b.editando ?? null, ms: Date.now() - t0 };
+}
+
+// ---------- o ALV INTEIRO, sem segunda sessão (item 74) ----------
+//
+// O `lerGrid` acima só alcança o bloco; o `its.lerGrid` alcança tudo mas **numa OUTRA sessão**, que
+// não vê o filtro, o drill-down nem a linha selecionada desta tela. Esta seção junta os dois: a
+// página **já tem** as duas peças do POST — o `action` (o token da sessão, no `<form
+// id="webguiform0">`) e o `moin` —, e o cookie de sessão viaja sozinho num `fetch` same-origin. Um
+// POST em `<action>batch/json` de DENTRO da página fala com a MESMA sessão que a tela.
+//
+// Medido no s4h 758/250 em 05/09/2026 (`sap-accelerate/work/POC_webgui_fragmento`, fases A-E,
+// lista do RSPARAM, 1617 × 5):
+//
+//   • **as três peças estão na página** (fase A): `action` com o token, `moin` como `var` global, e
+//     o `SAP_SESSIONID` é HttpOnly — não aparece no `document.cookie` e não precisa: o `fetch`
+//     same-origin o manda. O `Authorization` também sai sozinho (é o `Network.setExtraHTTPHeaders`
+//     do `abrirNavegador`). Nada de credencial nova, nada de segunda sessão.
+//   • **o `moin` NÃO é contador de sequência** (fases A e C): ele não muda entre a tela de seleção e
+//     a lista, e o POST que o PRÓPRIO framework manda ao rolar leva exatamente o mesmo valor que o
+//     `window.moin`. Não há nada a incrementar, e por isso não há o que dessincronizar.
+//   • **o POST traz a tabela inteira**: 1617/1617 linhas, 1 pedido, 11,9 MB de corpo em ~1,9 s de
+//     rede + ~48 ms de parse NA PÁGINA (só as células voltam pelo CDP). As 830 células que o bloco
+//     do DOM já tinha batem campo a campo com as do POST — 0 divergência (fase B).
+//   • **e a tela SOBREVIVE** (fase D, com positiva de controle antes e depois): rolando até o
+//     framework pedir sozinho, ele pediu antes (bloco 166→194) e continuou pedindo depois do nosso
+//     POST (194→222, em 3 rodadas); o round-trip `btn[3]` trocou a tela e trouxe a de seleção viva.
+//
+// ⚠️ **O header `moin` é OBRIGATÓRIO, e omiti-lo MATA A SESSÃO.** Medido na fase C: o mesmo POST
+// sem o header devolveu **HTTP 500 `Application Server Error`** (9,8 KB de HTML), e daí em diante a
+// sessão virou casca — a roda ainda POSTAVA (`fragments=194,203;`) mas o bloco não crescia mais, e
+// o `btn[3]` trocou a tela por uma VAZIA (título `""`, 0 campo, 0 grid). Não é "degradou": é a
+// sessão perdida, sem aviso na tela. Por isso o `lerGridInteiro` estoura ANTES de postar quando a
+// página não tem `moin` — falhar cedo é mais barato que ressuscitar sessão.
+
+/**
+ * PURO: a expressão JS que pede um FRAGMENTO do ALV **de dentro da página** e devolve as células já
+ * extraídas — `{ status, tipo, bytes, ms, celulas, nLinhas, ehDelta, inicio }`.
+ *
+ * É o mesmo batch do `batchFragmento` do `its.mjs` (`action/710` com `position`+`fragments`, mais o
+ * `get state/ur`), postado na URL do `action` da própria página. `de`/`ate` são 0-BASED (é o que o
+ * protocolo usa); o `lsMatrixRowIndex` que volta nas células é 1-based.
+ *
+ * ⚠️ O corpo tem MEGABYTES (11,9 MB para 1617 linhas) e **não atravessa o CDP**: a extração das
+ * células acontece aqui, na página, e só a matriz volta. Trazer o corpo seria trocar 48 ms por uma
+ * serialização de 11,9 MB no WebSocket.
+ */
+export const jsFragmentoDoGrid = (sid, cid, de, ate, { tetoMs = 180000 } = {}) => `(async () => {
+  const t0 = performance.now();
+  const form = document.getElementById('webguiform0');
+  if (!form) return { erro: 'a página não tem o form webguiform0 — não há para onde postar' };
+  if (typeof window.moin !== 'string' || !window.moin) return { erro: 'a página não tem o moin' };
+  const batch = [
+    { post: 'action/710/' + ${JSON.stringify(String(sid))}, content: 'position=${Number(de)}&fragments=${Number(de)},${Number(ate)};' },
+    { get: 'state/ur/' + ${JSON.stringify(String(sid))} },
+  ];
+  let res, corpo;
+  try {
+    res = await fetch(form.getAttribute('action') + 'batch/json?~RG_WEBGUI=X&', {
+      method: 'POST', credentials: 'same-origin', body: JSON.stringify(batch),
+      signal: AbortSignal.timeout(${Number(tetoMs)}),
+      headers: { 'Content-Type': 'application/json;charset=UTF-8', Accept: 'multipart/mixed', moin: window.moin },
+    });
+    corpo = await res.text();
+  } catch (e) { return { erro: 'o POST falhou — ' + String((e && e.message) || e) }; }
+  const ms = Math.round(performance.now() - t0);
+  const re = new RegExp('id="grid#' + ${JSON.stringify(String(cid))} + '#([0-9]+),([0-9]+)#if"[^>]*lsdata=\\'([^\\']*)\\'', 'g');
+  // ⚠ o corpo é XML CRU: o \`lsdata\` vem com entidade (\`&#39;\`, \`&lt;\`), que o DOM decodificaria
+  // sozinho e aqui ninguém decodifica. Sem isto 28 das 8085 células saíam com "&#39;" no valor.
+  const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+  const decodificar = (t) => t.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (s, e) => {
+    if (e.charAt(0) !== '#') return ENT[e.toLowerCase()] || s;
+    const hex = e.charAt(1) === 'x' || e.charAt(1) === 'X';
+    return String.fromCodePoint(parseInt(hex ? e.slice(2) : e.slice(1), hex ? 16 : 10));
+  });
+  const celulas = {};
+  let m;
+  while ((m = re.exec(corpo))) {
+    const c = Number(m[2]);
+    if (c < 1) continue;                                  // coluna 0 = caixa de seleção da linha
+    let d = null;
+    // decodificado primeiro; cru como reserva (entidade que vira aspa quebra o JSON) — o mesmo
+    // par do \`jsonDoAtributo\` do its.mjs
+    try { d = JSON.parse(decodificar(m[3])); } catch (x) { try { d = JSON.parse(m[3]); } catch (y) { d = null; } }
+    const v = d && Object.values(d).find((x) => x && typeof x === 'object' && 'value' in x);
+    (celulas[m[1]] = celulas[m[1]] || {})[c] = v ? String(v.value) : '';
+  }
+  const linhas = Object.keys(celulas).map(Number).sort((a, b) => a - b);
+  return { status: res.status, tipo: res.headers.get('content-type'), bytes: corpo.length, ms,
+    ehDelta: corpo.indexOf('<delta-update') >= 0, nLinhas: linhas.length,
+    primeira: linhas[0] ?? null, ultima: linhas[linhas.length - 1] ?? null,
+    inicio: corpo.slice(0, 240), celulas };
+})()`;
+
+/** PURO: o próximo `de` (1-based) que a faixa ainda não cobre, ou `null` quando ela está inteira. */
+export function faltaNaFaixaDoBloco(celulas = {}, de = 1, ate = 0) {
+  for (let i = de; i <= ate; i++) if (!celulas[String(i)]) return i;
+  return null;
+}
+
+/**
+ * Lê o ALV **INTEIRO** desta tela — o alcance do `its.lerGrid` sem abrir uma segunda sessão.
+ *
+ * O que muda em relação ao `lerGrid`: este posta. Ele pede ao servidor os fragmentos que faltam,
+ * pelo `action` e pelo `moin` que a própria página carrega, e por isso enxerga **esta** sessão —
+ * com o filtro aplicado, o drill-down aberto e a linha selecionada que uma sessão HTTP paralela não
+ * veria. Não mexe no DOM: a tela continua com o bloco que tinha (medido: carimbo igual, e o
+ * framework segue pedindo fragmento sozinho ao rolar).
+ *
+ * `alvo` escolhe o grid como no `lerGrid`; `de`/`ate` são 1-based e inclusivos (o 0-based do
+ * protocolo fica aqui dentro); sem `ate`, vai até o `total` que o grid declara. `lote` é o tamanho
+ * do pedido — o servidor devolve NO MÍNIMO uma janela, então o avanço é pelo que FALTA, não por
+ * aritmética.
+ *
+ * Devolve `{ id, sid, colunas, total, de, ate, linhas, pedidos, bytes, ms, truncado }`, com cada
+ * linha `{ _linha, <ColumnID>: valor, … }` — a mesma forma do `its.lerGrid` e do `lerGrid`.
+ *
+ * ⚠️ `truncado: true` = um pedido não trouxe nenhuma linha nova e o laço parou; a faixa devolvida
+ * está incompleta. É informação, não erro.
+ */
+export async function lerGridInteiro(sessao, alvo = null, { de = 1, ate = null, lote = 500, tetoMs = 180000 } = {}) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'lerGridInteiro');
+  const b = await avaliar(sessao, jsBlocoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: lerGridInteiro — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  const sid = b.sid ?? g.sid;
+  if (!sid) throw new Error(`webgui: lerGridInteiro — o grid ${g.id} não declara SID; sem ele não há como pedir fragmento`);
+  const total = Number(b.total || 0);
+  const ini = Math.max(1, Number(de) || 1);
+  const fim = Math.min(Number(ate ?? total) || 0, total);
+  const celulas = {};
+  let pedidos = 0, bytes = 0, truncado = false;
+  for (let proximo = ini; proximo !== null && proximo <= fim;) {
+    const antes = Object.keys(celulas).length;
+    const ultima = Math.min(proximo + lote - 1, fim);
+    const r = await avaliar(sessao, jsFragmentoDoGrid(sid, g.id, proximo - 1, ultima - 1, { tetoMs }));
+    if (r?.erro) throw new Error(`webgui: lerGridInteiro — ${r.erro}`);
+    pedidos++; bytes += Number(r.bytes || 0);
+    // ⚠ o 500 do POST sem `moin` MATA a sessão (§ acima) — qualquer resposta que não seja delta
+    // para o laço aqui, com o começo do corpo, em vez de virar "0 linha" sem causa.
+    if (r.status !== 200 || !r.ehDelta) {
+      throw new Error(`webgui: lerGridInteiro — o ITS respondeu ${r.status} ${r.tipo} (${r.bytes} B), não um delta: ${String(r.inicio).replace(/\s+/g, ' ').slice(0, 160)}`);
+    }
+    for (const [linha, cels] of Object.entries(r.celulas || {})) if (!celulas[linha]) celulas[linha] = cels;
+    if (Object.keys(celulas).length === antes) { truncado = true; break; }
+    proximo = faltaNaFaixaDoBloco(celulas, ini, fim);
+  }
+  const linhas = linhasDoBloco(celulas, b.colunas ?? [], { de: ini, ate: fim });
+  detalhe(`webgui: lerGridInteiro ${g.id} — ${linhas.length} linha(s) de ${total} em ${pedidos} pedido(s), ${bytes} B, na sessão da tela`);
+  return { id: g.id, sid, colunas: b.colunas ?? [], total, de: ini, ate: fim, linhas,
+    pedidos, bytes, ms: Date.now() - t0, truncado };
 }
 
 // ---------- ESCREVER numa célula do ALV (item 47) ----------
