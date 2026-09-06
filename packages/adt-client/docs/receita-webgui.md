@@ -3172,6 +3172,88 @@ aí `selecionadas`/`total` saem `null`, e não `0`.
 ⚠ **O toggle marca as COLUNAS junto** (num ALV `selectionMode.type: "rowscols"`) — e um `ctrl`+
 clique numa caixa qualquer devolve `cols=0`. Quem quer só linhas usa `selecionarLinhas`.
 
+## Selecionar COLUNA, CÉLULA e BLOCO — e o que o ABAP vê de cada um (item 120)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 120; evidência em
+`sap-accelerate/work/POC_webgui_grid_sel/medicoes/item120-coluna-bloco.md`, fases L–P). Fecha os
+dois gestos que o item 76 deixou por exercitar. Laboratório `ZJBV_ALV47_EDIT` com o `FC02`, que
+ganhou nesta rodada o parâmetro `P_SELMOD` e o fcode `FC04` (§ no fim da medição).
+
+```js
+import { selecionarColunas, selecionarCelulas, selecionarBloco, lerSelecao } from './webgui.mjs';
+
+await selecionarColunas(s, null, ['NOME']);                  // uma coluna
+await selecionarColunas(s, null, [1, 3]);                    // duas (ctrl no resto)
+await selecionarColunas(s, null, [1, 3], { faixa: true });   // 1..3 de uma vez (shift)
+await comandar(s, 'FC02');       // → cols=3:ID,NOME,QTD
+
+await selecionarCelulas(s, null, [[1, 'ID'], [2, 'NOME'], [3, 'QTD']]);
+// { celulas: […3], correnteForaDoAbap: { linha: 3, coluna: 3 }, pendente: true }
+await comandar(s, 'FC02');       // → cells=2 — a CORRENTE não entra (leia abaixo)
+
+await selecionarBloco(s, null, { de: [1, 'ID'], ate: [3, 'NOME'] });
+// { celulas: […6], visivel: true } — e o ABAP NÃO o vê (leia abaixo)
+```
+
+`lerSelecao` passou a devolver as três marcas de uma vez: `linhas`, `colunas` (+ `nomes`) e
+`celulas`. Cada uma sai da CLASSE do elemento, não do `lsdata`:
+
+| o quê | elemento | classe de MARCADO |
+|---|---|---|
+| linha | `<td subct="SC">` da coluna 0 | `urSTRowSelIcon` |
+| **coluna** | `<th id="grid#<cid>#0,<c>">` | `urST3HSel urST4LbHdrSelBg` (↔ `urST3HUnsel`) |
+| **célula** | `<td id="grid#<cid>#<r>,<c>">` | `urST4Sel2` |
+
+### A COLUNA é o mesmo gesto da linha, e o ABAP a vê inteira
+
+Clique simples SUBSTITUI, `ctrl` acrescenta, `shift` fecha a faixa — **0 requisições** nos três. A
+seleção viaja no round-trip seguinte como `action/46 columns=`:
+
+| gesto | o batch levou | **`get_selected_columns` respondeu** |
+|---|---|---|
+| clique na 2 | `columns=;2;` | `cols=1:NOME` |
+| clique na 1 + `ctrl` na 3 | `columns=;1;3;` | `cols=2:ID,QTD` |
+| clique na 1 + `shift` na 3 | `columns=;1-3;` | `cols=3:ID,NOME,QTD` |
+
+⚠ **O `action/46` compacta faixa com `-`**, como o `action/47`: `interpretarSelectedRows` serve para
+os dois. ⚠ **Selecionar coluna não seleciona linha** (`rows=0`) — o contrário não vale, o toggle do
+`selecionarTudo` marca as colunas junto.
+
+⚠ **Correção do item 77:** a marca da coluna **sobrevive** a um round-trip de fcode (dois `FC02`
+seguidos e o `cols=1:NOME` se repetiu). Quem a apaga é o REDESENHO do grid — para `ordenarGrid` e
+`filtrarGrid` a regra do 77 continua valendo, e é por isso que eles marcam a coluna eles mesmos.
+
+### A CÉLULA depende do `sel_mode` do LAYOUT — sem ele o gesto é decorativo
+
+```
+sem sel_mode   →  selectionMode {type: "rowscols", cells: 0}   get_selected_cells = a corrente, só
+sel_mode = 'D' →  selectionMode {type: "free",     cells: 2}   get_selected_cells = o action/48
+```
+
+Por isso `selecionarCelulas` **estoura** quando `selectionMode.cells` é 0, dizendo o modo e
+apontando o `is_layout-sel_mode`: pintar sem viajar seria a pior falha silenciosa possível.
+
+⚠ **A célula CORRENTE fica de fora do `cells=`.** `ctrl`+clique em 3 células levou
+`action/48 cells=;1,1;2,2;` e a terceira foi só no `action/53` — **o ABAP viu 2 de 3**. A última
+clicada é sempre a corrente; `correnteForaDoAbap` diz qual é. Quem precisa das N põe uma célula
+descartável no fim da lista, ou lê a corrente por `get_current_cell`.
+
+### ⚠ O BLOCO é gesto VISUAL — o `get_selected_cells` NÃO o vê
+
+O bloco viaja como `action/50` (`top_left`/`bottom_right`/`reference`), e aquele método lê o
+`action/48`, que sai **vazio**. Provado três vezes: com 6 células pintadas o ABAP respondeu
+`cells=1` (a corrente), e dois round-trips seguidos não mudaram nada.
+
+| gesto | pinta | o batch leva | **o ABAP vê** |
+|---|---|---|---|
+| `ctrl`+clique em N células | as N | `48 cells=;…;` | **N−1** (sem a corrente) |
+| `shift`+clique nas pontas | o retângulo | `50 top_left/bottom_right` | **`cells=1`** |
+| ARRASTAR | o retângulo, **só se `cells != 0`** | `50` | **`cells=1`** |
+
+`selecionarBloco` usa `shift`+clique de propósito: **o arrasto só pinta o retângulo com `cells !=
+0`**; em `rowscols` ele marca uma célula só. O bloco continua valendo para o que é do CLIENTE (é
+ele que o copiar/colar do grid usa) — quem precisa das células no ABAP usa `selecionarCelulas`.
+
 ## Ordenar e filtrar o ALV — marcar a coluna e acionar a barra (item 77)
 
 **Medido no s4h 758/250 em 2026-09-05/06** (fila `adt-client`, item 77; evidência em
@@ -3205,9 +3287,14 @@ await lerColunas(s);   // sem tocar a rede
 
 O POST do acionamento leva `action/46 columns=;2;` — irmão exato do `action/47 rows=;1;` da seleção
 de linha (item 76), e a mesma disciplina: **o gesto de cliente só vale se viajar junto do próximo
-round-trip.** A marca do cabeçalho não sobrevive a um (medido: depois do `SORT_ASC` o `<th>` já
+round-trip.** A marca do cabeçalho não sobrevive ao SORT (medido: depois do `SORT_ASC` o `<th>` já
 voltou a `urST3HUnsel`). Por isso `ordenarGrid` e `filtrarGrid` marcam a coluna eles mesmos, e
 `marcarColuna` devolve `pendente: true` — quem a chama sozinha tem de emendar o gesto seguinte.
+
+⚠ **Precisado no item 120:** quem apaga a marca é o **redesenho** do grid, não o round-trip. Num
+fcode que só lê ela sobrevive — dois `FC02` seguidos e o `get_selected_columns` respondeu
+`cols=1:NOME` as duas vezes. Para ordenar e filtrar a regra acima continua exata; para uma seleção
+de coluna que você quer que o ABAP leia, o gesto é `selecionarColunas` (§ item 120).
 
 ### O botão da barra é o SID, nunca o id do DOM
 

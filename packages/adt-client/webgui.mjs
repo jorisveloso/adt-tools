@@ -2460,9 +2460,17 @@ export function interpretarSelectedRows(texto) {
 }
 
 /**
- * PURO: a expressão JS que lê a seleção do grid — `{ cid, pintadas, caixas, publicado,
- * celulaCorrente, … }`. `pintadas` sai da CLASSE da caixa (o estado do cliente, que é a verdade);
- * `publicado` sai do `lsdata` (o do servidor, atrasado).
+ * PURO: a expressão JS que lê a seleção do grid — `{ cid, pintadas, caixas, colunasMarcadas,
+ * celulasMarcadas, publicado, celulaCorrente, … }`. Tudo que é "marcado" sai da CLASSE do elemento
+ * (o estado do cliente, que é a verdade); `publicado` sai do `lsdata` (o do servidor, atrasado).
+ *
+ * As três marcas, e cada uma tem a sua classe (medidas nos itens 76, 119 e 120):
+ *
+ * | o quê | elemento | classe de MARCADO |
+ * |---|---|---|
+ * | linha | `<td subct="SC">` da coluna 0, no `<div role="gridcell">` | `urSTRowSelIcon` |
+ * | coluna | `<th id="grid#<cid>#0,<c>">` | `urST3HSel` (↔ `urST3HUnsel`) |
+ * | célula | `<td id="grid#<cid>#<r>,<c>">` | `urST4Sel2` |
  */
 export const jsSelecaoDoGrid = (cid) => `(() => {
   const p = (s) => { try { return s ? JSON.parse(s) : null; } catch (x) { return null; } };
@@ -2489,7 +2497,29 @@ export const jsSelecaoDoGrid = (cid) => `(() => {
     ? { existe: true, marcado: /urSTSelColToggleSelIcon|urST4LbSelIcon/.test(tg.className),
         title: tg.title || null, cls: tg.className || null }
     : { existe: false, marcado: null, title: null, cls: null };
-  return { cid, pintadas, caixas, toggle,
+  // COLUNAS e CÉLULAS (item 120) — as duas moram em [id^="grid#<cid>#"], distinguidas pela tag.
+  const colunasMarcadas = [];
+  const cabecalhos = [];
+  const celulasMarcadas = [];
+  for (const el of document.querySelectorAll('[id^="grid#' + cid + '#"]')) {
+    const q = el.id.split('#');
+    if (q.length !== 3 || q[1] !== cid) continue;
+    const rc = q[2].split(',');
+    if (rc.length !== 2) continue;
+    const r = Number(rc[0]), c = Number(rc[1]);
+    if (!Number.isFinite(r) || !Number.isFinite(c) || c < 1) continue;
+    if (el.tagName === 'TH' && r === 0) {
+      cabecalhos.push(c);
+      if (/urST3HSel/.test(el.className)) colunasMarcadas.push(c);
+    } else if (el.tagName === 'TD' && r >= 1 && /urST4Sel2/.test(el.className)) {
+      celulasMarcadas.push({ linha: r, coluna: c });
+    }
+  }
+  colunasMarcadas.sort((a, b) => a - b);
+  cabecalhos.sort((a, b) => a - b);
+  celulasMarcadas.sort((a, b) => (a.linha - b.linha) || (a.coluna - b.coluna));
+  return { cid, pintadas, caixas, toggle, colunasMarcadas, cabecalhos, celulasMarcadas,
+    nomesDasColunas: sid.ColumnIDs || [],
     publicado: { linhas: sid.selectedRows ?? null, celulas: sid.selectedCells ?? null,
       colunas: sid.selectedColumns ?? null, bloco: sid.selectedBlock ?? null },
     celulaCorrente: { linha: sid.currentCellRow ?? null, coluna: sid.currentCellColumn ?? null },
@@ -2503,13 +2533,17 @@ export const jsSelecaoDoGrid = (cid) => `(() => {
  * ```js
  * const sel = await lerSelecao(s);
  * sel.linhas       // [1, 3] — as linhas pintadas AGORA (1-based, absolutas)
+ * sel.colunas      // [1, 3] — as colunas marcadas no cabeçalho (item 120)
+ * sel.nomes        // ['ID', 'QTD'] — as mesmas colunas pelos ColumnIDs
+ * sel.celulas      // [{ linha: 1, coluna: 1 }, …] — as células marcadas
  * sel.publicado    // { linhas: [2], texto: ';2;' } — o que o SERVIDOR sabe, um round-trip atrás
  * sel.defasado     // true: o servidor ainda não viu o que está pintado
  * sel.toggle       // { marcado, selecionadas: 1617, total: 1617, todas: true } — o cabeçalho
  * ```
  *
  * `alvo` escolhe o grid como em `lerGrid` (índice, `{ id }`, `{ sid }`). Devolve
- * `{ id, sid, linhas, publicado, defasado, toggle, celulaCorrente, bloco, total, modo, ms }`.
+ * `{ id, sid, linhas, colunas, nomes, celulas, publicado, defasado, toggle, celulaCorrente,
+ * bloco, total, modo, ms }`.
  *
  * ⚠️ **Com "tudo" marcado numa lista grande, `linhas` SUBCONTA** — quem sabe o número inteiro é o
  * `toggle`. Medido no RSPARAM (item 119): depois do clique no cabeçalho, `linhas` trouxe as 166
@@ -2530,12 +2564,17 @@ export async function lerSelecao(sessao, alvo = null) {
   const publicadas = interpretarSelectedRows(b.publicado?.linhas);
   const linhas = b.pintadas ?? [];
   const caixas = b.caixas ?? [];
+  const colunas = b.colunasMarcadas ?? [];
+  const nomesTodos = b.nomesDasColunas ?? [];
   const defasado = linhas.join(',') !== publicadas.join(',');
   detalhe(`webgui: lerSelecao ${g.id} — ${linhas.length} linha(s) pintada(s) [${linhas.join(', ')}], ` +
-    `o servidor sabe [${publicadas.join(', ')}]${defasado ? ' (DEFASADO)' : ''}`);
-  return { id: g.id, sid: g.sid, linhas,
+    `o servidor sabe [${publicadas.join(', ')}]${defasado ? ' (DEFASADO)' : ''}` +
+    (colunas.length ? `; coluna(s) [${colunas.join(', ')}]` : ''));
+  return { id: g.id, sid: g.sid, linhas, colunas,
+    nomes: colunas.map((c) => nomesTodos[c - 1] ?? null), celulas: b.celulasMarcadas ?? [],
     publicado: { linhas: publicadas, texto: b.publicado?.linhas ?? null, celulas: b.publicado?.celulas ?? null,
-      colunas: b.publicado?.colunas ?? null, bloco: b.publicado?.bloco ?? null },
+      colunas: interpretarSelectedRows(b.publicado?.colunas), textoColunas: b.publicado?.colunas ?? null,
+      bloco: b.publicado?.bloco ?? null },
     defasado, toggle: normalizarToggle(b.toggle), celulaCorrente: b.celulaCorrente ?? null,
     bloco: { de: caixas[0] ?? null, ate: caixas[caixas.length - 1] ?? null, n: caixas.length },
     total: b.total ?? 0, modo: b.modo ?? null, ms: Date.now() - t0 };
@@ -2838,6 +2877,268 @@ export async function limparSelecao(sessao, alvo = null, { tetoMs = 3000 } = {})
 }
 
 
+// ---------- selecionar COLUNA, CÉLULA e BLOCO (item 120) ----------
+//
+// O item 76 deixou dois gestos por exercitar: a COLUNA (`get_selected_columns` respondeu 0 em todos
+// os casos, porque ninguém a selecionou) e o BLOCO de células. Medido no s4h 758/250 em 06/09/2026
+// (`POC_webgui_grid_sel`, fases L, M, N e O; laboratório `ZJBV_ALV47_EDIT` com o FC02):
+//
+//   • **A COLUNA é o MESMO gesto da linha, e vale a prova inteira.** Clicar o `<th>` de dado
+//     (`grid#<cid>#0,<c>`) marca a coluna com **0 requisições**; clique simples SUBSTITUI, `ctrl`
+//     acrescenta e `shift` fecha a faixa — os três, como na caixa da linha. A marca está na CLASSE
+//     do `<th>`: `urST3HUnsel` ↔ `urST3HSel urST4LbHdrSelBg`.
+//
+//     **A PROVA:** a seleção viaja como `action/46 columns=` no round-trip seguinte e o
+//     `get_selected_columns` a devolve — `;2;` → `cols=1:NOME`, `;1;3;` → `cols=2:ID,QTD`,
+//     `;1-3;` → `cols=3:ID,NOME,QTD`. ⚠️ O `action/46` **compacta faixa contígua com `-`**, igual
+//     ao `action/47` das linhas: `interpretarSelectedRows` serve para os dois.
+//
+//   • ⚠️ **Selecionar coluna NÃO seleciona linha** (`rows=0` nos três casos), e ela SOBREVIVE ao
+//     round-trip: com a coluna 2 marcada, dois `FC02` seguidos responderam `cols=1:NOME` e o `<th>`
+//     continuou `urST3HSel` (fase M7). O item 77 anotou que "a marca da coluna se perde a cada
+//     round-trip" — **o que ele mediu foi o round-trip do SORT/FILTER, que redesenha o grid**; um
+//     fcode que só lê não a apaga. Por isso `ordenarGrid` e `filtrarGrid` continuam marcando a
+//     coluna eles mesmos: para eles a anotação do 77 vale.
+//
+//   • **A CÉLULA depende do `sel_mode` do ALV, e o laboratório não tinha nenhum.** Com o layout do
+//     item 47 (`edit = 'X'` e mais nada), o `selectionMode` publicado é
+//     `{type: 'rowscols', cells: 0}` e o `get_selected_cells` devolve só a célula CORRENTE, faça-se
+//     o gesto que se fizer. Com `sel_mode = 'D'` ele vira `{type: 'free', cells: 2}` — e aí:
+//
+//     | gesto | pinta na tela | o batch leva | **o ABAP vê** |
+//     |---|---|---|---|
+//     | `ctrl`+clique em 3 células | as 3 (`urST4Sel2`) | `action/48 cells=;1,1;2,2;` | **`cells=2`** |
+//     | `shift`+clique (bloco 3×2) | as 6 | `action/50 top_left/bottom_right` + `48 cells=;` | `cells=1` |
+//     | ARRASTAR (bloco 3×2) | as 6 | `action/50` | `cells=1` |
+//
+//   • ⚠️ **O BLOCO não chega ao `get_selected_cells`.** Ele viaja no `action/50`
+//     (`top_left/bottom_right/reference`), que aquele método não lê — o `cells=` do `action/48` sai
+//     VAZIO. Provado três vezes (fase N2b, O2 e O3): com 6 células pintadas o ABAP respondeu
+//     `cells=1`, a célula corrente. Dois round-trips seguidos não mudaram nada. **Bloco é gesto
+//     VISUAL** (e a base do copiar/colar do cliente, item 79); quem precisa das células no ABAP usa
+//     `selecionarCelulas`, que é `ctrl`+clique.
+//
+//   • ⚠️ **A célula CORRENTE fica de fora do `cells=`.** No `ctrl`+clique em (1,1), (2,2) e (3,3), o
+//     batch levou `cells=;1,1;2,2;` e a (3,3) foi só no `action/53` — o ABAP viu **2 de 3**. A
+//     última clicada é sempre a corrente. Por isso `selecionarCelulas` devolve `correnteForaDoAbap`
+//     dizendo qual célula o `get_selected_cells` não vai enxergar.
+//
+//   • ⚠️ **O ARRASTO só pega com `cells != 0`**: em `rowscols` (fase M1) ele pintou uma célula só;
+//     em `free` (fase N4) pintou o retângulo inteiro. O `shift`+clique pinta o bloco nos DOIS modos
+//     — é o gesto que `selecionarBloco` usa, por ser o que não depende do modo.
+
+/** PURO: o id do `<td>` de uma célula de dado — sem o `#if` do campo que mora dentro dela. */
+export const idDaCelula = (cid, linha, coluna) => `grid#${cid}#${Number(linha)},${Number(coluna)}`;
+
+/** PURO: a célula vira `{ linha, coluna }`. Aceita `{ linha, coluna }`, o par `[linha, coluna]` e
+ * o nome da coluna no lugar do número (`[2, 'NOME']`), que `colunas` resolve. */
+export function normalizarCelula(c, colunas = [], rotulo = 'célula') {
+  const par = Array.isArray(c) ? { linha: c[0], coluna: c[1] } : (c ?? {});
+  const linha = Number(par.linha);
+  if (!Number.isInteger(linha) || linha < 1) {
+    throw new Error(`webgui: ${rotulo} ${JSON.stringify(c)} inválida — a linha é 1-based (a coluna 0 é a caixa de seleção)`);
+  }
+  return { linha, coluna: indiceDaColuna(colunas, par.coluna) };
+}
+
+/** O despejo da seleção, com o grid escolhido e as recusas que todo gesto de seleção compartilha. */
+async function gridDaSelecao(sessao, alvo, rotulo) {
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, rotulo);
+  const b = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: ${rotulo} — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  return { g, b };
+}
+
+/**
+ * SELECIONA colunas do ALV pelo cabeçalho — o par exato do `selecionarLinhas`.
+ *
+ * ```js
+ * await selecionarColunas(s, null, ['NOME']);                     // só a NOME
+ * await selecionarColunas(s, null, [1, 3]);                       // a 1 e a 3 (ctrl no resto)
+ * await selecionarColunas(s, null, [1, 3], { faixa: true });      // 1..3 de uma vez (shift)
+ * await selecionarColunas(s, null, ['QTD'], { acrescentar: true });
+ * await comandar(s, 'FC02');    // e AGORA o get_selected_columns as vê
+ * ```
+ *
+ * Cada coluna é o número 1-based **ou** o nome do `ColumnIDs` (`'NOME'`), como em `escreverCelula`.
+ * Devolve `{ id, sid, colunas, nomes, pedidas, gestos, pendente: true, ms }`.
+ *
+ * ⚠️ **NÃO manda nada ao servidor** (`pendente: true`), como `selecionarLinhas`: a seleção viaja
+ * como `action/46 columns=;1-3;` no próximo round-trip.
+ *
+ * ⚠️ **Não mexe na seleção de LINHAS** (medido: `rows=0` com as colunas marcadas). O caminho
+ * inverso não vale — o toggle do cabeçalho de `selecionarTudo` marca as colunas junto (item 119).
+ *
+ * ⚠️ A marca sobrevive a um round-trip de fcode, mas **não à ORDENAÇÃO nem ao FILTRO**, que
+ * redesenham o grid: `ordenarGrid`/`filtrarGrid` marcam a coluna eles mesmos.
+ */
+export async function selecionarColunas(sessao, alvo = null, colunas = [], { acrescentar = false, faixa = false } = {}) {
+  const t0 = Date.now();
+  const { g, b } = await gridDaSelecao(sessao, alvo, 'selecionarColunas');
+  const nomesTodos = b.nomesDasColunas ?? [];
+  const pedidas = [...new Set((colunas ?? []).map((c) => indiceDaColuna(nomesTodos, c)))].sort((x, y) => x - y);
+  if (!pedidas.length) throw new Error('webgui: selecionarColunas — nenhuma coluna pedida');
+  if (faixa && pedidas.length !== 2) {
+    throw new Error(`webgui: selecionarColunas — com { faixa: true } são exatamente 2 colunas (as pontas), e vieram ${pedidas.length}`);
+  }
+  const cabecalhos = new Set(b.cabecalhos ?? []);
+  const fora = pedidas.filter((c) => !cabecalhos.has(c));
+  if (fora.length) {
+    const h = b.cabecalhos ?? [];
+    throw new Error(`webgui: selecionarColunas — a(s) coluna(s) ${fora.join(', ')} não tem cabeçalho na tela ` +
+      `(a tela tem ${h.length}: ${h.join(', ') || 'nenhuma'}; o grid declara ${nomesTodos.length}: ${nomesTodos.join(', ') || 'nenhuma'}). ` +
+      'Coluna rolada para fora na horizontal não tem `<th>` — role até ela antes.');
+  }
+  const gestos = [];
+  for (let i = 0; i < pedidas.length; i++) {
+    const c = pedidas[i];
+    const id = idDoCabecalho(g.id, c);
+    const p = await apontar(sessao, { id }, { descer: false });
+    if (!p || p.x == null) throw new Error(`webgui: selecionarColunas — o cabeçalho ${id} não está apontável na tela`);
+    const ultimo = i === pedidas.length - 1;
+    const modificadores = (i === 0 && !acrescentar) ? 0 : (faixa && ultimo ? MOD.shift : MOD.ctrl);
+    await clique(sessao, p, { modificadores });
+    gestos.push({ coluna: c, modificadores });
+    await espera(250);
+  }
+  const d = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  const marcadas = d?.colunasMarcadas ?? [];
+  const esperadas = faixa ? Array.from({ length: pedidas[1] - pedidas[0] + 1 }, (_, k) => pedidas[0] + k) : pedidas;
+  if (!acrescentar && marcadas.join(',') !== esperadas.join(',')) {
+    throw new Error(`webgui: selecionarColunas — pedi [${esperadas.join(', ')}] e o cabeçalho ficou com ` +
+      `[${marcadas.join(', ')}] marcada(s). O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)} — ` +
+      'um ALV com `columns: 0` não seleciona coluna nenhuma.');
+  }
+  const nomes = marcadas.map((c) => nomesTodos[c - 1] ?? null);
+  detalhe(`webgui: selecionarColunas ${g.id} — [${marcadas.join(', ')}] (${nomes.join(', ')}) marcada(s) ` +
+    `com ${gestos.length} clique(s), PENDENTE de round-trip`);
+  return { id: g.id, sid: g.sid, colunas: marcadas, nomes, pedidas, gestos, pendente: true, ms: Date.now() - t0 };
+}
+
+/**
+ * SELECIONA células soltas com `ctrl`+clique — o único gesto de célula que o ABAP enxerga.
+ *
+ * ```js
+ * await selecionarCelulas(s, null, [[1, 'ID'], [2, 'NOME'], [3, 'QTD']]);
+ * await comandar(s, 'FC02');   // get_selected_cells → 1/ID e 2/NOME … e NÃO a 3/QTD
+ * ```
+ *
+ * Cada célula é `{ linha, coluna }` ou o par `[linha, coluna]`, com a coluna em número ou nome.
+ * Devolve `{ id, sid, celulas, pedidas, correnteForaDoAbap, gestos, pendente: true, ms }`.
+ *
+ * ⚠️ **A ÚLTIMA célula da lista vira a célula CORRENTE, e o `get_selected_cells` NÃO a devolve** —
+ * ela sai no `action/53`, não no `action/48`. Medido: `ctrl`+clique em 3 células levou
+ * `cells=;1,1;2,2;` e o ABAP respondeu `cells=2`. `correnteForaDoAbap` diz qual é. Quem precisa
+ * das N no ABAP põe uma célula descartável no fim da lista, ou lê a corrente por
+ * `get_current_cell`.
+ *
+ * ⚠️ **Exige `sel_mode` de célula no ALV.** Sem ele o `selectionMode` publica `cells: 0` e o
+ * `get_selected_cells` devolve só a corrente, faça-se o gesto que se fizer — esta função ESTOURA
+ * nesse caso, dizendo o modo, em vez de deixar você acreditar numa seleção que não viaja.
+ *
+ * ⚠️ **Não manda nada ao servidor** (`pendente: true`).
+ */
+export async function selecionarCelulas(sessao, alvo = null, celulas = []) {
+  const t0 = Date.now();
+  const { g, b } = await gridDaSelecao(sessao, alvo, 'selecionarCelulas');
+  const nomesTodos = b.nomesDasColunas ?? [];
+  const pedidas = (celulas ?? []).map((c) => normalizarCelula(c, nomesTodos, 'selecionarCelulas —'));
+  if (!pedidas.length) throw new Error('webgui: selecionarCelulas — nenhuma célula pedida');
+  if (!(b.modo?.cells > 0)) {
+    throw new Error(`webgui: selecionarCelulas — este ALV não seleciona células: o selectionMode dele é ` +
+      `${JSON.stringify(b.modo ?? null)} (cells=${b.modo?.cells ?? '?'}). O gesto até PINTA na tela, mas o ` +
+      '`get_selected_cells` do ABAP devolve só a célula corrente — quem manda é o `sel_mode` do layout ' +
+      "(`is_layout-sel_mode = 'D'`). Para linha ou coluna use `selecionarLinhas`/`selecionarColunas`.");
+  }
+  const gestos = [];
+  for (let i = 0; i < pedidas.length; i++) {
+    const { linha, coluna } = pedidas[i];
+    const id = idDaCelula(g.id, linha, coluna);
+    const p = await apontar(sessao, { id }, { descer: false });
+    if (!p || p.x == null) {
+      throw new Error(`webgui: selecionarCelulas — a célula ${id} não está apontável na tela. ` +
+        'Linha fora do bloco carregado é navegação: `posicionarGrid(sessao, alvo, linha)`.');
+    }
+    await clique(sessao, p, { modificadores: i === 0 ? 0 : MOD.ctrl });
+    gestos.push({ linha, coluna, modificadores: i === 0 ? 0 : MOD.ctrl });
+    await espera(250);
+  }
+  const d = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  const marcadas = d?.celulasMarcadas ?? [];
+  const chave = (c) => `${c.linha},${c.coluna}`;
+  const faltando = pedidas.filter((c) => !marcadas.some((m) => chave(m) === chave(c)));
+  if (faltando.length) {
+    throw new Error(`webgui: selecionarCelulas — pedi ${pedidas.map(chave).join(' ')} e a tela ficou com ` +
+      `${marcadas.map(chave).join(' ') || '(nenhuma)'} — não pegou ${faltando.map(chave).join(' ')}. ` +
+      `O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)}.`);
+  }
+  const corrente = pedidas[pedidas.length - 1];
+  detalhe(`webgui: selecionarCelulas ${g.id} — ${marcadas.length} célula(s) marcada(s), e a ` +
+    `${chave(corrente)} é a CORRENTE (o get_selected_cells não a devolve), PENDENTE de round-trip`);
+  return { id: g.id, sid: g.sid, celulas: marcadas, pedidas, correnteForaDoAbap: corrente,
+    gestos, pendente: true, ms: Date.now() - t0 };
+}
+
+/**
+ * SELECIONA um BLOCO retangular de células com `shift`+clique nas duas pontas.
+ *
+ * ```js
+ * const r = await selecionarBloco(s, null, { de: [1, 'ID'], ate: [3, 'NOME'] });
+ * r.celulas   // as 6 células do retângulo, pintadas na tela
+ * r.visivel   // true — e é SÓ isso que ele é (leia o aviso)
+ * ```
+ *
+ * `de` e `ate` são as pontas (`{ linha, coluna }` ou `[linha, coluna]`, coluna em número ou nome);
+ * a ordem não importa. Devolve `{ id, sid, celulas, de, ate, visivel: true, pendente: true, ms }`.
+ *
+ * ⚠️ **O `get_selected_cells` do ABAP NÃO vê este bloco.** Ele viaja como `action/50`
+ * (`top_left`/`bottom_right`/`reference`), e aquele método lê o `action/48`, que sai VAZIO —
+ * medido três vezes: com as 6 células pintadas o ABAP respondeu `cells=1`, a célula corrente, e
+ * dois round-trips seguidos não mudaram nada. Por isso o retorno diz `visivel`, e não `pendente`
+ * de uma seleção que o servidor vá enxergar como bloco. **Quem precisa das células no ABAP usa
+ * `selecionarCelulas`** (`ctrl`+clique, `action/48`).
+ *
+ * O bloco continua valendo para o que é do CLIENTE: é ele que o copiar/colar do grid usa.
+ *
+ * ⚠️ `shift`+clique é de propósito, e não o arrasto: o arrasto só pinta o retângulo com o ALV em
+ * `sel_mode` de célula (`selectionMode.cells != 0`); em `rowscols` ele marca uma célula só.
+ */
+export async function selecionarBloco(sessao, alvo = null, { de, ate } = {}) {
+  const t0 = Date.now();
+  const { g, b } = await gridDaSelecao(sessao, alvo, 'selecionarBloco');
+  const nomesTodos = b.nomesDasColunas ?? [];
+  if (!de || !ate) throw new Error('webgui: selecionarBloco — as duas pontas são obrigatórias: { de: [linha, coluna], ate: [linha, coluna] }');
+  const p1 = normalizarCelula(de, nomesTodos, 'selecionarBloco — `de`');
+  const p2 = normalizarCelula(ate, nomesTodos, 'selecionarBloco — `ate`');
+  const cantos = [p1, p2];
+  const gestos = [];
+  for (let i = 0; i < cantos.length; i++) {
+    const { linha, coluna } = cantos[i];
+    const id = idDaCelula(g.id, linha, coluna);
+    const p = await apontar(sessao, { id }, { descer: false });
+    if (!p || p.x == null) {
+      throw new Error(`webgui: selecionarBloco — a ponta ${id} não está apontável na tela. ` +
+        'Linha fora do bloco carregado é navegação: `posicionarGrid(sessao, alvo, linha)`.');
+    }
+    await clique(sessao, p, { modificadores: i === 0 ? 0 : MOD.shift });
+    gestos.push({ linha, coluna, modificadores: i === 0 ? 0 : MOD.shift });
+    await espera(i === 0 ? 250 : 600);
+  }
+  const d = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  const marcadas = d?.celulasMarcadas ?? [];
+  const esperadas = (Math.abs(p2.linha - p1.linha) + 1) * (Math.abs(p2.coluna - p1.coluna) + 1);
+  if (marcadas.length !== esperadas) {
+    throw new Error(`webgui: selecionarBloco — o retângulo (${p1.linha},${p1.coluna})..(${p2.linha},${p2.coluna}) ` +
+      `tem ${esperadas} célula(s) e a tela pintou ${marcadas.length}. ` +
+      `O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)}.`);
+  }
+  detalhe(`webgui: selecionarBloco ${g.id} — ${marcadas.length} célula(s) pintada(s) de ` +
+    `(${p1.linha},${p1.coluna}) a (${p2.linha},${p2.coluna}); VISUAL — o get_selected_cells não o vê`);
+  return { id: g.id, sid: g.sid, celulas: marcadas, de: p1, ate: p2, visivel: true,
+    gestos, pendente: true, ms: Date.now() - t0 };
+}
+
+
 // ---------- ORDENAR e FILTRAR o ALV (item 77) ----------
 //
 // Os dois gestos que faltavam do ALV, e eles são o MESMO gesto em duas metades: **marcar a coluna
@@ -2851,7 +3152,10 @@ export async function limparSelecao(sessao, alvo = null, { tetoMs = 3000 } = {})
 //   • **sem coluna marcada o botão de sort abre o DIÁLOGO "Ordenação"** (`SAPLSALV_CUL_…`), em vez
 //     de ordenar. ⚠️ E ele NÃO é `wnd[1]`: o `lerTela` continua dizendo `janela.principal: true`,
 //     então um clique seguinte cai ATRÁS do modal e sai calado (foi o que cegou a fase B inteira).
-//   • **a marca da coluna se perde a cada round-trip** — marcar e ordenar têm de ser o mesmo gesto.
+//   • **a marca da coluna se perde a cada round-trip DE SORT/FILTER** — marcar e ordenar têm de ser
+//     o mesmo gesto. ⚠️ Precisado no item 120: quem apaga a marca é o REDESENHO do grid, não o
+//     round-trip; num fcode que só lê, ela sobrevive (dois `FC02` seguidos e a coluna continuou
+//     marcada no DOM e no `get_selected_columns`). Para ordenar e filtrar a regra continua valendo.
 //   • **ordenar REORDENA A TABELA INTERNA DO ABAP**: com o ALV em NOME desc, `gt_tab[1]-nome` virou
 //     `tres`, e `get_selected_rows` da "linha 1" respondeu `0000000001=tres`. DOM e ABAP juntos.
 //   • **filtrar NÃO**: com `NOME = E2E-776551` a tela mostra 1 linha e a chama de `_linha: 1`, mas

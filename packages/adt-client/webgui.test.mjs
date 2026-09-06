@@ -21,6 +21,7 @@ import {
   estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
   jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD, clique, duploClique,
   idDoToggleDeSelecao, interpretarTituloDoToggle, normalizarToggle,
+  idDaCelula, normalizarCelula,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
   FCODES_DE_LINHA,
   tsvDoBloco, jsColarNoGrid,
@@ -1438,11 +1439,27 @@ const toggleReal = (marcado, title) => ({
   title: title ?? '',
 });
 
-const rodarSelecao = (js, { caixas = [], lsdata = LSDATA_SEL(), cid = 'C102', toggle = null } = {}) => {
+// o `<th>` REAL de uma coluna de dado (item 120, `raw/l-coluna.json`) — a marca é `urST3HSel`
+const cabecalhoReal = (coluna, marcada, cid = 'C102') => ({
+  id: `grid#${cid}#0,${coluna}`, tagName: 'TH',
+  className: 'urSTHC urBorderBox urST5HCMetricStd urST5L urST5HCColorLvl1 '
+    + (marcada ? 'urST3HSel urST4LbHdrSelBg' : 'urST3HUnsel urST4LbHdrBg'),
+});
+
+// o `<td>` REAL de uma célula de dado (item 120, `raw/m-bloco.json`) — a marca é `urST4Sel2`
+const celulaMarcada = (linha, coluna, marcada, cid = 'C102') => ({
+  id: `grid#${cid}#${linha},${coluna}`, tagName: 'TD',
+  className: 'urSTC urST5HasContentDiv urST5L urST3TDIn urCursorClickable urStd urST3Cl '
+    + (marcada ? 'lsSTBSTL urST4Sel2' : ''),
+});
+
+const rodarSelecao = (js, { caixas = [], lsdata = LSDATA_SEL(), cid = 'C102', toggle = null,
+  doGrid = [] } = {}) => {
   const documento = {
     getElementById: (id) => (id === cid ? { getAttribute: (a) => (a === 'lsdata' ? lsdata : null) }
       : (toggle && id === `grid#${cid}#0,0-SELCOLTOGGLE` ? toggle : null)),
-    querySelectorAll: (sel) => (sel === 'td[subct="SC"]' ? caixas : []),
+    querySelectorAll: (sel) => (sel === 'td[subct="SC"]' ? caixas
+      : (sel === `[id^="grid#${cid}#"]` ? doGrid : [])),
   };
   return new Function('document', `return ${js}`)(documento);
 };
@@ -1554,6 +1571,66 @@ test('webgui: o ícone do toggle é o SENTIDO do próximo clique, não o estado 
   expect(r.pintadas).toEqual([1, 2, 3]);
   expect(r.toggle.marcado).toBe(false);                       // o ícone diverge do que está pintado
   expect(normalizarToggle(r.toggle).todas).toBe(true);        // e a CONTAGEM concorda com a tela
+});
+
+// ---------- selecionar coluna, célula e bloco (item 120) ----------
+// Medido no s4h 758/250 em 06/09/2026 (`POC_webgui_grid_sel`, fases L/M/N/O).
+
+test('webgui: a célula de dado é o <td>, sem o #if do campo que mora dentro', () => {
+  expect(idDaCelula('C102', 2, 3)).toBe('grid#C102#2,3');
+  expect(idDaCelula('C102', 2, 3)).not.toContain('#if');
+  expect(idDaCelula('C102', 0, 2)).toBe(idDoCabecalho('C102', 2));   // a linha 0 É o cabeçalho
+});
+
+test('webgui: normalizarCelula aceita o par, o objeto e o NOME da coluna', () => {
+  const cols = ['ID', 'NOME', 'QTD'];
+  expect(normalizarCelula([2, 'NOME'], cols)).toEqual({ linha: 2, coluna: 2 });
+  expect(normalizarCelula({ linha: 3, coluna: 1 }, cols)).toEqual({ linha: 3, coluna: 1 });
+  expect(normalizarCelula([1, 3], cols)).toEqual({ linha: 1, coluna: 3 });
+  // a linha 0 é o cabeçalho e a coluna 0 é a caixa: nenhuma das duas é célula de dado
+  expect(() => normalizarCelula([0, 1], cols)).toThrow(/1-based/);
+  expect(() => normalizarCelula([1, 0], cols)).toThrow(/1-based/);
+  expect(() => normalizarCelula([1, 'FALTA'], cols)).toThrow(/ID, NOME, QTD/);
+});
+
+test('webgui: o despejo lê a COLUNA marcada pela classe do <th>, não pelo lsdata', () => {
+  // o lsdata ainda publica a seleção do round-trip anterior — a verdade é a classe
+  const r = rodarSelecao(jsSelecaoDoGrid('C102'), {
+    doGrid: [cabecalhoReal(1, true), cabecalhoReal(2, false), cabecalhoReal(3, true)],
+    lsdata: LSDATA_SEL({ selectedColumns: ';2;' }),
+  });
+  expect(r.colunasMarcadas).toEqual([1, 3]);
+  expect(r.cabecalhos).toEqual([1, 2, 3]);                    // que colunas TÊM cabeçalho na tela
+  expect(r.publicado.colunas).toBe(';2;');
+  expect(r.nomesDasColunas).toEqual(['ID', 'NOME', 'QTD']);
+});
+
+test('webgui: o selectedColumns COMPACTA faixa como o selectedRows — a mesma leitura serve', () => {
+  // medido: 3 colunas selecionadas saem `action/46 columns=;1-3;`, e o ABAP viu ID,NOME,QTD
+  expect(interpretarSelectedRows(';1-3;')).toEqual([1, 2, 3]);
+  expect(interpretarSelectedRows(';1;3;')).toEqual([1, 3]);
+});
+
+test('webgui: o despejo lê a CÉLULA marcada pela classe urST4Sel2, e ignora coluna 0 e linha 0', () => {
+  const r = rodarSelecao(jsSelecaoDoGrid('C102'), {
+    doGrid: [
+      celulaMarcada(1, 1, true), celulaMarcada(1, 2, true),
+      celulaMarcada(2, 1, true), celulaMarcada(2, 2, false),
+      cabecalhoReal(1, true),                                  // <th>: é coluna, não célula
+      { id: 'grid#C102#1,0', tagName: 'TD', className: 'urST4Sel2' },      // a caixa da linha
+      { id: 'grid#C999#3,3', tagName: 'TD', className: 'urST4Sel2' },      // outro grid
+      { id: 'grid#C102#1,1#if', tagName: 'INPUT', className: 'urST4Sel2' },// o campo de dentro
+    ],
+  });
+  expect(r.celulasMarcadas).toEqual([{ linha: 1, coluna: 1 }, { linha: 1, coluna: 2 }, { linha: 2, coluna: 1 }]);
+  expect(r.colunasMarcadas).toEqual([1]);
+});
+
+test('webgui: sem <th> nem célula no DOM o despejo devolve listas vazias, não estoura', () => {
+  const r = rodarSelecao(jsSelecaoDoGrid('C102'), { caixas: [caixaReal(1, false)] });
+  expect(r.colunasMarcadas).toEqual([]);
+  expect(r.celulasMarcadas).toEqual([]);
+  expect(r.cabecalhos).toEqual([]);
 });
 
 // ---------- o duplo clique como gesto (item 118) ----------
