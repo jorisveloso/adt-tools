@@ -1672,7 +1672,7 @@ tela.campos[0];                  // { sid: 'wnd[0]/usr/ctxtRS38M-PROGRAMM', camp
 tela.radios[0];                  // { campo: 'RS38M-FUNC_EDIT', rotulo: 'Texto fonte', selecionado: true, grupo: '%RBG0257' }
 tela.botoes.map((b) => [b.okcode, b.rotulo, b.tecla]);   // [['btn[3]','Voltar','F3'], ['btn[8]','Executar','F8'], …]
 tela.mensagem;                   // { tipo: 'OK', texto: 'Seleção restringida a 2 ocorrências' } | null
-tela.popup;                      // null, ou a wnd[1] (§ abaixo)
+tela.popup;                      // null, ou a modal ATIVA — a de maior wnd[n] (§ abaixo)
 parametrosDaTela(s);             // [{ campo: 'RS38M-PROGRAMM', rotulo: 'Programa', … }] — o ~transaction desta tela
 ```
 
@@ -1713,15 +1713,38 @@ tocar a rede:
 **O SMEN sem popup nenhum também dá 0** — o menu não tem campos de dynpro para dar. A variável era a
 tela de origem, não o modal. Toda tela com campos os manteve no delta com o popup aberto.
 ⚠ O `tela.aviso` abaixo ainda repete a afirmação falsa (só não dispara porque a condição é
-`campos.length === 0`) — corrigi-lo é item na fila. `tela.popup` traz a `wnd[1]`:
+`campos.length === 0`) — corrigi-lo é item na fila. `tela.popup` traz a modal ATIVA:
 
 ```js
 tela.popup   // { sid: 'wnd[1]', id: 'SAPLSPO1100_1', titulo: 'Efetuar logoff',
              //   textos: [{ sid: 'wnd[1]/usr/txtSPOP-TEXTLINE1', texto: 'Os dados não gravados serão perdidos.' }, …],
              //   botoes: [{ sid: 'wnd[1]/usr/btnSPOP-OPTION1', rotulo: 'Sim', accesskey: 'S' }, { …OPTION2, rotulo: 'Não' }],
-             //   campos: [] }
+             //   campos: [], atras: [] }
 tela.aviso   // 'popup wnd[1] aberto — a wnd[0]/usr não vem no delta enquanto ele estiver aberto'
 ```
+
+##### Modais EMPILHADAS: o popup é a de CIMA (item 70)
+
+Duas modais abertas ao mesmo tempo é estado normal — medido em 05/09/2026 (`/o` e, com ele aberto,
+`/ose16`; `POC_webgui_okcode/medicoes/raw/d2-ose16.txt`): o delta declara `wnd[1]` ("Sessões ABAP",
+4 botões) **e** `wnd[2]` ("Informação — Nº máximo de janelas GUI atingido", 2 botões), com os
+controles das duas. Quem responde é a de cima; a de baixo só volta quando ela fechar.
+
+`tela.popup` / `popupDaTela` devolvem **a de maior índice** (a mesma regra da `janelaAtiva`), com
+`atras` listando as de baixo. A pilha inteira, quando for preciso ler a de trás, é a
+`popupsDaTela` — de baixo para cima:
+
+```js
+popupsDaTela(controlesDoDelta(s.delta)) // [{ sid: 'wnd[1]', titulo: 'Sessões ABAP', atras: [] },
+                                        //  { sid: 'wnd[2]', titulo: 'Informação', atras: ['wnd[1]'] }]
+tela.popup.sid                          // 'wnd[2]' — a de CIMA
+tela.popup.atras                        // ['wnd[1]']
+tela.aviso                              // 'popup wnd[2] aberto (sobre wnd[1] — é a de cima que responde) — …'
+```
+
+⚠ Até 05/09/2026 o `popupDaTela` era `find(Type === 'GuiModalWindow')` — a **primeira do markup**,
+que é a de BAIXO: sobre o `d2-ose16.txt` devolvia a `wnd[1]` "Sessões ABAP" com os botões dela, e
+quem lia o popup lia o de trás. Mesmo defeito de ordem-de-markup do item 42, § abaixo.
 
 ⚠ Os botões do popup (`btnSPOP-OPTION1`) **não são `btn[n]`**: não entram em `tela.botoes` e
 `acionar(s, 'Sim')` não os acha — o endereço é `acionar(s, { sid: tela.popup.botoes[0].sid })`.

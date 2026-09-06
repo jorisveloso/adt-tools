@@ -337,11 +337,18 @@ export function janelaAtiva(sids = []) {
   let ativa = null, alto = -1;
   for (const x of sids) {
     if (x.tipo !== 'GuiModalWindow') continue;
-    const n = Number(/^wnd\[(\d+)\]$/.exec(x.sid ?? '')?.[1] ?? -1);
+    const n = indiceDaJanela(x.sid);
     if (n > alto) { alto = n; ativa = x.sid; }
   }
   return ativa ?? 'wnd[0]';
 }
+
+/**
+ * PURO: o `n` de `wnd[n]` no começo de um SID — `-1` quando não há. Empilhar modal pede ORDEM, e a
+ * ordem do MARKUP não é ela: no delta de duas modais a `wnd[1]` vem antes da `wnd[2]`, mas quem
+ * manda na tela é a `wnd[2]`.
+ */
+const indiceDaJanela = (sid) => Number(/^wnd\[(\d+)\]/.exec(String(sid ?? ''))?.[1] ?? -1);
 
 /**
  * PURO: o SID de um alvo, contra os SIDs da tela atual. Quatro formas:
@@ -580,29 +587,53 @@ export function controlesDoDelta(corpo) {
 }
 
 /**
- * PURO: o POPUP (`wnd[1]`, `GuiModalWindow`) que o delta trouxe — ou `null`. O título é a primeira
- * linha do texto da janela (o `header` é o primeiro filho); `textos` são os rótulos da `wnd[1]`
- * (`txtSPOP-TEXTLINE1` "Os dados não gravados serão perdidos."); `botoes` são os da `wnd[1]` PELO
- * SID (`wnd[1]/usr/btnSPOP-OPTION1` "Sim") — ⚠ eles NÃO são `btn[n]`, então não entram em
+ * PURO: a PILHA de modais (`GuiModalWindow`) que o delta trouxe — da de BAIXO para a de CIMA
+ * (`wnd[1]`, `wnd[2]`…), `[]` quando não há popup. Em cada uma: o título é a primeira linha do
+ * texto da janela (o `header` é o primeiro filho); `textos` são os rótulos dela
+ * (`txtSPOP-TEXTLINE1` "Os dados não gravados serão perdidos."); `botoes` são os dela PELO SID
+ * (`wnd[1]/usr/btnSPOP-OPTION1` "Sim") — ⚠ eles NÃO são `btn[n]`, então não entram em
  * `tela.botoes` e `acionar(s, 'Sim')` não os acha: é `acionar(s, { sid })`, e responder ao popup
- * por esta via ainda não está medido (fila 23).
+ * por esta via ainda não está medido (fila 23). `atras` são os SIDs das que ficaram embaixo.
+ *
+ * Medido em 05/09/2026 sobre POC_webgui_okcode/medicoes/raw/d2-ose16.txt: com DUAS modais o delta
+ * declara as duas e traz os controles das duas — `wnd[1]` "Sessões ABAP" (4 botões, 7 rótulos) e
+ * `wnd[2]` "Informação — Nº máximo de janelas GUI atingido" (2 botões). A de baixo continua no
+ * markup, mas não é ela que responde.
+ */
+export function popupsDaTela(brutos = []) {
+  const controles = brutos.map((b) => ({ b, sid: sidDoLsdata(b.lsdata) }));
+  const janelas = controles.filter((c) => c.sid?.Type === 'GuiModalWindow')
+    .sort((a, b) => indiceDaJanela(a.sid.SID) - indiceDaJanela(b.sid.SID));
+  return janelas.map((janela, i) => {
+    const raiz = janela.sid.SID;                                     // wnd[1], wnd[2]…
+    const dentro = controles.filter((c) => c.sid?.SID?.startsWith(`${raiz}/`));
+    return {
+      sid: raiz, id: janela.b.id ?? null,
+      atras: janelas.slice(0, i).map((j) => j.sid.SID),
+      titulo: rotuloLimpo(janela.b.texto, janela.b.title),
+      textos: dentro.filter((c) => c.sid.Type === 'GuiLabel' && (c.b.texto || c.b.title))
+        .map((c) => ({ sid: c.sid.SID, texto: c.b.texto || c.b.title })),
+      botoes: dentro.filter((c) => c.sid.Type === 'GuiButton')
+        .map((c) => ({ sid: c.sid.SID, rotulo: rotuloLimpo(c.b.texto, c.b.title), tecla: teclaDoBotao(c.b.lsdata), accesskey: c.b.accesskey ?? null })),
+      campos: dentro.filter((c) => TIPOS_DE_ENTRADA.has(c.sid.Type))
+        .map((c) => ({ sid: c.sid.SID, campo: campoDoSid(c.sid.SID), valor: c.b.valor ?? '', dica: c.b.title ?? null })),
+    };
+  });
+}
+
+/**
+ * PURO: o popup ATIVO — o TOPO da `popupsDaTela` (a modal de maior `wnd[n]`), ou `null`. É com ele
+ * que se fala: as de baixo estão atrás do modal e só voltam quando ele fechar; `atras` lista os
+ * SIDs delas, e quem precisar mesmo ler uma chama a `popupsDaTela`.
+ *
+ * ⚠ Até 05/09/2026 isto era `find(Type === 'GuiModalWindow')` — a PRIMEIRA do markup, que é a de
+ * BAIXO. Medido sobre POC_webgui_okcode/medicoes/raw/d2-ose16.txt (`/o` e, sobre ele, o
+ * "Nº máximo de janelas GUI atingido"): devolvia a `wnd[1]` "Sessões ABAP" com os 4 botões dela,
+ * enquanto a tela pedia resposta à `wnd[2]` "Informação" — mesmo defeito de ordem-de-markup que o
+ * item 42 corrigiu no endereçamento (`janelaAtiva`).
  */
 export function popupDaTela(brutos = []) {
-  const controles = brutos.map((b) => ({ b, sid: sidDoLsdata(b.lsdata) }));
-  const janela = controles.find((c) => c.sid?.Type === 'GuiModalWindow');
-  if (!janela) return null;
-  const raiz = janela.sid.SID;                                       // wnd[1]
-  const dentro = controles.filter((c) => c.sid?.SID?.startsWith(`${raiz}/`));
-  return {
-    sid: raiz, id: janela.b.id ?? null,
-    titulo: rotuloLimpo(janela.b.texto, janela.b.title),
-    textos: dentro.filter((c) => c.sid.Type === 'GuiLabel' && (c.b.texto || c.b.title))
-      .map((c) => ({ sid: c.sid.SID, texto: c.b.texto || c.b.title })),
-    botoes: dentro.filter((c) => c.sid.Type === 'GuiButton')
-      .map((c) => ({ sid: c.sid.SID, rotulo: rotuloLimpo(c.b.texto, c.b.title), tecla: teclaDoBotao(c.b.lsdata), accesskey: c.b.accesskey ?? null })),
-    campos: dentro.filter((c) => TIPOS_DE_ENTRADA.has(c.sid.Type))
-      .map((c) => ({ sid: c.sid.SID, campo: campoDoSid(c.sid.SID), valor: c.b.valor ?? '', dica: c.b.title ?? null })),
-  };
+  return popupsDaTela(brutos).at(-1) ?? null;
 }
 
 /**
@@ -627,7 +658,10 @@ export function telaDoDelta(corpo) {
     screenId: paramDe(s, 'ScreenId'), dynpro: paramDe(s, 'dynpro'), tcode: paramDe(s, 't-code'), dnum: paramDe(s, 'd-num'),
     popup,
     // com popup aberto a wnd[0]/usr NÃO vem no delta — quem lê `campos` vazio precisa saber por quê
-    aviso: popup && !tela.campos.length ? `popup ${popup.sid} aberto — a wnd[0]/usr não vem no delta enquanto ele estiver aberto` : null,
+    aviso: popup && !tela.campos.length
+      ? `popup ${popup.sid} aberto${popup.atras.length ? ` (sobre ${popup.atras.join(', ')} — é a de cima que responde)` : ''}`
+        + ' — a wnd[0]/usr não vem no delta enquanto ele estiver aberto'
+      : null,
   };
 }
 

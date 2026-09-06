@@ -9,7 +9,7 @@ import {
   OKCD, ESTADO, BOOT, ENTER, batchPreencher, batchAcionar, batchComandar, batchVkey,
   decodificarEntidades, cabecalhoDoShell, paramDe, passosDoMultipart, sidsDaResposta, lerResposta,
   sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla, janelaAtiva, janelaDoSid, ativa,
-  atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, telaDoDelta, lerTela, parametrosDaTela,
+  atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, popupsDaTela, telaDoDelta, lerTela, parametrosDaTela,
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
   itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
@@ -379,6 +379,7 @@ test('its: com POPUP aberto o delta traz a wnd[1] e ESVAZIA a wnd[0]/usr — o m
       { sid: 'wnd[1]/usr/btnSPOP-OPTION2', rotulo: 'Não', tecla: null, accesskey: 'N' },
     ],
     campos: [],
+    atras: [],                                                      // modal sozinha: nada embaixo
   });
   // ⚠ Sim/Não NÃO são btn[n]: não entram em tela.botoes, e acionar(s, 'Sim') não os acha — é { sid }
   expect(tela.botoes.map((b) => b.okcode)).toEqual(['btn[3]']);
@@ -414,6 +415,45 @@ test('its: a janela ativa é a modal MAIS ALTA que o delta declara — sem modal
   expect(janelaAtiva([{ sid: 'wnd[2]', tipo: 'GuiModalWindow' }, { sid: 'wnd[1]', tipo: 'GuiModalWindow' }])).toBe('wnd[2]');
   expect(janelaDoSid('wnd[1]/tbar[0]/btn[0]')).toBe('wnd[1]');
   expect(janelaDoSid('grid#C102#1,1')).toBe(null);
+});
+
+// ---- DUAS modais EMPILHADAS (item 70) --------------------------------------------------------
+// Trechos COPIADOS da resposta do s4h 758/250 em 05/09/2026 ao `/o` e, com ele aberto, ao `/ose16`
+// (POC_webgui_okcode/medicoes/raw/d2-ose16.txt): sobre a "Sessões ABAP" (`wnd[1]`, a MODAL_O acima)
+// o SAP abriu a "Informação — Nº máximo de janelas GUI atingido" (`wnd[2]`). Tirados daqui o
+// `lsevents`, o `<svg>` do ícone, o `<style>` e o botão de fechar do header. ⚠ A ordem é a do
+// bruto: a `wnd[1]` vem ANTES da `wnd[2]` no markup — e era ela que o `popupDaTela` devolvia.
+const MODAL_OSE16 = `<div ct="PW_standards" lsdata='{"0":false,"4":"673px","5":"144px","8":"webguiKeys","13":{"SID":"wnd[2]","Type":"GuiModalWindow","ModalNo":2,"focusable":"X"},"16":true}' id="SAPMSDYP10_2" role="dialog" aria-labelledby="SAPMSDYP10_2-header-title-txt" class="lsPWNew lsPWNewMaxWidthAutoX lsPWNewMaxWidthAutoY"><header class="lsPWNewHeader" id="SAPMSDYP10_2-header"><div id="SAPMSDYP10_2-header-title" tabindex="0" ti="0" class="lsPWNewHeaderDivMiddle" drag="move" role="heading" aria-level="1"><span id="SAPMSDYP10_2-header-title-txt" class="lsResponsivePaddingLeft " drag="move">Informação</span></div></header></div>`;
+const LBL_IK1_WND2 = `<span ct="L" lsdata='{"0":"Mensagem informativa","6":"LIGHT","7":"100%","8":true,"13":"BEGINOFLINE","16":"ACTIVATE","19":{"SID":"wnd[2]/usr/txtIK1","Type":"GuiLabel","focusable":"X"}}' id="M2:46:::0:0" title="Mensagem&#x20;informativa" tabindex="0" ti="0" role="button" class="lsLabel lsLabel--text"></span>`;
+const LBL_MESSTXT1_WND2 = `<span ct="L" lsdata='{"x":0,"3":"Número máximo de janelas GUI atingido","6":"LIGHT","7":"100%","13":"BEGINOFLINE","14":true,"16":"ACTIVATE","19":{"SID":"wnd[2]/usr/txtMESSTXT1","Type":"GuiLabel","focusable":"X"}}' id="M2:46:::0:5" tabindex="0" ti="0" role="button" class="lsLabel lsLabel--text"><span id="M2:46:::0:5-text" class="lsLabel__text">Número máximo de janelas GUI atingido</span></span>`;
+const BTN0_WND2 = `<div draggable="false" id="M2:50::btn[0]" ct="B" lsdata='{"0":"Avançar","2":"TRANSPARENT","4":"Avançar","17":"A","18":"ENTER","21":true,"25":"TOGGLE","27":{"SID":"wnd[2]/tbar[0]/btn[0]","Type":"GuiButton","SubType":"toolbar"}}' role="button" title="Avan&#xe7;ar" data-sap-ls-accesskey="A" accesskey="A" tabindex="0" ti="0" class="lsButton lsButton--useintoolbar"></div>`;
+const BTN1_WND2 = `<div draggable="false" id="M2:50::btn[1]" ct="B" lsdata='{"0":"Ajuda","2":"TRANSPARENT","4":"Ajuda","17":"A","18":"F1","21":true,"25":"TOGGLE","27":{"SID":"wnd[2]/tbar[0]/btn[1]","Type":"GuiButton","SubType":"toolbar"}}' role="button" title="Ajuda" data-sap-ls-accesskey="A" accesskey="A" tabindex="0" ti="0" class="lsButton lsButton--useintoolbar"></div>`;
+const DELTA_DUAS_MODAIS = `<updates><delta-update><start-script><![CDATA[sap.its.aParams = {moin:'A',cuatitle:'Sessões ABAP'};]]></start-script>
+${cdata('webguiPopups', `<div id="webguiPopups" ct="CO">${MODAL_O}${BTN0_WND1}${BTN12_WND1}${MODAL_OSE16}${LBL_IK1_WND2}${LBL_MESSTXT1_WND2}${BTN0_WND2}${BTN1_WND2}</div>`)}
+</delta-update></updates>`;
+
+test('its: com DUAS modais empilhadas o popup é a de CIMA — a de baixo fica na pilha, não no lugar dela', () => {
+  const brutos = controlesDoDelta(DELTA_DUAS_MODAIS);
+  const pilha = popupsDaTela(brutos);
+  expect(pilha.map((p) => [p.sid, p.titulo])).toEqual([['wnd[1]', 'Sessões ABAP'], ['wnd[2]', 'Informação']]);
+
+  const popup = popupDaTela(brutos);
+  expect(popup.sid).toBe('wnd[2]');                                  // ⚠ era wnd[1] (a 1ª do markup)
+  expect(popup.atras).toEqual(['wnd[1]']);
+  expect(popup.botoes.map((b) => [b.sid, b.rotulo])).toEqual([
+    ['wnd[2]/tbar[0]/btn[0]', 'Avançar'],
+    ['wnd[2]/tbar[0]/btn[1]', 'Ajuda'],
+  ]);
+  expect(popup.textos.map((t) => t.texto)).toEqual(['Mensagem informativa', 'Número máximo de janelas GUI atingido']);
+  // a de baixo continua legível — mas por popupsDaTela, e sabendo que não é ela que responde
+  expect(pilha[0].atras).toEqual([]);
+  expect(pilha[0].botoes.map((b) => b.rotulo)).toEqual(['Avançar', 'Cancelar']);
+
+  const tela = telaDoDelta(DELTA_DUAS_MODAIS);
+  expect(tela.popup.sid).toBe('wnd[2]');
+  expect(tela.aviso).toBe('popup wnd[2] aberto (sobre wnd[1] — é a de cima que responde)'
+    + ' — a wnd[0]/usr não vem no delta enquanto ele estiver aberto');
+  expect(janelaAtiva(sidsDaResposta(DELTA_DUAS_MODAIS))).toBe('wnd[2]');
 });
 
 test('its: com popup aberto o alvo resolve na JANELA ATIVA — btn[0] está nas duas, e a de trás só por escopo explícito', () => {
