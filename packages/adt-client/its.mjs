@@ -1727,6 +1727,29 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, ...
 //
 // ⚠ **O acionamento é LENTO** — a folha do favorito levou 15,5 s, e o primeiro tiro estourou o teto
 // de 30 s do `postar`. Por isso `acionarNo`/`navegarArvore` sobem o teto para `TETO_ARVORE`.
+//
+// ⚠⚠ **Depois de uma IDA-E-VOLTA ao menu, o primeiro POST de ação na árvore é SEMPRE recusado** —
+// `multipart` **`-103 failed to fire action: not available`**. Medido no item 91 (s4h 758/250,
+// 06/09/2026, `sap-accelerate/work/POC_webgui_sid_smen/medicoes/item91-sid-arvore-smen.md`), com a
+// ida-e-volta mais barata que existe (`comandar('/nSE38')` + `comandar('/nSMEN')`, sem tocar na
+// árvore). Vale para `action/41` (seleção), `action/8` (expandir) e `action/2` (acionar).
+//
+// **O SID NÃO mudou e o delta NÃO vem incompleto** — as duas explicações naturais estão medidas e
+// mortas: o container volta com o mesmo `wnd[0]/usr/cntlIMAGE_CONTAINER/…/shell` (id `tree#C105`),
+// o mesmo `nodeindexes` de 16, os mesmos 30 `TV`, as mesmas 15 chaves, `parcial: false`. A resposta
+// da volta **pinta** a árvore mas o ITS ainda não a registrou como acionável.
+//
+// | sonda | resultado |
+// |---|---|
+// | `/nSMEN` de SMEN para SMEN (o okcode sem ida-e-volta) | árvore VIVA — não é o okcode, é ter SAÍDO |
+// | `action/41` recusado três vezes seguidas | `-103` nas três — **o POST recusado não aquece** |
+// | um `postar(s, [ESTADO])` sozinho (`get state/ur`, ~78 ms) | **CURA** — o action seguinte vem `delta` |
+// | `enter(s)` | cura também, mas dispara a tela |
+// | `comandar('/nSE16')` depois do `-103` | `delta` — o resto da tela obedece; só a ÁRVORE fica surda |
+//
+// **A cura é um `ESTADO` sozinho.** `arvore()` continua correta (o SID é legítimo, os nós são
+// reais); quem paga é o gesto no primeiro tiro. Ver a fila `adt-client` para o conserto de
+// `acionarNo`/`expandirNo`/`colapsarNo`.
 
 // As PURAS da árvore (`TETO_ARVORE`, `indiceDoNo`, `containerDaArvore`, `arvoreDosBrutos`,
 // `acharNoDaArvore`) moram no `webgui.mjs` e são REEXPORTADAS aqui (item 86): elas cruzam o
