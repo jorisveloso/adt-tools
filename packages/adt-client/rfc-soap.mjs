@@ -12,7 +12,10 @@
 //   • a resposta vem em <urn:NOME.Response>; erro vem como SOAP Fault (HTTP 500).
 // Restrições: tRFC/qRFC não passam por aqui; o usuário precisa de S_RFC no function group.
 //
-// ⚠️ A senha viaja em Basic a cada chamada (não há cookie). Nunca logar o header — só o nome.
+// ⚠️ A senha viaja em Basic a cada chamada. Nunca logar o header — só o nome.
+//
+// ⚠️ CADA POST É UMA LUW PRÓPRIA, e isso NÃO muda por reusar a sessão (medido no item 90): BAPI de
+// escrita numa chamada + COMMIT em outra continua não persistindo. Ver docs/canal-soap-rfc.md.
 
 import { passo, detalhe, http as logHttp } from './log.mjs';
 
@@ -75,8 +78,68 @@ export function xmlStruct(xml, tag) {
   return Object.fromEntries([...secao.matchAll(/<([A-Z0-9_]+)>([^<]*)<\/\1>/g)].map(([, k, v]) => [k, desescapar(v)]));
 }
 
+// ---------- a sessão de segurança deste canal ----------
+//
+// POR QUE ISTO EXISTE: uma requisição autenticada que chega SEM cookie faz o ICF criar uma sessão
+// de segurança HTTP "não usada" (`SECURITY_CONTEXT` com `TIMEOUT_CHECK=2`) que o logoff NÃO remove
+// e que só morre no EOL FIXO de `start + http/security_session_timeout` (1800 s). Contra o teto por
+// usuário (default declarado 100 em `CL_HTTP_SECURITY_SESSION=>CO_SESSION_LIMIT_UNUSED_DFLT`),
+// ~100 chamadas em 30 min derrubam o canal STATEFUL do próprio usuário — o ADT passa a nascer sem
+// `SAP_SESSIONID` e toda requisição com esse cookie dá 400 (itens 28/53 da fila).
+//
+// O REMÉDIO: guardar o `SAP_SESSIONID` da primeira resposta e reenviá-lo. A segunda requisição USA
+// a sessão (`CL_HTTP_SECURITY_SESSION_ICF::_update_context_timestamp`), ela entra no cache do ICM,
+// `TIMEOUT_CHECK` vira 1 e passa a valer o timeout DESLIZANTE — e nenhuma outra nasce.
+// Medido no S4H 758/250 em 2026-09-06 (item 90): 10 chamadas SEM cookie = +10 não usadas;
+// 10 chamadas COM cookie = +0 não usadas e +1 usada, e ainda 38% mais rápidas.
+//
+// É transparente de propósito: são ~150 call sites na lib, e o certo é o default. `cfg` não guarda
+// o cookie (ele é reconstruído a cada processo em vários caminhos) — a chave é o ALVO+USUÁRIO.
+const jars = new Map();
+const chaveDaSessao = (cfg) => `${cfg.base}|${cfg.client ?? ''}|${cfg.user ?? ''}`;
+
+/**
+ * PURO: aplica os `Set-Cookie` de uma resposta sobre o cookie guardado, como um navegador faria.
+ * Valor vazio = cookie apagado pelo servidor, então some do jar em vez de virar `NOME=`.
+ */
+export function absorverSetCookie(cookieAtual, setCookie = []) {
+  const mapa = new Map((cookieAtual || '').split('; ').filter(Boolean).map((c) => [c.split('=')[0], c]));
+  for (const bruto of setCookie) {
+    const par = bruto.split(';')[0];
+    const i = par.indexOf('=');
+    if (i < 1) continue;
+    if (par.slice(i + 1) === '') mapa.delete(par.slice(0, i));
+    else mapa.set(par.slice(0, i), par);
+  }
+  return [...mapa.values()].join('; ');
+}
+
+/** Esquece o cookie guardado deste alvo — sem falar com o servidor. */
+export function esquecerSessaoSoap(cfg) { return jars.delete(chaveDaSessao(cfg)); }
+
+/**
+ * Devolve a sessão ao servidor ao fim do trabalho — melhor esforço, e por isso nunca lança.
+ * Só faz sentido depois de um laço: o que fica sem isto é UMA sessão *usada*, com timeout
+ * deslizante, que é o custo normal de qualquer cliente HTTP — não é o que estoura o teto.
+ * ⚠️ Medido em 2026-09-06 no S4H: `/sap/public/bc/icf/logoff` responde 500 neste sistema mesmo SEM
+ * cookie (o nó, não a sessão). Daí `encerrada:false` não ser erro de quem chama.
+ */
+export async function encerrarSessaoSoap(cfg) {
+  const jar = jars.get(chaveDaSessao(cfg));
+  esquecerSessaoSoap(cfg);
+  if (!jar?.cookie) return { status: null, encerrada: false };
+  const url = `${cfg.base}/sap/public/bc/icf/logoff${cfg.client ? `?sap-client=${cfg.client}` : ''}`;
+  const res = await fetch(url, { headers: { Cookie: jar.cookie } }).catch(() => null);
+  await res?.text();
+  return { status: res?.status ?? null, encerrada: res?.status === 200 };
+}
+
 // ---------- a chamada ----------
-export async function callFunction(cfg, fm, params = {}) {
+/**
+ * `reusarSessao: false` volta ao comportamento antigo (uma sessão de segurança nova por chamada) —
+ * é o que uma MEDIÇÃO de sessões precisa, para a sonda não mexer no que está medindo.
+ */
+export async function callFunction(cfg, fm, params = {}, { reusarSessao = true } = {}) {
   const FM = String(fm).toUpperCase();
   passo(`soap-rfc: ${FM}`);
   const url = `${cfg.base}/sap/bc/soap/rfc${cfg.client ? `?sap-client=${cfg.client}` : ''}`;
@@ -85,10 +148,20 @@ export async function callFunction(cfg, fm, params = {}) {
     SOAPAction: '',
     Authorization: 'Basic ' + Buffer.from(`${cfg.user}:${cfg.pass}`).toString('base64'),
   };
+  const chave = chaveDaSessao(cfg);
+  const jar = reusarSessao ? (jars.get(chave) ?? { cookie: '' }) : null;
+  if (jar?.cookie) headers.Cookie = jar.cookie;
   const t = Date.now();
   const res = await fetch(url, { method: 'POST', headers, body: buildEnvelope(FM, params) });
   const xml = await res.text();
   logHttp('POST', url, res.status, Date.now() - t, xml.length);
+  // Cookie morto NÃO derruba a chamada: o Basic vai junto sempre, então o ICF re-autentica e manda
+  // um `SAP_SESSIONID` novo (medido no item 90 com cookie-lixo, vazio e de outro SID: 200 nos três).
+  // Por isso não há retry aqui — só absorver o que voltou.
+  if (jar) {
+    jar.cookie = absorverSetCookie(jar.cookie, res.headers.getSetCookie?.() ?? []);
+    if (jar.cookie) jars.set(chave, jar);
+  }
   // Fault chega como HTTP 500 com <faultstring> — é o "exceção do FM" deste canal.
   const fault = xml.match(/<faultstring[^>]*>([^<]*)<\/faultstring>/)?.[1];
   if (fault) throw new Error(`RFC ${FM} falhou (SOAP Fault): ${fault}`);
@@ -99,8 +172,8 @@ export async function callFunction(cfg, fm, params = {}) {
 // ---------- operações ----------
 
 /** Eco + identidade do sistema. O RESPTEXT do STFC_CONNECTION traz release/SID/logon de brinde. */
-export async function ping(cfg, { texto = 'ping adt-client' } = {}) {
-  const { xml } = await callFunction(cfg, 'STFC_CONNECTION', { REQUTEXT: texto });
+export async function ping(cfg, { texto = 'ping adt-client', reusarSessao = true } = {}) {
+  const { xml } = await callFunction(cfg, 'STFC_CONNECTION', { REQUTEXT: texto }, { reusarSessao });
   const resptext = xmlField(xml, 'RESPTEXT') ?? '';
   const m = resptext.match(/Rel\.\s+(\S+)\s+Sysid:\s+(\S+)\s+Date:\s+(\S+)\s+Time:\s+(\S+)\s+Logon_Data:\s+(\S+)/);
   const [mandante, usuario, idioma] = (m?.[5] ?? '').split('/');
@@ -132,7 +205,7 @@ export function dicaDeLeitura(erro, tabela, campos) {
  * `where` é uma lista de linhas de WHERE (máx. 72 chars cada, regra do próprio FM).
  * Limites conhecidos do FM: linha de resultado ≤ 512 chars, sem campos float/string longos.
  */
-export async function readTable(cfg, tabela, { campos = [], where = [], linhas = 100, delimitador = '|' } = {}) {
+export async function readTable(cfg, tabela, { campos = [], where = [], linhas = 100, delimitador = '|', reusarSessao = true } = {}) {
   const { xml } = await callFunction(cfg, 'RFC_READ_TABLE', {
     QUERY_TABLE: String(tabela).toUpperCase(),
     DELIMITER: delimitador,
@@ -140,7 +213,7 @@ export async function readTable(cfg, tabela, { campos = [], where = [], linhas =
     FIELDS: campos.map((c) => ({ FIELDNAME: String(c).toUpperCase() })),
     OPTIONS: where.map((w) => ({ TEXT: w })),
     DATA: [],
-  }).catch((e) => { throw dicaDeLeitura(e, tabela, campos); });
+  }, { reusarSessao }).catch((e) => { throw dicaDeLeitura(e, tabela, campos); });
   // A ordem/nomes dos campos vêm da PRÓPRIA resposta (tabela FIELDS) — vale também sem `campos`.
   const nomes = xmlItems(xml, 'FIELDS').map((f) => f.FIELDNAME);
   const linhasWa = xmlItems(xml, 'DATA').map((d) => d.WA ?? '');
@@ -156,8 +229,8 @@ export async function readTable(cfg, tabela, { campos = [], where = [], linhas =
  * `ok` = nenhuma mensagem E/A. Para BAPI de escrita, encadear BAPI_TRANSACTION_COMMIT — este
  * helper NÃO comita sozinho, de propósito: commit é decisão de quem orquestra.
  */
-export async function callBapi(cfg, bapi, params = {}) {
-  const { xml } = await callFunction(cfg, bapi, params);
+export async function callBapi(cfg, bapi, params = {}, { reusarSessao = true } = {}) {
+  const { xml } = await callFunction(cfg, bapi, params, { reusarSessao });
   const secao = xml.match(/<RETURN>[\s\S]*?<\/RETURN>/)?.[0] ?? '';
   const mensagens = secao.includes('<item>')
     ? xmlItems(xml, 'RETURN')

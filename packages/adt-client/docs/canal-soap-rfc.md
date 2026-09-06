@@ -45,6 +45,47 @@ manual do XML cru precisa fazer o mesmo, senão o valor devolvido não é o que 
 Resposta real do spike (`STFC_CONNECTION`): `ECHOTEXT` (eco) e `RESPTEXT` com dados do sistema —
 `SAP R/3 Rel. 758 Sysid: S4H Date: … Logon_Data: 250/USER/E`. Útil como ping + descoberta de release.
 
+## A sessão de segurança: por que a lib manda o cookie de volta
+
+**Medido no S4H 758/250 em 2026-09-06 (itens 53 e 90).** Uma requisição autenticada que chega **sem
+cookie** faz o ICF criar uma sessão de segurança HTTP **"não usada"** — linha em `SECURITY_CONTEXT`
+com `TIMEOUT_CHECK = 2` — que **o logoff não remove** e que só morre no EOL **fixo** de
+`start + http/security_session_timeout` (1800 s). Contra o teto por usuário (default declarado 100
+em `CL_HTTP_SECURITY_SESSION=>CO_SESSION_LIMIT_UNUSED_DFLT`), **~100 chamadas SOAP em 30 min
+derrubam o canal STATEFUL do próprio usuário**: o ADT passa a nascer sem `SAP_SESSIONID` e toda
+requisição com esse cookie responde `400 Service nicht erreichbar`.
+
+O remédio é guardar o `SAP_SESSIONID` da primeira resposta e reenviá-lo: a segunda requisição **usa**
+a sessão (`CL_HTTP_SECURITY_SESSION_ICF::_update_context_timestamp`), ela entra no cache do ICM,
+`TIMEOUT_CHECK` vira 1 e passa a valer o timeout deslizante — e nenhuma outra nasce.
+
+| laço de 10 chamadas | sessões "não usadas" criadas | tempo |
+|---|---|---|
+| sem cookie | **+10** (1,00 por chamada) | 1285 ms |
+| com cookie reusado | **+0** (0,00 por chamada) | **737 ms** (43% mais rápido) |
+
+**É o default de `callFunction`/`ping`/`readTable`/`callBapi`, e é transparente** — nada muda nos
+call sites. O cookie vive só na memória do processo, chaveado por `base|client|user`.
+
+- `{ reusarSessao: false }` volta ao comportamento antigo. **Use ao MEDIR sessões**: senão a sonda
+  deixa de custar o que custava e a comparação entre fases se desfaz.
+- `encerrarSessaoSoap(cfg)` devolve a sessão ao fim — **melhor esforço, nunca lança**.
+  ⚠️ Em 2026-09-06 o nó `/sap/public/bc/icf/logoff` responde **500 neste sistema mesmo sem cookie**
+  (é o nó, não a sessão). Não importa: o que sobra sem logoff é UMA sessão *usada*, com timeout
+  deslizante — o custo normal de qualquer cliente HTTP, não o que estoura o teto.
+- `esquecerSessaoSoap(cfg)` descarta o cookie sem falar com o servidor.
+- **Cookie morto é inofensivo** — o Basic viaja em toda chamada, então o ICF re-autentica e emite
+  outro. Medido com cookie-lixo, vazio e de outro SID: **200 nos três**. Por isso não há retry.
+
+⚠️ **Reusar a sessão NÃO torna o canal stateful.** Medido: a 2ª chamada não recebe `Set-Cookie`
+(reuso, não recriação), nenhuma resposta traz `sap-contextid`, e a SM04 (`TH_USER_LIST`) não cresce.
+**Cada POST continua sendo uma LUW própria** — a regra de escrita abaixo (BAPI + COMMIT em POSTs
+separados não persiste) vale exatamente como antes.
+
+Para o vazamento que **já aconteceu** — inclusive o de outros clientes HTTP do mesmo usuário — o
+extintor é `curarSessoesDeSeguranca` (`receita-fm-rfc-wrapper.md`). O reuso é preventivo; ele não
+limpa o que veio antes.
+
 ## Requisitos no sistema
 
 - Nó `/sap/bc/soap/rfc` ativo na SICF (no S4H da Moovi já estava; 401 sem credencial = nó ativo).

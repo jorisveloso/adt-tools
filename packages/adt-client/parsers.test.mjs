@@ -12,7 +12,7 @@ import {
   parseUnitResult, parseDataPreview, parseCoverage, activationMessages, assertReadOnly, assertZY,
 } from './adt-client.mjs';
 import { buildSecuritySessionCureSource } from './adt-client.mjs';
-import { parseCuraSessoes } from './rfc-soap.mjs';
+import { parseCuraSessoes, absorverSetCookie } from './rfc-soap.mjs';
 
 // Resposta típica do information system search.
 const XML_BUSCA = `<?xml version="1.0" encoding="utf-8"?>
@@ -355,4 +355,32 @@ test('buildSecuritySessionCureSource: assinatura sem ponto após o nome, ponto s
   // o filtro que torna a limpeza segura: só as MINHAS e só as NÃO USADAS
   expect(src).toMatch(/WHERE userid = sy-uname/);
   expect(src).toMatch(/co_session_unused/);
+});
+
+// ---------- a sessão de segurança do canal SOAP (item 90) ----------
+// O que este cookie faz vale ~1 sessão de segurança HTTP por requisição: sem ele, 100 chamadas em
+// 30 min derrubam o canal stateful do usuário. Por isso a costura de aplicação dele é testada.
+
+test('absorverSetCookie: a 1ª resposta forma o cookie; a 2ª (sem Set-Cookie) o preserva', () => {
+  const c1 = absorverSetCookie('', [
+    'sap-usercontext=sap-client=250; path=/',
+    'SAP_SESSIONID_S4H_250=uw4LCa%3d; path=/; secure; HttpOnly',
+  ]);
+  expect(c1).toBe('sap-usercontext=sap-client=250; SAP_SESSIONID_S4H_250=uw4LCa%3d');
+  expect(absorverSetCookie(c1, [])).toBe(c1); // reuso confirmado: o ICF não reemite o cookie
+});
+
+test('absorverSetCookie: valor novo SUBSTITUI o antigo, não duplica', () => {
+  const c = absorverSetCookie('SAP_SESSIONID_S4H_250=velho', ['SAP_SESSIONID_S4H_250=novo; path=/']);
+  expect(c).toBe('SAP_SESSIONID_S4H_250=novo');
+});
+
+test('absorverSetCookie: valor VAZIO é o servidor apagando o cookie — some do jar', () => {
+  const c = absorverSetCookie('sap-usercontext=sap-client=250; SAP_SESSIONID_S4H_250=x',
+    ['SAP_SESSIONID_S4H_250=; expires=Thu, 01 Jan 1970 00:00:00 GMT']);
+  expect(c).toBe('sap-usercontext=sap-client=250');
+});
+
+test('absorverSetCookie: header sem "=" é ignorado (não vira entrada quebrada)', () => {
+  expect(absorverSetCookie('a=1', ['lixo', '=semNome; path=/'])).toBe('a=1');
 });
