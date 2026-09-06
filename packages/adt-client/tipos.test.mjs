@@ -165,6 +165,10 @@ import { MODULOS, TYPES as TYPES_REGISTRO, TIPOS, resolverTipo, alvoDoAdtType, t
 import { validarModulo } from './tipos/_registro.mjs';
 import { CAMPOS_OBRIGATORIOS } from './tipos/_esquema.mjs';
 
+// Ancorado no ARQUIVO, não no cwd: 'tipos' relativo resolvia contra process.cwd(), então rodar a
+// suíte da raiz do monorepo dava ENOENT scandir adt-tools/tipos (visto em 05/09/2026).
+const DIR_TIPOS = new URL('./tipos/', import.meta.url);
+
 test('registro: TYPES derivado dos módulos reproduz o de antes da migração (mais os acrescentados)', () => {
   expect(TYPES_REGISTRO).toEqual({ ...TYPES_ANTES, ...DEPOIS_DA_MIGRACAO });
 });
@@ -218,20 +222,20 @@ test('contrato: todo módulo preenche TODOS os obrigatórios e passa na validaç
 });
 
 test('isolamento: nenhum módulo de tipo importa adt-client.mjs (ciclo com top-level await)', () => {
-  for (const f of readdirSync('tipos').filter((f) => f.endsWith('.mjs'))) {
-    const src = readFileSync(`tipos/${f}`, 'utf8');
+  for (const f of readdirSync(DIR_TIPOS).filter((f) => f.endsWith('.mjs'))) {
+    const src = readFileSync(new URL(f, DIR_TIPOS), 'utf8');
     expect(/from\s+['"][^'"]*adt-client\.mjs['"]/.test(src), f).toBe(false);
   }
 });
 
 test('todo módulo de tipo tem teste irmão e a anotação @type ModuloDeTipo', () => {
-  const arquivos = readdirSync('tipos');
+  const arquivos = readdirSync(DIR_TIPOS);
   const modulos = arquivos.filter((f) => f.endsWith('.mjs') && !f.startsWith('_') && f !== 'index.mjs' && !f.endsWith('.test.mjs'));
   expect(modulos).toHaveLength(27);
   for (const f of modulos) {
     const irmao = f.replace(/\.mjs$/, '.test.mjs');
     expect(arquivos.includes(irmao), `${f} sem ${irmao} — a prova viaja com o módulo`).toBe(true);
-    const src = readFileSync(`tipos/${f}`, 'utf8');
+    const src = readFileSync(new URL(f, DIR_TIPOS), 'utf8');
     expect(src.includes("@type {import('./_esquema.mjs').ModuloDeTipo}"), `${f} sem @type ModuloDeTipo`).toBe(true);
   }
 });

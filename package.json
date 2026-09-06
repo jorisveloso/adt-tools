@@ -12,5 +12,8 @@
     "test": "pnpm -r test",
     "build": "pnpm -r build",
     "start:server": "pnpm --filter adt-server start"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
   }
 }

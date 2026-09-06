@@ -25,9 +25,20 @@ de cada projeto. Cada pacote segue publicável individualmente no npm.
 
 ```bash
 pnpm install        # instala todos os pacotes (workspace)
-pnpm test           # roda os testes de todos os pacotes
+pnpm test           # roda os testes de todos os pacotes (`pnpm -r test`, cada um no seu cwd)
 pnpm start:server   # sobe o MCP server do adt-server (stdio)
 ```
+
+A suíte também roda **da raiz**, com um processo só — o `vitest.config.mjs` da raiz declara os
+pacotes como `projects`, então cada um entra com o SEU config:
+
+```bash
+npx vitest run                      # os 7 pacotes
+npx vitest run --project adt-client # um pacote
+```
+
+Para filtrar um pacote use `--project <nome>`, **não** `--dir`: com `projects`, o `--dir` não
+restringe nada e a suíte inteira roda assim mesmo.
 
 ## Ver também
 
