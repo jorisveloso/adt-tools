@@ -1,6 +1,6 @@
 // tran.test.mjs — parte pura do módulo de transação: validação, fonte dos drivers e parse da saída.
 import { test, expect } from 'vitest';
-import { buildTransactionDriverSource, buildTransactionDeleteSource, parseTransactionOutput, validarTransacao, TIPOS_TRANSACAO } from './tran.mjs';
+import { buildTransactionDriverSource, buildTransactionDeleteSource, parseTransactionOutput, validarTransacao, conferirGui, GUI_TSTCC, TIPOS_TRANSACAO } from './tran.mjs';
 
 test('tran: tipos medidos no s4h (ststc_c_type_*) e a validação por tipo', () => {
   expect(TIPOS_TRANSACAO).toEqual({ dialog: 'D', report: 'R', parameter: 'P', variant: 'V' });
@@ -56,4 +56,24 @@ test('tran: parse da saída medida no s4h — criada, já existia, e falha de le
   expect(falha.ok).toBe(false); expect(falha.subrc).toBe(3); expect(falha.tstc).toBeNull();
   const del = parseTransactionOutput('TRAN_DELETE YJBV_POC_TR subrc=0 \nTRAN_DELETE YJBV_POC_TD subrc=2 não existe\n');
   expect(del.deletes).toEqual([{ tcode: 'YJBV_POC_TR', subrc: 0, msg: '' }, { tcode: 'YJBV_POC_TD', subrc: 2, msg: 'não existe' }]);
+});
+
+test('tran: gui pedido × TSTCC lida em outra LUW (valores medidos no s4h: S_WEBGUI "1", S_WIN32/S_PLATIN "X")', () => {
+  expect(GUI_TSTCC).toEqual({ html: ['S_WEBGUI', '1'], win: ['S_WIN32', 'X'], java: ['S_PLATIN', 'X'] });
+  const linha = (webgui, win32, platin) => ({ TCODE: 'YJBV_TC', S_WEBGUI: webgui, S_WIN32: win32, S_PLATIN: platin });
+  // default da lib (html+win, sem java) — é o que a FM gravou
+  expect(conferirGui(undefined, linha('1', 'X', ''))).toEqual({ ok: true, banco: { html: true, win: true, java: false }, divergencias: [] });
+  expect(conferirGui({ html: true, win: true, java: true }, linha('1', 'X', 'X')).ok).toBe(true);
+  expect(conferirGui({ html: false, win: false, java: false }, linha('', '', '')).ok).toBe(true);
+  // 'X' em S_WEBGUI não é o valor que a FM grava — só '1' conta como ligado
+  expect(conferirGui({ html: true }, linha('X', 'X', '')).divergencias).toEqual([{ flag: 'html', esperado: true, lido: false }]);
+  // divergência de verdade: pediu só WebGUI, o banco tem WinGUI também
+  expect(conferirGui({ html: true, win: false }, linha('1', 'X', ''))).toEqual({
+    ok: false, banco: { html: true, win: true, java: false }, divergencias: [{ flag: 'win', esperado: false, lido: true }] });
+  // sem linha na TSTCC: tudo que foi pedido diverge (lido null)
+  expect(conferirGui({ html: true }, null).divergencias).toEqual([
+    { flag: 'html', esperado: true, lido: null }, { flag: 'win', esperado: true, lido: null }, { flag: 'java', esperado: false, lido: null }]);
+  // ALREADY_EXIST: a FM não tocou na transação, então só o que o chamador pediu explicitamente vale
+  expect(conferirGui({}, linha('', 'X', ''), { flags: [] })).toEqual({ ok: true, banco: { html: false, win: true, java: false }, divergencias: [] });
+  expect(conferirGui({ html: true }, linha('', 'X', ''), { flags: ['html'] }).divergencias).toEqual([{ flag: 'html', esperado: true, lido: false }]);
 });

@@ -124,21 +124,45 @@ export function parseTransactionOutput(saida) {
   };
 }
 
+/**
+ * Onde cada flag de `gui` cai na TSTCC, e o valor que a FM grava. Medido 2026-09-06, S4H 758/250
+ * (POC_tran_tstcc): S_WEBGUI é **'1'**, S_WIN32 e S_PLATIN são **'X'** — e a linha da TSTCC existe
+ * mesmo com os três desligados (todos os campos vazios).
+ */
+export const GUI_TSTCC = { html: ['S_WEBGUI', '1'], win: ['S_WIN32', 'X'], java: ['S_PLATIN', 'X'] };
+
+/**
+ * Confere o `gui` pedido contra a linha TSTCC lida em OUTRA LUW. Puro.
+ * `flags` limita quais conferir — transação que já existia não foi tocada pela FM (ALREADY_EXIST),
+ * então os defaults da lib não valem como expectativa: só o que o chamador pediu explicitamente.
+ * Devolve `{ ok, banco: { html, win, java } | null, divergencias: [{ flag, esperado, lido }] }`.
+ */
+export function conferirGui(gui = {}, tstcc, { flags = Object.keys(GUI_TSTCC) } = {}) {
+  const pedido = { html: true, win: true, java: false, ...gui };
+  const banco = tstcc ? Object.fromEntries(Object.entries(GUI_TSTCC).map(([f, [campo, on]]) => [f, tstcc[campo] === on])) : null;
+  const divergencias = flags.filter((f) => pedido[f] !== banco?.[f]).map((f) => ({ flag: f, esperado: pedido[f], lido: banco?.[f] ?? null }));
+  return { ok: divergencias.length === 0, banco, divergencias };
+}
+
 /** Lê o que a transação é no banco, em outra LUW (readTable). */
 export async function readTransaction(cfg, tcode) {
   const C = String(tcode).toUpperCase();
-  const [tstc, tstct, tstcp, tadir] = await Promise.all([
+  const [tstc, tstct, tstcp, tstcc, tadir] = await Promise.all([
     readTable(cfg, 'TSTC', { where: [`TCODE = '${C}'`] }),
     readTable(cfg, 'TSTCT', { where: [`TCODE = '${C}'`] }),
     readTable(cfg, 'TSTCP', { where: [`TCODE = '${C}'`] }),
+    readTable(cfg, 'TSTCC', { where: [`TCODE = '${C}'`] }),
     readTable(cfg, 'TADIR', { campos: ['OBJECT', 'OBJ_NAME', 'DEVCLASS', 'AUTHOR', 'MASTERLANG'], where: [`PGMID = 'R3TR' AND OBJECT = 'TRAN'`, `AND OBJ_NAME = '${C}'`] }),
   ]);
-  return { exists: tstc.length === 1, tstc: tstc[0] ?? null, tstct, tstcp: tstcp[0] ?? null, tadir: tadir[0] ?? null };
+  return { exists: tstc.length === 1, tstc: tstc[0] ?? null, tstct, tstcp: tstcp[0] ?? null, tstcc: tstcc[0] ?? null, tadir: tadir[0] ?? null };
 }
 
 /**
- * Cria a transação pelo driver e prova por readTable (TSTC/TSTCT/TSTCP/TADIR) em outra LUW.
- * Devolve { ok, created, existed, subrc, msg, tstc, gui, banco, saida }. O driver fica em `pkg`
+ * Cria a transação pelo driver e prova por readTable (TSTC/TSTCT/TSTCP/TSTCC/TADIR) em outra LUW.
+ * Devolve { ok, created, existed, subrc, msg, tstc, gui, guiBanco, guiDivergencias, banco, saida }.
+ * `gui` é o que o RPY_TRANSACTION_READ viu na MESMA LUW; `guiBanco` é a TSTCC em OUTRA LUW — é ela
+ * que entra no `ok`. Numa transação que já existia (ALREADY_EXIST) só valem os flags que o chamador
+ * passou: a FM não alterou nada, então o default da lib não é expectativa. O driver fica em `pkg`
  * (`keepDriver: false` apaga ao final). Exige senha no cfg (classrun em sessão nova).
  */
 export async function deployTransaction(conexao, { tcode, driver = `Y_TRAN_${String(tcode).toUpperCase().slice(0, 23)}`, keepDriver = false, ...opts }) {
@@ -150,15 +174,20 @@ export async function deployTransaction(conexao, { tcode, driver = `Y_TRAN_${Str
   if (!keepDriver) await deleteObject(conexao, { type: 'class', name: driver, confirm: true }).catch(() => {});
   const programOk = !opts.program || banco.tstc?.PGMNA === String(opts.program).toUpperCase();
   const pkgOk = !banco.tadir || banco.tadir.DEVCLASS === pkg;
-  return { ...p, ok: p.ok && banco.exists && programOk && pkgOk, created: p.subrc === 0, banco, saida: r.saida };
+  const g = conferirGui(opts.gui, banco.tstcc, p.existed ? { flags: Object.keys(opts.gui ?? {}) } : undefined);
+  return { ...p, ok: p.ok && banco.exists && programOk && pkgOk && g.ok, created: p.subrc === 0,
+    guiBanco: g.banco, guiDivergencias: g.divergencias, banco, saida: r.saida };
 }
 
-/** Apaga a transação (RPY_TRANSACTION_DELETE) e confirma por readTable. Devolve { ok, deleted, banco, saida }. */
+/**
+ * Apaga a transação (RPY_TRANSACTION_DELETE) e confirma por readTable — TSTC **e** TSTCC, que a FM
+ * apaga junto (medido). Devolve { ok, deleted, banco, saida }.
+ */
 export async function deleteTransaction(conexao, { tcode, pkg = '$TMP', driver = `Y_TRAND_${String(tcode).toUpperCase().slice(0, 22)}`, keepDriver = false }) {
   const C = String(tcode).toUpperCase();
   const r = await deployAndRun(conexao, { name: driver, pkg, description: `driver: apaga transação ${C}`, source: buildTransactionDeleteSource(driver, C) });
   const del = r.ok ? parseTransactionOutput(r.saida).deletes[0] : null;
-  const banco = await readTransaction(conexao.cfg, C).catch(() => ({ exists: true }));
+  const banco = await readTransaction(conexao.cfg, C).catch(() => ({ exists: true, tstcc: {} }));
   if (!keepDriver) await deleteObject(conexao, { type: 'class', name: driver, confirm: true }).catch(() => {});
-  return { ok: !banco.exists, deleted: del?.subrc === 0, subrc: del?.subrc ?? null, msg: del?.msg ?? r.erro, banco, saida: r.saida };
+  return { ok: !banco.exists && !banco.tstcc, deleted: del?.subrc === 0, subrc: del?.subrc ?? null, msg: del?.msg ?? r.erro, banco, saida: r.saida };
 }

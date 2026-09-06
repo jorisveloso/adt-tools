@@ -18,7 +18,8 @@ removidos ao final (TSTC/TSTCT/TSTCP/TSTCC/TADIR vazios por readTable). Item 18 
    caractere (`8`/`0`).
 3. **Assert em outra LUW** (`readTransaction`): `TSTC` (PGMNA, DYPNO, CINFO), `TSTCT` (SPRSL = idioma do logon,
    TTEXT), `TSTCP` (só parâmetro/variante: `/*SM30 VIEWNAME=V_T001;UPDATE=X;` — `/*` = pula tela inicial, `/N` não),
-   `TSTCC` (S_WEBGUI `1`, S_WIN32 `X`), `TADIR` (DEVCLASS, AUTHOR, MASTERLANG).
+   `TSTCC` (S_WEBGUI `1`, S_WIN32 `X`), `TADIR` (DEVCLASS, AUTHOR, MASTERLANG). A TSTCC entra no `ok` do
+   `deployTransaction` — § *o gui volta no assert*.
 4. **Prova de uso — a transação despacha**: `CALL TRANSACTION 'YJBV_POC_TP' … USING bdc MODE 'N'` com uma BDC
    deliberadamente errada devolveu `subrc=1001` e `S 00 344 "No batch input data for screen SAPL0ORG 0040"` — a
    tela de manutenção da `V_T001`: a transação de parâmetro entrou na SM30, pulou a tela inicial e chegou ao
@@ -68,7 +69,8 @@ const r = await deployTransaction(conexao, {
   tcode: 'ZMANT_MINHA', type: 'parameter', text: 'Manutenção da ZMINHA', called: 'SM30', skip: true,
   params: [{ field: 'VIEWNAME', value: 'ZMINHA' }, { field: 'UPDATE', value: 'X' }], pkg: 'ZPKG', transport: 'S4HK900123',
 });
-// r.ok · r.created / r.existed · r.tstc {pgmna,dypno,cinfo} · r.banco {tstc,tstct,tstcp,tadir}
+// r.ok · r.created / r.existed · r.tstc {pgmna,dypno,cinfo} · r.banco {tstc,tstct,tstcp,tstcc,tadir}
+// r.gui (driver, mesma LUW) · r.guiBanco {html,win,java} (TSTCC, outra LUW) · r.guiDivergencias
 await deployTransaction(conexao, { tcode: 'ZREL', type: 'report', program: 'ZREL_REPORT', replace: true });
 await deleteTransaction(conexao, { tcode: 'ZMANT_MINHA' });
 await conexao.encerrar();
@@ -202,6 +204,33 @@ Transaction" (um campo) → `preencher` + `enter` → o nó novo → `acionarNo`
 **Veredito:** nenhum dos três caminhos olha o `TSTCC S_WEBGUI`, e os três sabem recusar — cada um
 com sua mensagem, em momento diferente. O `gui.html` do `deployTransaction` é **fidelidade à SE93**,
 não pré-requisito do canal. Mantenha o default; não o use como explicação quando uma tela não abrir.
+
+### O `gui` volta no assert — a TSTCC em OUTRA LUW (item 93)
+
+**Medido em 06/09/2026, S4H 758/250** (`sap-accelerate/work/POC_tran_tstcc/medicoes/item93-tstcc.md`).
+Antes, o `r.gui` do `deployTransaction` vinha só do `RPY_TRANSACTION_READ` **dentro do driver** — a
+mesma LUW que acabou de gravar, a palavra do driver sobre si mesmo. Agora `readTransaction` lê
+também a **TSTCC**, e ela entra no veredito.
+
+| `gui` da lib | campo da TSTCC | valor que a FM grava |
+|---|---|---|
+| `html` | `S_WEBGUI` | **`1`** — não `X` |
+| `win` | `S_WIN32` | `X` |
+| `java` | `S_PLATIN` | `X` |
+
+- **`S_WEBGUI` é `'1'`.** Comparar com `'X'` lê ligado como desligado. Na lib é a constante
+  `GUI_TSTCC`; a comparação é a função pura `conferirGui(gui, tstcc, { flags })`.
+- **A linha da TSTCC existe mesmo com os três flags desligados** (todos os campos vazios) — é por
+  isso que `deleteTransaction` pode exigir `tstcc: null` como prova de remoção, junto com a TSTC.
+- **Transação que já existia** (`ALREADY_EXIST`): a FM não altera nada, então só se conferem os
+  flags que o chamador passou **explicitamente**. Medido: recriar com `{ html: true, win: false }` e
+  depois pedir `{ win: true }` sem `replace` devolve `ok: false` com
+  `guiDivergencias [{ flag: 'win', esperado: true, lido: false }]` — antes disso, respondia `ok: true`
+  para um `gui` que o banco não tinha. Para trocar de verdade, `replace: true`.
+- `r.gui` (driver, mesma LUW) bateu com `r.guiBanco` (TSTCC, outra LUW) em todas as combinações
+  medidas — os dois continuam no retorno, de propósito: é o par que prova o `COMMIT`.
+- `S_SERVICE`/`S_PERVAS` da TSTCC não têm parâmetro na FM e ficam vazios — **aberto** o que a SE93
+  põe ali.
 
 ### O que este par NÃO resolve
 
