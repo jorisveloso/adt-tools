@@ -2191,6 +2191,7 @@ o `sap.its.arrITSDocParams`. Cada método é um POST **fora do batch**, na URL q
 | `Export` | `<URL>get` | **o arquivo** |
 | `Import` | `<URL>post`, multipart `LOCALFILE1` — **leva o arquivo** | vazia |
 | `GuiSapInfo` + `Method:'ClipboardExport'` | `<URL>clipboardexport` | **o texto** |
+| `Execute` | **nenhum** — só o `OK_ITSDOC` de volta | — |
 
 Depois de CADA um, o controle volta à dynpro com o trio fixo do renderer (`OK_ITSDOC`):
 `okcode/ses[0]` = `=OK`, `vkey/0/ses[0]`, `state/ur`. Sem ele o programa fica esperando o frontend.
@@ -2204,7 +2205,8 @@ diretório existe (`1`/`0`). A CG3Y pergunta `FE`, e respondendo `Z:\` deu **dum
 do filesystem VIRTUAL que o renderer inventa para o browser (`nfstosfs`), não disco de ninguém.
 ⚠ **Arquivo grande vem FATIADO**: o HTML veio em dois `Export` (5 120 000 B + 1 643 878 B). Daí
 `exportarLista` acumular `partes` e concatenar.
-⚠ **`planilha` não passa por aqui**: abre outro popup (*Export As*) e não chega ao ITSDoc.
+⚠ **`planilha` tem uma etapa a mais**: o Avançar abre o popup *Export As*, e é o botão de lá que
+dispara o ITSDoc — § abaixo (item 73).
 
 | formato | saída | bytes | download |
 |---|---|---:|---:|
@@ -2217,6 +2219,47 @@ do filesystem VIRTUAL que o renderer inventa para o browser (`nfstosfs`), não d
 exportação traz a lista **como o ALV a formata** (cabeçalho traduzido, valor com máscara, ordem da
 tela) e o `lerGrid` traz o dado por `ColumnID`. Para *ver o que o usuário veria*, exportação; para
 *ler campo*, `lerGrid`.
+
+### O XLSX sai por OUTRO popup — o *Export As*, e o botão dele (item 73)
+
+O formato *Planilha eletrônica* é o único dos seis que **não** vai ao ITSDoc pelo Avançar: ele abre
+uma segunda modal, o **Export As** (`SAPLSALV_GUI_CUL_EXPORT_AS`, título *Export As*), e quem
+dispara o download é o **"Exportar para..."** dela — `wnd[1]/tbar[0]/btn[20]`, `SHIFT_F8`. Medido no
+s4h 758/250 em 06/09/2026 (`work/POC_webgui_planilha/medicoes/item73-planilha.md`).
+
+```js
+const s = await abrirTransacao(cfg, 'SA38', { parametros: { 'RS38M-PROGRAMM': 'RSPARAM' }, okcode: 'STRT' });
+await acionar(s, 'btn[8]');
+const { conteudo, bytes, metodos } = await exportarPlanilha(s, { nome: 'PARAMETROS' });
+// 88 061 B de XLSX real (PK\x03\x04, 9 partes OOXML) — 1618 linhas × 5 colunas
+// metodos: [ 'FileSaveDialog', 'Export', 'Execute' ]
+```
+
+Três peças no popup, e `exportAsDoPopup(popupDaTela(...))` devolve as três: `txtGS_EXPORT-FILE_NAME`
+(nome **sem** extensão — quem põe é o `DefExt` do ITSDoc), `cmbGS_EXPORT-FORMAT` e
+`cmbGS_EXPORT-DESTINATION`. No sistema medido os dois combos tinham **uma opção cada**
+(`xlsx-CUSTOM` "Microsoft Excel (*.xlsx)" e `L` "Local") — sistema com mais de uma **não está
+medido**, e é por isso que a função devolve os `valores` de tela.
+
+O laço do ITSDoc tem **três** voltas, e a terceira é o método novo: `FileSaveDialog` → `Export` →
+**`Execute`**. O `Execute` (`Operation:'OPEN'`, `CommandLine:'<o arquivo>'`) é "abra no frontend o
+arquivo que acabou de baixar" — no renderer é `showBlob`, **sem XHR nenhum** —, então a resposta
+certa é *não postar nada*. Medido dos dois lados: responder `cancel` também conclui (mesma mensagem,
+mesmos bytes), mas mente sobre o que o frontend fez.
+
+⚠ **`btn[43]` e `btn[45]`→radio *planilha* NÃO dão o mesmo arquivo.** As duas vias abrem o MESMO
+popup, chamam o MESMO ITSDoc, e os 1617 parâmetros batem **1617 de 1617** — mas:
+
+| | `btn[45]` → radio *planilha* (`exportarLista`) | `btn[43]` (`exportarPlanilha`) |
+|---|---:|---:|
+| bytes | 206 650 | **88 061** |
+| linhas × colunas | 1620 × **32** | 1618 × **5** |
+| cabeçalho | linha 2 (a 1 é vazia), coluna A de margem | linha 1 |
+| o que é | a **LISTA** (o layout de impressão espalhado em células, texto com *padding*) | o **GRID** (uma coluna por coluna do ALV) |
+
+Para planilha que alguém vai abrir e usar: `exportarPlanilha`. O `btn[43]` é *Planilha
+eletrônica...*, `CTRL_SHIFT_F7`, e vive na mesma barra do `btn[45]` (a faixa publica `btn[40]`,
+`btn[43]` e `btn[45]` — o `btn[40]` não foi seguido).
 
 ### ⚠ O `CopyToClipboardRequest` do grid NÃO tem via HTTP
 

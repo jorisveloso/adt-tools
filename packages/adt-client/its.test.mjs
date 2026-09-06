@@ -11,7 +11,7 @@ import {
   sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla, janelaAtiva, janelaDoSid, ativa,
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, popupsDaTela, telaDoDelta, lerTela, parametrosDaTela,
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
-  itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS,
+  itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS, exportAsDoPopup,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
   indiceDoNo, arvoreDosBrutos, arvore, batchExpandirNo, batchAcionarNo, acharNoDaArvore,
   sidDoControle, controleDoSid, eventosDoControle, batchDoEvento, eventosDoAlvo,
@@ -998,4 +998,41 @@ test('its: sessão JÁ encerrada não executa a pilha — avisa e PRESERVA os r�
   expect(r).toMatchObject({ encerrada: false, motivo: 'já estava encerrada', pendentes: ['rascunho órfão'] });
   expect(gestos).toEqual([]);                  // sem sessão, o POST do descarte só estouraria
   expect(s.desfazer.tamanho()).toBe(1);        // a pilha fica de pé para quem abrir outra sessão
+});
+
+// ---------- o formato PLANILHA: o popup Export As e o Execute (item 73) ----------
+// Copiados das respostas do s4h 758/250 de 06/09/2026, exportando o ALV do RSPARAM em XLSX pelo
+// `btn[43]` (POC_webgui_planilha/medicoes/raw/d-01-btn43.txt, c-nada-doc2.json).
+const EXPORT_AS = `<updates><delta-update><control-update id="popup"><content><![CDATA[
+<div ct="PW_standards" lsdata='{"0":false,"4":"913px","5":"208px","8":"webguiKeys","13":{"SID":"wnd[1]","Type":"GuiModalWindow","ModalNo":1,"focusable":"X"},"16":true}' lsevents='{"Close":[{},{"1":"action/11","2":true,"3":true}],"Hotkey":[{},{"0":"GuiModalWindow","1":"vkey","2":true}],"PopupContextMenu":[{},{}]}' id="SAPLSALV_GUI_CUL_CONFIGURATION1500_1" role="dialog" aria-labelledby="SAPLSALV_GUI_CUL_CONFIGURATION1500_1-header-title-txt" class="lsPWNew lsPWNewMaxWidthAutoX lsPWNewMaxWidthAutoY">
+<input id="M1:46:1::1:17" ct="CBS" lsdata='{"x":0,"1":"FREETEXT","3":"M1:46:1::1:17_TALB","5":"EXPORT_20260906_013033","7":true,"13":"N","14":"SERVER","17":false,"20":false,"21":{"SID":"wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/txtGS_EXPORT-FILE_NAME","Type":"GuiTextField","value":"EXPORT_20260906_013033","maxlen":80,"focusable":"X"},"22":"pstxt","29":"M1:46:1::1:1"}' lsevents='{"Change":[{},{"1":"value","3":true,"7":true}],"Select":[{},{"1":"value","3":true,"7":true}],"Validate":[{},{}],"DeleteItem":[{},{"3":true}],"ListAccess":[{"ResponseData":"delta","TransportMethod":"full","EnqueueCardinality":"none"},{"3":true,"8":"history","limitlen":"X"}],"ClipboardTablePaste":[{},{"0":"GuiTextField","1":"action/25","2":true,"3":true}]}' type="text" data-sap-ls-accesskey="N" accesskey="N" autocomplete="off" maxlength="80" tabindex="0" ti="0" title="Char&#x20;80" class="lsField__input" value="EXPORT_20260906_013033" role="textbox" aria-labelledby="M1&#x3a;46&#x3a;1&#x3a;&#x3a;1&#x3a;1" name="InputField"/>
+<input id="M1:46:1::2:17" ct="CB" lsdata='{"x":0,"3":"GS_EXPORT-FORMATSAPLSALV_GUI_CUL_EXPORT_AS","4":"xlsx-LEAN-STANDARD","5":"Microsoft Excel (*.xlsx)","7":true,"12":true,"13":"F","21":{"SID":"wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/cmbGS_EXPORT-FORMAT","Type":"GuiComboBox","focusable":"X"},"29":"M1:46:1::2:1"}' lsevents='{"Select":[{},{"1":"value","2":true,"3":true}],"Validate":[{},{}]}' type="text" data-sap-ls-accesskey="F" accesskey="F" autocomplete="off" tabindex="0" ti="0" title="Caractere&#x20;40&#x20;posi&#xe7;&#xf5;es" class="lsField__input" readonly value="Microsoft&#x20;Excel&#x20;&#x28;&#x2a;.xlsx&#x29;" aria-roledescription="Caixa&#x20;de&#x20;listagem&#x20;drop-down" aria-controls="GS_EXPORT-FORMATSAPLSALV_GUI_CUL_EXPORT_AS" aria-haspopup="true" aria-labelledby="M1&#x3a;46&#x3a;1&#x3a;&#x3a;2&#x3a;1"/>
+<input id="M1:46:1::3:17" ct="CB" lsdata='{"x":0,"3":"GS_EXPORT-DESTINATIONSAPLSALV_GUI_CUL_EXPORT_AS","4":"L","5":"Local","7":true,"12":true,"13":"D","21":{"SID":"wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/cmbGS_EXPORT-DESTINATION","Type":"GuiComboBox","focusable":"X"},"29":"M1:46:1::3:1"}' lsevents='{"Select":[{},{"1":"value","2":true,"3":true}],"Validate":[{},{}]}' type="text" data-sap-ls-accesskey="D" accesskey="D" autocomplete="off" tabindex="0" ti="0" title="Caractere&#x20;40&#x20;posi&#xe7;&#xf5;es" class="lsField__input" readonly value="Local" aria-roledescription="Caixa&#x20;de&#x20;listagem&#x20;drop-down" aria-controls="GS_EXPORT-DESTINATIONSAPLSALV_GUI_CUL_EXPORT_AS" aria-readonly="true" aria-haspopup="true" aria-labelledby="M1&#x3a;46&#x3a;1&#x3a;&#x3a;3&#x3a;1"/>
+<div draggable="false" id="M1:48::btn[20]" ct="B" lsdata='{"0":"Exportar para...","2":"TRANSPARENT","4":"Exportar dados","17":"E","18":"SHIFT_F8","21":true,"25":"TOGGLE","27":{"SID":"wnd[1]/tbar[0]/btn[20]","Type":"GuiButton","SubType":"toolbar"}}' lsevents='{"Press":[{},{"1":"action/3","2":true,"3":true}]}' role="button" title="Exportar&#x20;dados" data-sap-ls-accesskey="E" accesskey="E" tabindex="0" ti="0" class="lsButton lsButton--base urNoUserSelect urBtnRadius  lsButton--useintoolbar  lsButton--active  lsButton--focusable  lsButton--up lsButton--design-transparent ">
+<div draggable="false" id="M1:54::btn[12]" ct="B" lsdata='{"0":"Cancelar","2":"TRANSPARENT","4":"Finalizar sem atualização das configurações","17":"C","18":"ESCAPE","21":true,"25":"TOGGLE","27":{"SID":"wnd[1]/tbar[0]/btn[12]","Type":"GuiButton","SubType":"toolbar"}}' lsevents='{"Press":[{},{"1":"action/3","2":true,"3":true}]}' role="button" title="Finalizar&#x20;sem&#x20;atualiza&#xe7;&#xe3;o&#x20;das&#x20;configura&#xe7;&#xf5;es" data-sap-ls-accesskey="C" accesskey="C" tabindex="0" ti="0" class="lsButton lsButton--base urNoUserSelect urBtnRadius  lsButton--useintoolbar  lsButton--active  lsButton--focusable  lsButton--up lsButton--design-transparent ">
+]]></content></control-update></delta-update></updates>`;
+
+const ITSDOC_EXECUTE = `<updates><delta-update><script-call><![CDATA[sap.its.arrITSDocParams = {URL:'/sap(cz1TSUQlM2FBTk9OJTNhbmRjLXM0aGFuYV9TNEhfMDAlM2FvWVhuNmhpaU1RXzRNdHlOc0ZjcVZ6enVlcDhkeTdWZ19yMXpDVXFDLUFUVA==)/bc/gui/sap/its/webgui/145/data/682D70E7D2A8684C~',action:'invoke_itsdoc',Program:'',Operation:'OPEN',CommandLine:'Z:\\\\ITEM73.xlsx',ITSDocMethod:'Execute'};sap.its.updateITSDoc();]]></script-call></delta-update></updates>`;
+
+test('its: exportAsDoPopup acha os campos do Export As — o desvio do formato PLANILHA (item 73)', () => {
+  const pop = popupDaTela(controlesDoDelta(EXPORT_AS));
+  expect(pop.sid).toBe('wnd[1]');   // o titulo ('Export As') vem do cabeçalho da modal, fora deste recorte
+  const cx = exportAsDoPopup(pop);
+  // quem dispara o ITSDoc é o "Exportar para..." (btn[20]), não o Enter da modal
+  expect(cx.botao).toBe('wnd[1]/tbar[0]/btn[20]');
+  expect(cx.nome).toMatch(/txtGS_EXPORT-FILE_NAME$/);
+  expect(cx.formato).toMatch(/cmbGS_EXPORT-FORMAT$/);
+  expect(cx.destino).toMatch(/cmbGS_EXPORT-DESTINATION$/);
+  // os combos vêm com o valor de tela: no sistema medido, uma opção só em cada
+  expect(cx.valores).toMatchObject({ formato: 'Microsoft Excel (*.xlsx)', destino: 'Local' });
+  // outra modal qualquer não é o Export As — e o nulo não estoura
+  expect(exportAsDoPopup(popupDaTela(controlesDoDelta(DELTA)))).toBe(null);
+  expect(exportAsDoPopup(null)).toBe(null);
+});
+
+test('its: pedidoDoItsdoc — o Execute NÃO posta nada: o renderer só devolve o okcode (item 73)', () => {
+  const doc = itsdocDoDelta(ITSDOC_EXECUTE);
+  expect(doc).toMatchObject({ ITSDocMethod: 'Execute', Operation: 'OPEN', CommandLine: 'Z:\\ITEM73.xlsx' });
+  // `caminho: null` = não POSTe nada; é o que o `atenderItsdoc` lê para pular direto ao OK_ITSDOC
+  expect(pedidoDoItsdoc(doc).caminho).toBe(null);
 });

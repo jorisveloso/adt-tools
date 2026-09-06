@@ -1154,6 +1154,7 @@ const ecodificar = (s) => encodeURIComponent(String(s ?? '')).replace(/%20/g, '+
  * | `FileSaveDialog`               | `filesavedialog?FileName=…&FileEncoding=…`   | — | vazia |
  * | `FileOpenDialog`               | `fileopendialog?` + `FileName0=…` no CORPO   | — | vazia |
  * | `Export`                       | `get`                                        | — | **o arquivo** |
+ * | `Execute`                      | **nada** — só devolve o controle             | — | — |
  * | `Import`                       | `post`                                       | **o arquivo** | vazia |
  * | `GuiSapInfo`/`ClipboardExport` | `clipboardexport`                            | — | **o texto** |
  * | qualquer outro                 | `cancel`                                     | — | vazia |
@@ -1190,6 +1191,11 @@ export function pedidoDoItsdoc(doc, { caminho = RAIZ_NFS, arquivo = `${RAIZ_NFS}
       corpo: `FileEncoding=${doc?.WithEncoding ? encoding : ''}&count=1&FileName0=${ecodificar(arquivo)}`,
     });
   }
+  // `Execute` é "abra no frontend o arquivo que acabou de baixar" — e NÃO tem POST: no renderer
+  // (`R.Execute = m` → `y(K, updown_send_okcode, …)`, webgui_min.js) ele só chama o okcode de volta.
+  // Vem depois do `Export` do XLSX (item 73). Medido nos dois lados: responder `cancel` aqui também
+  // conclui (mesma mensagem, mesmo arquivo), mas o fiel ao renderer é não postar nada.
+  if (metodo === 'Execute') return pedido(null);
   if (metodo === 'Export') return pedido(`${url}get`, { conteudo: true });
   if (metodo === 'Import') return pedido(`${url}post`, { envia: true });
   if (metodo === 'GuiSapInfo' && doc?.Method === 'ClipboardExport') return pedido(`${url}clipboardexport`, { conteudo: true });
@@ -1298,8 +1304,10 @@ export async function atenderItsdoc(sessao, resposta, { dado = null, arquivo = `
  * já vem estruturado — mas é a lista FORMATADA pelo ALV (cabeçalho traduzido, valor com máscara),
  * não o dado cru que o `lerGrid` devolve.
  *
- * ⚠️ `planilha` NÃO passa por aqui: abre outro popup ("Export As", `GS_EXPORT-FILE_NAME/FORMAT/
- * DESTINATION`) e não chegou ao ITSDoc — não medido.
+ * ⚠️ `planilha` tem uma etapa A MAIS: o Avançar abre o popup **Export As** e quem dispara o ITSDoc
+ * é o "Exportar para..." de lá (tratado aqui desde o item 73). O XLSX que sai por este caminho é a
+ * LISTA espalhada em células (1620 × 32, coluna de margem, 206 650 B) — para o GRID limpo
+ * (1618 × 5, 88 061 B) o gesto é outro: `exportarPlanilha` (`btn[43]`).
  * ⚠️ Arquivo grande vem FATIADO: o HTML veio em dois `Export` (5.120.000 B + 1.643.878 B), daí
  * `partes` e a concatenação.
  */
@@ -1317,11 +1325,99 @@ export async function exportarLista(sessao, { formato = 'tabuladores', arquivo =
   const radio = radios[idx];
   if (!radio) throw new Error(`its: exportarLista — o popup de formato tem ${radios.length} opção(ões), não a de índice ${idx}`);
   await postar(sessao, [{ post: `action/4/${radio.sid}` }, ESTADO], { tetoMs });
-  const r = await postar(sessao, [ENTER, ESTADO], { tetoMs });
+  let r = await postar(sessao, [ENTER, ESTADO], { tetoMs });
+  // o formato PLANILHA não vai ao ITSDoc pelo Avançar: ele abre o popup "Export As", e quem
+  // dispara é o "Exportar para..." de lá (item 73).
+  if (exportAsDoPopup(popupDaTela(controlesDoDelta(sessao.delta ?? '')))) {
+    ({ r } = await dispararExportAs(sessao, { nome: nomeDoArquivo(arquivo), tetoMs, de: 'exportarLista' }));
+  }
 
   const { conteudo, partes, voltas, pedidos } = await atenderItsdoc(sessao, r, { arquivo, encoding, voltasMax, tetoMs });
   detalhe(`its: exportarLista ${formato} — ${conteudo.length} B em ${partes} parte(s), ${voltas} volta(s) do ITSDoc`);
   return { formato, arquivo, conteudo, bytes: conteudo.length, partes, voltas, pedidos, ms: Date.now() - t0 };
+}
+
+/**
+ * PURO: o popup **Export As** do ALV (`SAPLSALV_GUI_CUL_EXPORT_AS`) — `{ sid, titulo, nome,
+ * formato, destino, botao, valores }`, ou `null` se a modal aberta é outra coisa.
+ *
+ * É o desvio do formato PLANILHA: ele não é um popup de confirmação, é a segunda etapa do gesto.
+ * O `nome` é o campo do nome do arquivo (SEM extensão — quem põe é o `DefExt` do ITSDoc), `formato`
+ * e `destino` são os dois combos, e `botao` é o "Exportar para..." (`wnd[1]/tbar[0]/btn[20]`,
+ * `SHIFT_F8`) — é ele, não o Enter, que dispara o ITSDoc.
+ *
+ * Medido no s4h 758/250 em 06/09/2026 (item 73): os dois combos tinham UMA opção cada
+ * (`xlsx-CUSTOM` "Microsoft Excel (*.xlsx)" e `L` "Local"), daí `valores` vir junto — quem
+ * encontrar mais de uma sabe que aqui há escolha a fazer, e que ela ainda não está medida.
+ */
+export function exportAsDoPopup(popup) {
+  if (!popup) return null;
+  const ache = (re) => popup.campos?.find((c) => re.test(c.sid))?.sid ?? null;
+  const nome = ache(/txtGS_EXPORT-FILE_NAME$/);
+  const botao = popup.botoes?.find((b) => /tbar\[0\]\/btn\[20\]$/.test(b.sid))?.sid ?? null;
+  if (!nome || !botao) return null;
+  const formato = ache(/cmbGS_EXPORT-FORMAT$/), destino = ache(/cmbGS_EXPORT-DESTINATION$/);
+  const valor = (sid) => popup.campos.find((c) => c.sid === sid)?.valor ?? null;
+  return { sid: popup.sid, titulo: popup.titulo, nome, formato, destino, botao,
+           valores: { nome: valor(nome), formato: valor(formato), destino: valor(destino) } };
+}
+
+/** Preenche o nome e aciona o "Exportar para..." do Export As — a segunda etapa do gesto planilha. */
+async function dispararExportAs(sessao, { nome = null, tetoMs = 180000, de = 'exportar' } = {}) {
+  const cx = exportAsDoPopup(popupDaTela(controlesDoDelta(sessao.delta ?? '')));
+  if (!cx) throw new Error(`its: ${de} — a tela não abriu o popup "Export As" (GS_EXPORT-FILE_NAME + btn[20]); o formato planilha passa por ele`);
+  if (nome) preencher(sessao, { sid: cx.nome }, nome);
+  const r = await acionar(sessao, { sid: cx.botao }, { tetoMs });
+  return { r, cx };
+}
+
+/** O nome NU de um caminho virtual (`Z:\lista.txt` → `lista`) — é o que o Export As quer no
+ * `GS_EXPORT-FILE_NAME`: sem pasta e sem extensão (a extensão vem do `DefExt` do ITSDoc). */
+const nomeDoArquivo = (caminho) => String(caminho ?? '').split(/[\\/]/).pop().replace(/\.[^.]*$/, '') || null;
+
+/** O nome que o Export As traz por padrão tem carimbo de hora; este é o nosso, para o arquivo virtual. */
+const nomePadrao = () => `EXPORT_${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`;
+
+/**
+ * EXPORTA o ALV em **XLSX** — o caminho que o usuário final usa para planilha, e o único formato
+ * que NÃO sai pelo popup de 6 radios do `exportarLista`.
+ *
+ * O gesto é o `wnd[0]/tbar[1]/btn[43]` da barra do ALV ("Planilha eletrônica...", `CTRL_SHIFT_F7`).
+ * Ele abre o popup **Export As** (`exportAsDoPopup`); quem dispara o ITSDoc é o "Exportar para..."
+ * do popup, não o Enter. Daí o laço é o de sempre (`atenderItsdoc`), com uma volta a mais:
+ * `FileSaveDialog` → `Export` → `Execute`.
+ *
+ * Devolve `{ nome, arquivo, conteudo (Buffer do XLSX), bytes, partes, voltas, pedidos, metodos,
+ * mensagem, ms }`.
+ *
+ * Medido no s4h 758/250 em 06/09/2026 sobre a lista do RSPARAM (1617 linhas × 5 colunas),
+ * `work/POC_webgui_planilha/medicoes/item73-planilha.md`: **88 061 B** de XLSX real (assinatura
+ * `PK\x03\x04`, 9 partes OOXML), 1618 linhas × 5 colunas na `sheet1` — cabeçalho na linha 1 e
+ * **uma coluna por coluna do ALV**.
+ *
+ * ⚠️ **`btn[43]` e `btn[45]`→radio `planilha` NÃO dão o mesmo arquivo.** As duas vias abrem o MESMO
+ * popup e o MESMO ITSDoc, e os 1617 parâmetros batem 1617 de 1617 — mas o `btn[45]` exporta a
+ * LISTA (o layout de impressão espalhado em células: 1620 linhas × 32 colunas, coluna A de margem,
+ * cabeçalho na linha 2, texto com padding de espaços, 206 650 B) e o `btn[43]` exporta o GRID
+ * (5 colunas limpas, 88 061 B). Para planilha que alguém vai usar, `btn[43]` — é este o default aqui.
+ * ⚠️ O `formato` e o `destino` do popup são combos; no sistema medido tinham UMA opção cada
+ * (XLSX / Local). Sistema com mais de uma não está medido — o `exportAsDoPopup` devolve os
+ * `valores` justamente para isso aparecer.
+ */
+export async function exportarPlanilha(sessao, { nome = nomePadrao(), arquivo = null, encoding = '4110', alvo = null, voltasMax = 12, tetoMs = 180000 } = {}) {
+  const t0 = Date.now();
+  const botao = alvo ?? { sid: 'wnd[0]/tbar[1]/btn[43]' };
+  if (!alvo && !sessao.sids.some((x) => x.sid === botao.sid)) {
+    throw new Error('its: exportarPlanilha — a tela não tem o botão "Planilha eletrônica..." (wnd[0]/tbar[1]/btn[43]); é uma lista ALV?');
+  }
+  await acionar(sessao, botao, { tetoMs });
+  const { r, cx } = await dispararExportAs(sessao, { nome, tetoMs, de: 'exportarPlanilha' });
+  const virtual = arquivo ?? `${RAIZ_NFS}${nome}.xlsx`;
+  const a = await atenderItsdoc(sessao, r, { arquivo: virtual, encoding, voltasMax, tetoMs });
+  detalhe(`its: exportarPlanilha ${nome} — ${a.conteudo.length} B [${a.metodos.join(' → ')}], formato ${cx.valores.formato}/${cx.valores.destino}`);
+  return { nome, arquivo: virtual, conteudo: a.conteudo, bytes: a.conteudo.length, partes: a.partes,
+           voltas: a.voltas, pedidos: a.pedidos, metodos: a.metodos, mensagem: a.ultima?.mensagem ?? null,
+           formato: cx.valores.formato, destino: cx.valores.destino, ms: Date.now() - t0 };
 }
 
 // ---------- dirigir ----------
