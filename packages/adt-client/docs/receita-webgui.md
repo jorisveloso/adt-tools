@@ -2582,7 +2582,7 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
   na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
   só existe no despejo DOM). ~~Combo~~ **medido** (item 114): escolher uma opção é postar a
-  CHAVE, e `preencher` traduz o texto (§ "O COMBOBOX (`ct="CB"`)"). ~~Ordenar/filtrar~~ **medido** (item 77): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, e a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
+  CHAVE, e `preencher` traduz o texto (§ "O COMBOBOX (`ct="CB"`)"). ~~Ordenar/filtrar~~ **medido** (itens 77 e 116): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"), e o `lerGridInteiro` sob filtro devolve só as filtradas — com o `totalRows` já filtrado — enquanto a sessão de fora não vê nada disso (§ "O FILTRO, a linha selecionada e o drill-down"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -2734,7 +2734,8 @@ token da sessão, no `<form id="webguiform0">`), o **`moin`** (`var` global) e o
 | alcance | 166 de 1617 | **1617 de 1617** | 1617 de 1617 |
 | custo (1617 × 5) | — (0 requisição) | 4 pedidos, 11,9 MB, **2,4 s** | 4 pedidos, 12,4 MB, 1,9 s |
 | sessão | a da tela | **a da tela** | outra |
-| vê o filtro/ordem da tela | sim | **sim** | não |
+| vê a ordem da tela (item 74) | sim | **sim** | não |
+| vê o FILTRO da tela (item 116) | sim | **sim** | não |
 
 Quatro fatos medidos:
 
@@ -2755,6 +2756,81 @@ Quatro fatos medidos:
    Com o ALV ordenado por `btn[28]`, o `lerGridInteiro` devolveu `_CPARG0, _DW, _IG, _PF, abap/aab`
    e a sessão HTTP paralela, no mesmo instante, `Autostart, CPU_CORES, DIR_ATRA, …` — a ordem
    original. É exatamente o que a segunda sessão não consegue ver.
+
+### O FILTRO, a linha selecionada e o drill-down — a lacuna do 74, fechada (item 116)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 116; evidência em
+`sap-accelerate/work/POC_webgui_grid_filtro/medicoes/item116-filtro.md`, fases A–D). O item 74
+provou o eixo da **ordem**; este prova o do **filtro**, e com ele a frase "a sessão da tela vê o que
+a de fora não vê" deixa de ser plausibilidade.
+
+Filtro `NAME` de `a` a `e` no `RSPARAM`. O esperado não foi estimado: o controle leu os 1617 nomes,
+e 279 caem no intervalo.
+
+| | tela (navegador) | sessão HTTP paralela, no MESMO instante |
+|---|---|---|
+| `totalRows` declarado | **279** | **1617** |
+| linhas lidas | 279/279, 1 pedido, 2,05 MB, **518 ms** | 1617, 4 pedidos, 12,4 MB, 1895 ms |
+| primeiras | `abap/NTfmode, abap/aab, …` | `Autostart, CPU_CORES, DIR_ATRA` |
+
+O conjunto é **exatamente** o previsto — 279 de 279 nomes idênticos, nenhum fora do intervalo. E
+**o `totalRows` passa a declarar o filtrado**: é ele que define até onde o `lerGridInteiro` pede
+fragmento, então sob filtro o laço para em 279 sozinho. Filtrar na tela antes de ler é 6× menos byte
+no fio.
+
+**A linha selecionada chega TRADUZIDA ao ABAP.** O item 77 fixou que sob filtro o `_linha` é "a
+n-ésima linha VISÍVEL", não o índice da outtab. A consequência, agora medida com `btn[2]`
+("Selecionar (F2)"):
+
+| K | linha K FILTRADA | linha K ORIGINAL | o drill-down abriu |
+|---|---|---|---|
+| 5 (dentro do bloco) | `abap/advanced_listmasking` | `DIR_BINARY` | **o filtrado** |
+| 200 (fora do bloco, via `posicionarGrid`) | `dbs/db6/dbsl_trace_deadlock_time` | `abap/rabax_no_debug` | **o filtrado** |
+
+Nos dois, `lerSelecao` devolveu `[K]` e o detalhe veio do parâmetro certo. **Quem seleciona pelo
+`_linha` da própria leitura acerta**, mesmo sob filtro e mesmo fora do bloco — a tradução é do
+servidor, do lado desta sessão. E o filtro sobrevive ao drill-down e à volta (`totalRows` = 279,
+`NAME` ainda `filtrada: true`).
+
+#### ⚠ Com MODAL aberta o servidor RECUSA o `action/710`
+
+Com o popup do drill-down de pé, o mesmo POST volta **200 `multipart/mixed` de 180 B**:
+
+```
+X-Order: 1
+X-Code: -103
+X-Status: failed to fire action: not available
+```
+
+**A recusa é do SERVIDOR, não do DOM.** O modal não esconde o grid do JavaScript — ele torna a ação
+indisponível na sessão. E é a assimetria que separa as duas funções: o `lerGrid`, que só lê o bloco
+do DOM, **continua funcionando** nessa mesma tela. Feche a modal antes do `lerGridInteiro`. Mesma
+família dos itens 131 (`action/4` do menu engolido com modal aberta) e 132; a guarda que falta é o item 180.
+
+#### ⚠ Nesta tela o `filtrarGrid` NÃO serve — o `RSPARAM` não tem barra de ALV
+
+A primeira rodada estourou com *"o ALV C102 não tem o botão `MB_FILTER` na barra — esta tela não tem
+barra de ALV nenhuma"*. Ordenar e filtrar do `RSPARAM` moram na barra da **aplicação**
+(`wnd[0]/tbar[1]`): `btn[28]` crescente, `btn[40]` decrescente, `btn[29]` filtro — de onde o item 74
+ordenou e o item 115 postou o sort. O gesto, à mão:
+
+```js
+await marcarColuna(s, null, 'NAME');          // cliente puro, pendente de round-trip
+await acionar(s, 'btn[29]');                  // o botão da barra da APLICAÇÃO leva a marca junto
+const low = await avaliar(s, jsPorSid('DYN001-LOW'));
+await preencher(s, { id: low.id }, 'a');
+const high = await avaliar(s, jsPorSid('DYN001-HIGH'));
+await preencher(s, { id: high.id }, 'e');
+await clicar(s, { id: (await avaliar(s, jsPorSid('wnd[1]/tbar[0]/btn[0]'))).id });
+```
+
+`ordenarGrid`/`filtrarGrid` caírem para a barra da aplicação é o item 179.
+
+#### O `ctxt` do filtro NÃO converte para maiúsculas SEMPRE
+
+Escrito `a`/`e`, o campo leu de volta `{"low":"a","high":"e"}` e casou os 279 nomes minúsculos. O
+item 77 mediu a conversão no `ZJBV_ALV47_EDIT`, e ela é real lá — logo **a conversão é da COLUNA (do
+domínio), não do diálogo**. O aviso do `filtrarGrid` vale como risco a conferir, não como regra.
 
 **⚠ O corpo tem MEGABYTES e não atravessa o CDP.** A extração das células acontece **na página**
 (~48 ms para 11,9 MB) e só a matriz volta. E lá o `lsdata` vem com **entidade HTML** (`&#39;`,

@@ -1777,10 +1777,22 @@ export function faltaNaFaixaDoBloco(celulas = {}, de = 1, ate = 0) {
  * Lê o ALV **INTEIRO** desta tela — o alcance do `its.lerGrid` sem abrir uma segunda sessão.
  *
  * O que muda em relação ao `lerGrid`: este posta. Ele pede ao servidor os fragmentos que faltam,
- * pelo `action` e pelo `moin` que a própria página carrega, e por isso enxerga **esta** sessão —
- * com o filtro aplicado, o drill-down aberto e a linha selecionada que uma sessão HTTP paralela não
- * veria. Não mexe no DOM: a tela continua com o bloco que tinha (medido: carimbo igual, e o
- * framework segue pedindo fragmento sozinho ao rolar).
+ * pelo `action` e pelo `moin` que a própria página carrega, e por isso enxerga **esta** sessão — a
+ * ordem (item 74) e o filtro (item 116) que uma sessão HTTP paralela não veria. Medido: com `NAME`
+ * filtrado de `a` a `e` no `RSPARAM`, ele devolve **279 de 279** linhas — exatamente as previstas —
+ * enquanto a sessão HTTP paralela, no mesmo instante, devolve as 1617. Não mexe no DOM: a tela
+ * continua com o bloco que tinha (medido: carimbo igual, e o framework segue pedindo fragmento
+ * sozinho ao rolar).
+ *
+ * ⚠️ **Sob filtro, o `total` é o FILTRADO** — `totalRows` passa de 1617 a 279, e é ele que define
+ * até onde este laço pede fragmento. Filtrar antes de ler é 6× menos byte no fio (2,05 MB × 11,9 MB,
+ * 518 ms × 2559 ms).
+ *
+ * ⚠️ **Com MODAL aberta o servidor RECUSA o pedido** (medido no item 116, com o popup do drill-down
+ * do `RSPARAM` de pé): o mesmo POST volta `multipart` de 180 B com `X-Code: -103 / failed to fire
+ * action: not available`, e a guarda abaixo estoura com "não é um delta". A recusa é do SERVIDOR,
+ * não do DOM — o `lerGrid`, que só lê o bloco, continua funcionando nessa mesma tela. Feche a modal
+ * antes de chamar este.
  *
  * `alvo` escolhe o grid como no `lerGrid`; `de`/`ate` são 1-based e inclusivos (o 0-based do
  * protocolo fica aqui dentro); sem `ate`, vai até o `total` que o grid declara. `lote` é o tamanho
