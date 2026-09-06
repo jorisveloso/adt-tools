@@ -49,7 +49,7 @@ import {
   montarTela, sidDoLsdata, rotuloLimpo, teclaDoBotao, sidsDaTela,
   interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu, filhoDiretoDeMenu, daBarraDeMenu,
   acharCaminhoDeMenu,
-  TETO_ARVORE, indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore,
+  TETO_ARVORE, indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore, agregarMudou,
   criarPilhaDeDesfazer, transacional,
 } from './webgui.mjs';
 
@@ -63,7 +63,7 @@ export { janelaDoSid, criarPilhaDeDesfazer, transacional };
 // As puras da ÁRVORE são das duas vias pelo mesmo motivo (item 86): elas só cruzam `nodeindexes`,
 // `TV` e estado de expansão — não sabem de onde os brutos vieram. Ver a seção da árvore no fim
 // deste arquivo (a via HTTP) e a do `webgui.mjs` (a via do navegador).
-export { TETO_ARVORE, indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore };
+export { TETO_ARVORE, indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore, agregarMudou };
 
 // ---------- o vocabulário do protocolo (PURO) ----------
 
@@ -1905,11 +1905,20 @@ export async function acionarNo(sessao, alvo, opts) {
  *
  * Devolve `{ caminho, passos, folha, expandidos, mudou, ...lerResposta }`; com `{ acionar: false }`
  * devolve `{ filhos }` do último nó, expandindo-o se ele ainda não tiver filhos visíveis.
+ *
+ * ⚠ **O que o `mudou` responde depende do ramo** (item 99). Com `acionar` (o padrão) ele é o
+ * veredito do DUPLO CLIQUE — o carimbo ANTES × DEPOIS daquele POST —, e é isso que se quer saber;
+ * as expansões do caminho ficam em `expandidos`. Com `{ acionar: false }` não há acionamento
+ * nenhum, e aí o campo agrega as EXPANSÕES (`agregarMudou`): `true` se alguma delas mexeu na tela,
+ * `null` se nenhuma mexeu mas alguma foi inconclusiva, `false` quando nada postou. Enquanto era
+ * `false` fixo, `expandidos.length > 0` com `mudou: false` era mentira — cada expansão é um POST
+ * `action/8` que muda a árvore, e quem lesse o campo para decidir "preciso reler?" releria de menos.
  */
 export async function navegarArvore(sessao, caminho, { acionar: aciona = true, ...opts } = {}) {
   const partes = partirCaminhoDeMenu(caminho);
   const passos = [];
   const expandidos = [];
+  const vereditos = [];                       // o `mudou` de CADA expansão que POSTOU (item 99)
   const filhosDe = (a, pai) => (pai ? a.nos.filter((x) => x.pai === pai.n) : a.nos.filter((x) => x.pai === -1));
   let chave = null;
   for (const rotulo of partes) {
@@ -1920,7 +1929,7 @@ export async function navegarArvore(sessao, caminho, { acionar: aciona = true, .
     let alvo = acharItemDeMenu(irmaos, rotulo);
     if (!alvo && pai) {                       // o nó pode estar fechado: abrir UMA vez e reler
       const e = await expandirNo(sessao, { chave: pai.chave }, opts);
-      if (!e.pulou) expandidos.push(pai.chave);
+      if (!e.pulou) { expandidos.push(pai.chave); vereditos.push(e.mudou); }
       a = arvore(sessao);
       pai = a.nos.find((x) => x.chave === chave);
       irmaos = filhosDe(a, pai);
@@ -1935,13 +1944,13 @@ export async function navegarArvore(sessao, caminho, { acionar: aciona = true, .
     let folha = a.nos.find((x) => x.chave === chave);
     let filhos = filhosDe(a, folha);
     if (!filhos.length && folha?.temFilhos !== false) {   // um POST — e a FOLHA não paga nenhum (item 84)
-      await expandirNo(sessao, { chave }, opts);
-      expandidos.push(chave);
+      const e = await expandirNo(sessao, { chave }, opts);
+      if (!e.pulou) { expandidos.push(chave); vereditos.push(e.mudou); }
       a = arvore(sessao);
       folha = a.nos.find((x) => x.chave === chave);
       filhos = folha ? filhosDe(a, folha) : [];
     }
-    return { caminho: partes, passos, folha, filhos, expandidos, mudou: false };
+    return { caminho: partes, passos, folha, filhos, expandidos, mudou: agregarMudou(vereditos) };
   }
   const r = await acionarNo(sessao, { chave }, opts);
   return { ...r, caminho: partes, passos, folha: r.no, expandidos };

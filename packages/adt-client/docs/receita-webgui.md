@@ -1297,7 +1297,8 @@ const s = await abrirTransacao(cfg, 'SMEN');       // o SAP Easy Access
 arvore(s).nos;   // [{ n: 1, chave: 'Favo', rotulo: 'Favoritos', pai: -1, nivel: 0,
                  //    expansao: 'EXPANDED', temFilhos: true }, …] — zero rede
 
-await navegarArvore(s, ['Menu SAP', 'Escritório'], { acionar: false });   // .filhos, um POST
+const d = await navegarArvore(s, ['Menu SAP', 'Escritório'], { acionar: false });   // .filhos, um POST
+d.mudou;   // true — sem acionar NADA: a expansão já mudou a tela (§ o `mudou` depende do ramo)
 const r = await navegarArvore(s, ['Menu SAP', 'Escritório', 'Agenda', 'Próprio']);
 r.mudou;   // true — SMEN → SSC1 "Exibir compromissos", 2 561 ms (2 expansões + 1 acionamento)
 
@@ -1391,6 +1392,34 @@ filhos ("Pesquisa de payload"). Errar para esse lado custa o POST que já se pag
 
 ⚠ **`temFilhos: null` é "não sei"**, não "não tem": a tela veio sem `HIC` (ou os brutos vieram de
 outra via). Aí o POST sai como antes.
+
+### O `mudou` do `navegarArvore` depende do RAMO (item 99)
+
+O `mudou` é sempre o veredito da TELA (carimbo ANTES × DEPOIS, § item 59) — mas **de qual POST**
+muda com o `acionar`:
+
+| chamada | o `mudou` responde | onde está o resto |
+|---|---|---|
+| `navegarArvore(s, caminho)` | o **duplo clique** (`action/2`) — a ação pegou? | as expansões do caminho, em `expandidos` |
+| `navegarArvore(s, caminho, { acionar: false })` | as **expansões** (`action/8`), agregadas | — não há acionamento nenhum |
+
+Até 06/09/2026 o ramo `{ acionar: false }` devolvia **`mudou: false` fixo**, e isso era mentira
+sempre que `expandidos.length > 0`: cada expansão é um `action/8` que muda a árvore (o `nodeindexes`
+ganha nós). Quem lesse o campo para decidir "preciso reler?" releria de menos.
+
+A agregação é `agregarMudou(vereditos)` — puro, em `webgui.mjs`, reexportado pelo `its.mjs`: `true`
+se **alguma** expansão mexeu, `null` se nenhuma mexeu mas alguma foi inconclusiva (o `mudou` da via
+ITS é ternário), `false` quando nada postou. **Não é o `mudou` do último POST**: numa árvore a
+expansão que muda a tela costuma ser a do MEIO do caminho, e o último passo é justamente o que já
+estava aberto — aí o último POST nem sai.
+
+Só entra na agregação a expansão que **postou**: `expandirNo` com `pulou: true` (folha, ou nó já
+`EXPANDED`) não conta, e — desde o mesmo item — também não entra mais em `expandidos`.
+
+**Por que o carimbo enxerga uma expansão**, se os nós (`TV`/`MG`/`L`) não têm SID nenhum: o
+`sidsDaResposta` guarda o `nodeindexes` DENTRO do objeto do SID do container `GuiTree`, e o
+`carimboDosSids` hasheia os SIDs com `lsdata` e tudo. Nó a mais na árvore ⇒ `nodeindexes` diferente
+⇒ hash diferente. Conferido em 06/09/2026 com os deltas sintéticos do `its.test.mjs`.
 
 ### Colapsar — o `action/9`, o irmão IDEMPOTENTE do `action/8` (item 85)
 

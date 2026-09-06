@@ -14,6 +14,7 @@ import {
   itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS, exportAsDoPopup,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
   indiceDoNo, arvoreDosBrutos, arvore, expansaoDoHtml, expandirNo, colapsarNo, batchExpandirNo, batchColapsarNo, batchAcionarNo, acharNoDaArvore,
+  navegarArvore, agregarMudou,
   sidDoControle, controleDoSid, eventosDoControle, batchDoEvento, eventosDoAlvo,
   mensagemDosSids, carimboDosSids, carimboDoDelta, mudouDaTela,
   criarPilhaDeDesfazer, transacional, fechar, prefixoDaRecusa,
@@ -993,6 +994,46 @@ test('its: colapsarNo só posta em nó ABERTO — folha e COLLAPSED pulam (item 
   for (const chave of ['F00003', '0000000009']) {          // INDENT e COLLAPSED
     const r = await colapsarNo({ delta: DELTA_ARVORE }, chave);
     expect(r).toEqual({ forma: null, pulou: true, no: expect.objectContaining({ chave }), fechou: false, nosAntes: 5, nosDepois: 5 });
+  }
+});
+
+// O delta DEPOIS do `action/8` em "Agenda" (0000000009): ela vira `EXPANDED` e ganha o filho
+// "Próprio" — o mesmo delta do boot com um nó a mais, que é o que a expansão faz na tela.
+const ARVORE_NOS_2 = [[1, 'Favoritos', 'EXPANDED', 0], [2, 'Produção -> Ordem -> Criar', 'INDENT', 1],
+  [3, 'Menu SAP', 'EXPANDED', 0], [4, 'Escritório', 'EXPANDED', 1], [5, 'Agenda', 'EXPANDED', 2],
+  [6, 'Próprio', 'INDENT', 3]]
+  .map(([n, r, e, lv]) => `${NO_HIC(n, e, lv)}${NO_MG(n, r)}${NO_L(n)}${NO_TV(n, r)}`).join('');
+const DELTA_ARVORE_2 = DELTA_ARVORE
+  .replace(',["0000000009",1,4]]', () => ',["0000000009",1,4],["0000000012",1,5]]')
+  .replace(ARVORE_NOS, () => ARVORE_NOS_2);
+
+test('its: navegarArvore { acionar: false } propaga o `mudou` das EXPANSÕES — o `false` fixo era mentira (item 99)', async () => {
+  // a agregação pura: um `true` basta; sem `true`, um "não sei" contamina; lista vazia = nada postou
+  expect([agregarMudou([]), agregarMudou([false, true]), agregarMudou([false, null]), agregarMudou([false, false])])
+    .toEqual([false, true, null, false]);
+
+  // (a) o caminho JÁ está aberto: nenhum POST sai — e aí `mudou: false` é VERDADE
+  const r0 = await navegarArvore({ delta: DELTA_ARVORE }, ['Menu SAP', 'Escritório'], { acionar: false });
+  expect(r0.expandidos).toEqual([]);
+  expect(r0.mudou).toBe(false);
+  expect(r0.filhos.map((f) => f.rotulo)).toEqual(['Agenda']);
+
+  // (b) "Agenda" está COLLAPSED: sai UM `action/8` e a árvore ganha "Próprio" — a tela MUDOU
+  const s = sessaoIts({ delta: DELTA_ARVORE, carimbo: carimboDoDelta(DELTA_ARVORE) });
+  const posts = [];
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async (_url, opcoes) => {
+    posts.push(JSON.parse(opcoes.body).map((c) => c.post ?? `get ${c.get}`).join('|'));
+    return new Response(DELTA_ARVORE_2, { status: 200, headers: { 'content-type': 'text/xml' } });
+  };
+  try {
+    const r = await navegarArvore(s, ['Menu SAP', 'Escritório', 'Agenda'], { acionar: false });
+    expect(posts).toEqual([`action/8/${arvore({ delta: DELTA_ARVORE }).sid}|get state/ur`]);
+    expect(r.expandidos).toEqual(['0000000009']);
+    expect(r.filhos.map((f) => f.rotulo)).toEqual(['Próprio']);
+    expect(r.mudou).toBe(true);              // até o item 99 este campo vinha `false` fixo
+  } finally {
+    globalThis.fetch = fetchOriginal;
   }
 });
 

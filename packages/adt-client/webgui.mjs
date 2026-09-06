@@ -3561,6 +3561,18 @@ export async function acionarNo(sessao, alvo, { tetoMs = TETO_ARVORE } = {}) {
 }
 
 /**
+ * PURO: o veredito de mudança de um PERCURSO — vários POSTs, um `mudou` só (fila `adt-client`
+ * item 99). `true` se ALGUM deles mexeu na tela; `null` se nenhum mexeu mas algum é "não sei" (o
+ * `mudou` da via ITS é ternário); `false` quando a lista está vazia (nada postou) ou todos deram
+ * `false`.
+ *
+ * ⚠ Não é "o `mudou` do último POST": numa navegação de árvore a expansão que muda a tela costuma
+ * ser a do MEIO do caminho, e o último passo é justamente o que já estava aberto.
+ */
+export const agregarMudou = (vereditos) => (vereditos.some((v) => v === true) ? true
+  : vereditos.some((v) => v === null || v === undefined) ? null : false);
+
+/**
  * Vai a uma tela pelo CAMINHO da árvore do SAP Easy Access — o caminho que o usuário funcional
  * descreve, e o único que enxerga os FAVORITOS:
  *
@@ -3578,11 +3590,19 @@ export async function acionarNo(sessao, alvo, { tetoMs = TETO_ARVORE } = {}) {
  *
  * Devolve `{ caminho, passos, folha, expandidos, mudou }`; com `{ acionar: false }` devolve os
  * `filhos` do último nó, expandindo-o se ele ainda não tiver filhos visíveis.
+ *
+ * ⚠ **O que o `mudou` responde depende do ramo** (item 99). Com `acionar` (o padrão) ele é o
+ * veredito do DUPLO CLIQUE, e é isso que se quer saber — se o acionamento pegou; as expansões do
+ * caminho ficam em `expandidos`. Com `{ acionar: false }` não há acionamento nenhum, e aí o campo
+ * agrega as EXPANSÕES: `true` se alguma delas mexeu na tela. Enquanto era `false` fixo,
+ * `expandidos.length > 0` com `mudou: false` era mentira — quem lesse o campo para decidir
+ * "preciso reler?" releria de menos.
  */
 export async function navegarArvore(sessao, caminho, { acionar: aciona = true, tetoMs = 30000, tetoAcaoMs = TETO_ARVORE } = {}) {
   const partes = partirCaminhoDeMenu(caminho);
   const passos = [];
   const expandidos = [];
+  const vereditos = [];                       // o `mudou` de CADA expansão que POSTOU (item 99)
   const filhosDe = (a, pai) => (pai ? a.nos.filter((x) => x.pai === pai.n) : a.nos.filter((x) => x.pai === -1));
   let chave = null;
   for (const rotulo of partes) {
@@ -3593,7 +3613,7 @@ export async function navegarArvore(sessao, caminho, { acionar: aciona = true, t
     let alvo = acharItemDeMenu(irmaos, rotulo);
     if (!alvo && pai) {                       // o nó pode estar fechado: abrir UMA vez e reler
       const e = await expandirNo(sessao, { chave: pai.chave }, { tetoMs });
-      if (!e.pulou) expandidos.push(pai.chave);
+      if (!e.pulou) { expandidos.push(pai.chave); vereditos.push(e.mudou); }
       a = await arvore(sessao);
       pai = a.nos.find((x) => x.chave === chave);
       irmaos = filhosDe(a, pai);
@@ -3608,13 +3628,13 @@ export async function navegarArvore(sessao, caminho, { acionar: aciona = true, t
     let folha = a.nos.find((x) => x.chave === chave);
     let filhos = filhosDe(a, folha);
     if (!filhos.length && folha?.temFilhos !== false) {   // um gesto — e a FOLHA não paga nenhum
-      await expandirNo(sessao, { chave }, { tetoMs });
-      expandidos.push(chave);
+      const e = await expandirNo(sessao, { chave }, { tetoMs });
+      if (!e.pulou) { expandidos.push(chave); vereditos.push(e.mudou); }
       a = await arvore(sessao);
       folha = a.nos.find((x) => x.chave === chave);
       filhos = folha ? filhosDe(a, folha) : [];
     }
-    return { caminho: partes, passos, folha, filhos, expandidos, mudou: false };
+    return { caminho: partes, passos, folha, filhos, expandidos, mudou: agregarMudou(vereditos) };
   }
   const r = await acionarNo(sessao, { chave }, { tetoMs: tetoAcaoMs });
   return { ...r, caminho: partes, passos, folha: r.no, expandidos };
