@@ -463,3 +463,57 @@ export async function expandirUsos(session, ids, { lote = 200 } = {}) {
 
   return saida;
 }
+
+// ---------- o TERCEIRO canal de where-used: /whereused (RIS clássico) — MEDIDO, não implementado ----------
+// Endpoint: POST /sap/bc/adt/repository/informationsystem/whereused?RIS_REQUEST_TYPE=<ação>
+// Medido em 06/09/2026 no s4h 250 (item 97, POC_whereused_endpoint/medicoes/item97-whereused.md).
+// O discovery o anuncia ao lado do `usageReferences` e do `usageSnippets`, mas com `templateLinks`
+// VAZIO — sem template de URI e sem `app:accept`. Não é uma variante dos outros dois: é o where-used
+// do **RIS clássico** (o do SE84/SE11), com outra pergunta e outro custo. Está documentado aqui, e
+// não implementado, porque quem já usa `whereUsed` não precisa dele — a decisão de adotá-lo é de
+// quem tiver a pergunta estreita do ponto 4.
+//
+//  1. SÓ POST. GET responde 405 (`ExceptionMethodNotSupported`) em qualquer Accept, com ou sem
+//     `?uri=`; OPTIONS responde 400 antes mesmo do ADT.
+//
+//  2. O QUE FALTA NO 500 É UM QUERY PARAMETER, NÃO O CORPO. POST sem `RIS_REQUEST_TYPE` responde
+//     500 `Kein Service für ID gefunden` (namespace `com.sap.adt.ris`) — IDÊNTICO com corpo vazio e
+//     com corpo cheio, porque o handler decide antes de ler o corpo. As três ações, do fonte de
+//     `CL_RIS_ADT_RES_WHERE_USED`: `WHERE_USED`, `WHERE_USED_LAZY`, `CODE_LINES`.
+//
+//  3. O CORPO É `application/xml` PURO (nada de vendor type) e SEM NAMESPACE — o esquema é a ST
+//     `RIS_ST_ADT_REQUEST`, lida no servidor:
+//       <ris_request><object_type>trobjtype/subtype/legacy_type</object_type>
+//                    <scope_object>… + object_name/encl_object_name</scope_object>
+//                    <payload>… + object_name/encl_object_name/full_name</payload></ris_request>
+//     Os códigos não precisam de chute: `POST /repository/informationsystem/fullnamemapping?
+//     RIS_REQUEST_TYPE=MAP_URI_TO_RIS_REQUEST&uri=<uri ADT>` (Content-Type text/plain, corpo vazio)
+//     traduz uma URI ADT no `ris_data_request` pronto; e `POST /repository/informationsystem/
+//     metadata?RIS_REQUEST_TYPE=WUL_TYPES_COMPLETE` lista os escopos válidos daquele objeto (32
+//     tipos para um DTEL: TABL/DTF, TABL/DSF, CLAS/OC, PROG/P, FUGR/FF, DDLS/DF, …).
+//
+//  4. ⚠️ `<object_type>` É O TIPO DO RESULTADO, NÃO O DO ALVO — e trocar os dois responde
+//     **200 com ZERO BYTE**, sem erro e sem `numberOfResults`. É a pior versão do silêncio da
+//     família (`buscar` truncado, prefixo de namespace do `usageReferences`): lista vazia é
+//     indistinguível de "não há usos". Medido: `object_type=DTEL/DE` + `payload=DTEL/DE MATNR` —
+//     um DTEL com 41.226 usos pelo outro canal — devolveu 0 bytes; com `object_type=TABL/DTF` o
+//     mesmo payload responde. Quem chamar isto pergunta UM TIPO DE RESULTADO por vez.
+//
+//  5. O CUSTO É O INVERSO DO `usageReferences`, e é por isso que ele existe. Mesmo DTEL
+//     (J_1BNFNUM_UTILITIES), mesma sessão: `usageReferences` 1 chamada, 913 ms, 29 refs com
+//     containers e 12 nós que ainda pedem o `usageSnippets`; `/whereused` 10 chamadas (uma por
+//     tipo), 4.884 ms, 18 usos JÁ resolvidos (`enclosing_object` + `object` + uri ADT), sem
+//     colapsado. Os dois concordam nos objetos reais. Ou seja: para "que CLASSES usam este DE?"
+//     são **54 ms contra 913 ms** (17x menos, sem segunda chamada); para varrer tudo é ~5x mais caro.
+//
+//  6. `WHERE_USED` devolve `<ris_generic_results>` (enxuto). `WHERE_USED_LAZY` devolve
+//     `<ris_where_used_results>` com um `object_descriptor` gordo — o nome engana, "lazy" traz
+//     MAIS: em `TABL T000` são 34,5 MB contra 7,6 MB. No fonte, o `LAZY` é o único que lê
+//     `<scope_object>` e `<full_name>`; o `WHERE_USED` simples ignora os dois.
+//
+//  7. ⚠️ E ELE ESTOURA O `fetch` DO NODE: `object_type=TABL/DTF` + `payload=DTEL/DE MATNR` passou
+//     dos 300 s do `headersTimeout` do undici (`UND_ERR_HEADERS_TIMEOUT`) — o cliente morre antes
+//     de o SAP responder, e `call` não tem timeout próprio hoje.
+//
+//  Não medido: o corpo do `CODE_LINES` (400 `ExceptionResourceWrongData` com o `<ris_request>`); o
+//  efeito real do `<scope_object>` (a única tentativa não mudou um byte); alvo que não seja DTEL/TABL.
