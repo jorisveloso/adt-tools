@@ -27,7 +27,7 @@ import { run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { claudeCodeHost } from './agente.mjs';
 import { listarFilas, next, itemDaFila, adiar, status, FILAS_DIR } from 'adt-todo';
-import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite, ultimoLimite, esperaDoEvento } from './veredito.mjs';
+import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite, ultimoLimite, esperaDoEvento, agoraLocal } from './veredito.mjs';
 import { repoDaFila, sujos, fecharNoGit } from './git.mjs';
 
 const RAIZ = fileURLToPath(new URL('../../../', import.meta.url)); // raiz do monorepo adt-tools
@@ -131,11 +131,11 @@ for (const fila of filas) {
     if (espera !== null) {
       tentados.delete(alvo.n);
       r.sessoes--;
-      const ate = new Date(Date.now() + espera).toTimeString().slice(0, 5);
+      const ate = agoraLocal(new Date(Date.now() + espera)).hora.slice(0, 5);
       const fonte = esperaDoEvento(evento) !== null
         ? `evento ${evento.janela} (uso ${Math.round(evento.utilizacao * 100)}%)`
         : 'texto do erro';
-      console.log(`${hora()} ⏸ limite de uso do Claude — espero até ${ate} (local) e retomo o item ${alvo.n} · fonte: ${fonte}: ${erro}`);
+      console.log(`${hora()} ⏸ limite de uso do Claude — espero até ${ate} e retomo o item ${alvo.n} · fonte: ${fonte}: ${erro}`);
       await new Promise((ok) => setTimeout(ok, espera));
       continue;
     }

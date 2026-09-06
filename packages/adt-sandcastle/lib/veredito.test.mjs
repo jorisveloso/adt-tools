@@ -1,7 +1,7 @@
 // veredito.test.mjs — o veredito do runner é PURO: item parseado → ação. Sem disco, sem sandcastle.
 import { test, expect } from 'vitest';
 import { parseFila } from 'adt-todo';
-import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite, ultimoLimite, esperaDoEvento } from './veredito.mjs';
+import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite, ultimoLimite, esperaDoEvento, agoraLocal } from './veredito.mjs';
 
 test('tituloBreve corta no "— detalhe" e no tamanho', () => {
   expect(tituloBreve('Anomalia do ROT — medido em 04/09: ~40 s depois')).toBe('Anomalia do ROT');
@@ -114,4 +114,11 @@ test('esperaDoEvento: só `rejected` espera; o passado vira só a folga de 1 min
   expect(esperaDoEvento(rej, { agora: 9_000_000 })).toBeNull(); // reset já passou: evento VELHO
   expect(esperaDoEvento({ ...rej, rejeitado: false }, { agora: 1 })).toBeNull();
   expect(esperaDoEvento(null)).toBeNull();
+});
+
+test('agoraLocal: data e hora do FUSO DA MÁQUINA, não UTC', () => {
+  const d = new Date(2026, 8, 6, 9, 5, 3); // 06/09/2026 09:05:03 local
+  expect(agoraLocal(d)).toEqual({ data: '2026-09-06', hora: '09:05:03', carimbo: '2026-09-06 09:05' });
+  // o UTC do toISOString saía adiantado em America/Sao_Paulo (-03:00) — era a origem do desencontro
+  expect(agoraLocal(d).hora).not.toBe(d.toISOString().slice(11, 19));
 });
