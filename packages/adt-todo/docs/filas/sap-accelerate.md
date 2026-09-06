@@ -70,7 +70,8 @@
 > bloqueado: PFCG negou criação da role YJBV_POC_4029823 ao JVELOSO em 06/09/2026: No authorization to create role YJBV_POC_4029823. Pessoa autorizada precisa criar a role, incluir catálogo e transação, gerar perfil, associar JVELOSO e comparar usuários.
 > 06/09/2026: corrigido bug no report YJBV_POC_R_4029823_J1B1N — sair do Writer pelo popup "Encerrar a função?" (Sim) reabria o Writer. Causa: FCODE CANC/BACK (do J_1B_NF_OBJECT_EDIT_NEW) sem `WHEN` no `CASE` do FORM abrir_writer. Fix: `WHEN 'EXIT' OR 'CANC' OR 'BACK'` (descarta objeto NF e sai do loop). Testado por WebGUI (scripts/tu-cancel-sair.mjs): DocNum 47 -> Pesquisar -> ALV -> Utilizar como base -> Writer -> Sair -> popup -> Sim -> volta para "Resultados da pesquisa" sem reabrir. Evidências: work/POC_4029823_j1b1n/medicoes/tu-cancel-sair-*.json e tu-cancel-*.png.
 
-- [ ] 18. [POC 4029823-J1B1N] Tela inicial: opção para CRIAR NOTA NOVA — botão que abre o Writer vazio (sem nota de referência), além da pesquisa. Pedido do usuário/cliente.
+- [x] 18. [POC 4029823-J1B1N] Tela inicial: opção para CRIAR NOTA NOVA — botão que abre o Writer vazio (sem nota de referência), além da pesquisa. Pedido do usuário/cliente.
+> popup J1B_ERP 034 eliminado: cabaçalho partyp=C/parvw=AG + linha parceiro principal na j_1bnfnad. Botao Criar nota nova abre Writer vazio sem popup no GUI real.
 
 - [ ] 19. [POC 4029823-J1B1N] Memorizar/RASCUNHO: permitir que o usuário memorize os dados preenchidos ou alterados no Writer e volte de onde parou — persiste os dados em tabela Z e oferece retomada (abrir o Writer com o estado salvo). Pedido do usuário/cliente.
 
