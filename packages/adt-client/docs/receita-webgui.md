@@ -1807,6 +1807,47 @@ Duas consequências práticas:
    `wguEmptyF3` — `ct="B"`, `aria-hidden="true"`, sem SID, sem `lsevents`, e com `lsdata[5]: false`.
    Procurar "o botão Voltar cinza" acha esse artefato, que não é botão de tela nenhum.
 
+### Acionar o PUSHBUTTON da dynpro — e a GUARDA do cinza (item 127)
+
+O `lerTela` traz o pushbutton, mas ele não tem OK-code: quem o aciona é o **`id`**. Por isso
+`acionar` aceita, além das três formas do `okcodeDe`, **o próprio botão do `lerTela`**:
+
+```js
+const tela = await lerTela(s);
+await acionar(s, tela.botoes.find((b) => b.campo === 'btnBT_ON'));
+// → respondeu: true · mudou: true · mensagem { tipo: 'OK', texto: 'ITEM81 CLICOU BT_ON' } · 1 POST · 1 602 ms
+```
+
+⚠ **O endereço a guardar num script é o `campo`/`sid`, nunca o `id`.** O id do pushbutton é
+POSICIONAL — `M0:46:::0:0` é "linha 0, coluna 0" da tela de seleção e `M0:46:::0:24` o irmão 24
+colunas à direita —, então ele não sobrevive a mudança de layout. Colha-o do `lerTela` na hora.
+
+⚠ **Quando o botão tem OK-code, o OK-code GANHA do id** (é o que `alvoDeBotao` faz com o botão de
+barra do `lerTela`): o id de lá é o do CONTAINER, cujo centro cai **fora** do botão; quem tem o rect
+certo é o filho `-cnt`, e só o ramo `{ okcode }` desce até ele (§ "O `btn[n]` é o endereço ESTÁVEL").
+
+**A guarda:** `acionar` (e todo `clicar({ esperarResposta: true })`) **estoura antes do clique** ao
+topar com `habilitado: false`, dizendo rótulo e SID — o par do que `navegarMenu` faz no item cinza:
+
+```
+webgui: clicar — "BTN OFF" (wnd[0]/usr/btnBT_OFF) está DESABILITADO nesta tela; o clique não sai do
+navegador (zero POST) e a espera de resposta iria até o teto de 30000 ms.
+```
+
+Medido no mesmo laboratório (item 127, s4h 758/250, 06/09/2026): a recusa custa **12 ms e 0 POST**,
+contra os **30 s** de teto que o clique no cinza pagaria para voltar `respondeu: false` — o mesmo
+sinal de "o modal engoliu o gesto" (item 100). Era a falha mais cara e mais ambígua deste canal.
+
+⚠ **A guarda só vale com `esperarResposta`** — `clicar(s, id)` cru continua clicando no cinza, que é
+como o item 81 provou o zero POST. Medido: 0 POST, mensagem nenhuma, exceção nenhuma. Quem não
+espera resposta não trava, e tirar essa via cegaria a própria medição.
+
+O `apontar`/`clicar` passaram a devolver **`botao`** — `{ id, sid, okcode, rotulo, habilitado }` do
+botão que leva o gesto, ou `null` quando o alvo não é botão. Ele sai do `closest('[ct="B"]')` a
+partir de quem RECEBE o clique, e é por isso que o botão de barra também aparece com `sid`
+(`acionar(s, 'btn[8]')` → `{ id: 'M0:50::btn[8]', sid: 'wnd[0]/tbar[1]/btn[8]', habilitado: true }`),
+mesmo o gesto tendo descido ao `-cnt`.
+
 ### O que cada peça entrega
 
 ```js
@@ -1817,7 +1858,7 @@ t.campos      // [{ id, sid, campo, rotulo, dica, valor, maxlen, editavel, visiv
 t.radios      // [{ campo, grupo: '%RBG0257', rotulo, selecionado }]
 t.checkboxes  // [{ campo, rotulo, marcado }]
 t.botoes      // [{ okcode: 'btn[8]', rotulo: 'Executar', tecla: 'F8', accesskey: 'E', habilitado: true }]
-              //   `okcode: null` é PUSHBUTTON de dynpro (`wnd[0]/usr/btnBT_ON`) — aciona pelo id
+              //   `okcode: null` é PUSHBUTTON de dynpro (`wnd[0]/usr/btnBT_ON`) — `acionar(s, botao)` (§ acima)
 t.grids       // [{ sid, colunas: ['NAME','USER_VALUE',…], linhas: 1617, editavel: false }] — as LINHAS saem do `lerGrid` (§ "O ALV")
 t.okcode      // { sid: 'wnd[0]/tbar[0]/okcd' } — sempre invisível, sempre lá
 ```

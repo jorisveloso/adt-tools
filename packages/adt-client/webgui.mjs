@@ -198,6 +198,35 @@ export function jsDoAlvo(alvo) {
   throw new Error('alvo: informe { id }, { seletor } ou { okcode } (ex. { okcode: "btn[11]" })');
 }
 
+/**
+ * PURO: o que `acionar` aceita virando alvo do `jsDoAlvo` — o OK-code de sempre (`'btn[11]'`, `11`,
+ * `'Gravar'`) **ou o próprio botão do `lerTela`** (item 127).
+ *
+ * O `lerTela().botoes` traz as duas famílias (item 81): o botão da BARRA, com `okcode` preenchido, e
+ * o PUSHBUTTON DA DYNPRO, com `okcode: null` — este só se aciona pelo `id`, porque não há `btn[n]`
+ * nenhum no SID dele (`wnd[0]/usr/btnBT_ON`).
+ *
+ * ⚠️ **Quando há `okcode`, ele GANHA do `id`** — e não é preferência de estilo: o id do botão de
+ * barra (`M0:48::btn[11]`) é o do CONTAINER, cujo centro cai FORA do botão (§ `jsDoAlvo`); quem tem
+ * o rect certo é o filho `-cnt`, e é o ramo `{ okcode }` que sabe descer até ele. Passar
+ * `{ id: 'M0:48::btn[11]' }` mandaria o clique para o vazio.
+ * ⚠️ **O id do pushbutton é POSICIONAL** (`M0:46:::0:0` é "linha 0, coluna 0" da tela de seleção, e
+ * `M0:46:::0:24` o irmão 24 colunas à direita) — ele não sobrevive a mudança de layout. Por isso o
+ * endereço a guardar num script é o `sid`/`campo` (`btnBT_ON`), e o `id` se colhe do `lerTela` na
+ * hora: `acionar(s, tela.botoes.find((b) => b.campo === 'btnBT_ON'))`.
+ */
+export function alvoDeBotao(alvo) {
+  if (alvo && typeof alvo === 'object') {
+    if (typeof alvo.okcode === 'string' && alvo.okcode) return { okcode: alvo.okcode };
+    if (alvo.id) return { id: alvo.id };
+    if (alvo.seletor) return { seletor: alvo.seletor };
+    if (alvo.okcode !== null && alvo.okcode !== undefined) return { okcode: alvo.okcode }; // o número
+    throw new Error('acionar: o alvo é o OK-code ("btn[11]", 11, "Gravar") ou um botão do lerTela '
+      + `({ id } / { okcode }) — veio ${JSON.stringify(alvo).slice(0, 120)}`);
+  }
+  return { okcode: alvo };
+}
+
 /** PURO: como descrever o alvo numa mensagem de erro. */
 export const nomeDoAlvo = (alvo) =>
   typeof alvo === 'string' ? `id ${alvo}`
@@ -4219,6 +4248,33 @@ export function jsAlvoEfetivo(js, { descer = true, dentro = null, icone = null }
  * quando a pool sabe devolvê-lo). Sem isso, "não achei" não diz se o erro foi o nome, a página ou
  * a tela.
  */
+/**
+ * PURO: o despejo do BOTÃO que vai levar o gesto, a partir de quem o recebe — `closest('[ct="B"]')`,
+ * porque o nó apontado costuma ser um pedaço de dentro dele (o `-cnt` do botão de barra, o span do
+ * ícone). `null` quando não há botão nenhum na linhagem: campo, célula e nó de árvore não têm.
+ */
+export const JS_BOTAO_DA_LINHAGEM = `((n) => {
+  const b = n && n.closest ? n.closest('[ct="B"]') : null;
+  if (!b) return null;
+  let lsdata = null; try { lsdata = JSON.parse(b.getAttribute('lsdata') || 'null'); } catch (x) {}
+  return { id: b.id || null, ct: 'B', lsdata, ariaDesabilitado: b.getAttribute('aria-disabled'),
+    texto: (b.innerText || '').trim().slice(0, 120) || null, title: b.title || null,
+    visivel: !!(b.offsetWidth || b.offsetHeight) };
+})`;
+
+/**
+ * PURO: o bruto do `JS_BOTAO_DA_LINHAGEM` virando `{ id, sid, okcode, rotulo, habilitado }` — ou
+ * `null` quando o alvo não é botão. A regra de habilitação é a do `interpretarControle`, e é por
+ * PAPEL: `lsdata[5] === false` só quer dizer "desabilitado" num `ct="B"` (item 81).
+ */
+export function botaoDoBruto(bruto) {
+  if (!bruto) return null;
+  const c = interpretarControle(bruto);
+  if (c.papel !== 'botao') return null;
+  const { id, sid, okcode, rotulo, habilitado } = c;
+  return { id, sid, okcode, rotulo, habilitado };
+}
+
 export async function apontar(sessao, alvo, { descer = true, dentro = null, icone = null } = {}) {
   const js = jsDoAlvo(alvo);
   const efetivo = jsAlvoEfetivo(js, { descer, dentro, icone });
@@ -4230,17 +4286,18 @@ export async function apontar(sessao, alvo, { descer = true, dentro = null, icon
     return false;
   })()`);
   if (rolou) await espera(300);
-  return await avaliar(sessao, `(() => {
+  const p = await avaliar(sessao, `(() => {
     const raiz = ${js};
     const e = ${efetivo};
     if (!raiz) return null;
     const H = ${JS_ACIONAVEL};
+    const BOT = ${JS_BOTAO_DA_LINHAGEM};
     const cand = [...raiz.querySelectorAll('*')].filter((z) => H.motivo(z) && H.area(z) > 0)
       .sort((a, c) => H.area(a) - H.area(c));
     const gestos = H.externos(cand).map((z) => ({ nome: H.desc(z), rotulo: H.rotulo(z), porQue: H.motivo(z) }));
     const ICONE = ${JSON.stringify(icone)};
     const ch = ICONE ? H.caractere(ICONE) : null;
-    if (!e) return { recebeu: null, de: H.desc(raiz), desceu: false, porQue: null, gestos,
+    if (!e) return { recebeu: null, de: H.desc(raiz), desceu: false, porQue: null, gestos, bruto: BOT(raiz),
                      dentro: ${JSON.stringify(dentro)}, icone: ICONE,
                      pool: ICONE ? !!H.pool() : null, caractere: ch,
                      icones: ICONE ? H.iconesDe(raiz) : [],
@@ -4254,9 +4311,12 @@ export async function apontar(sessao, alvo, { descer = true, dentro = null, icon
     return { id: e.id, title: e.title, x, y, noPonto: no ? (no.id || no.tagName) : null,
              coberto: !(no === e || e.contains(no) || (no && no.contains(e))),
              recebeu: H.desc(e), de: H.desc(raiz), desceu, porQue: H.motivo(e),
-             gestos: desceu ? gestos : [],
+             gestos: desceu ? gestos : [], bruto: BOT(e),
              candidatos: desceu ? cand.slice(0, 8).map(H.desc) : [] };
   })()`);
+  // o BOTÃO que leva o gesto, quando é botão: `{ sid, rotulo, habilitado }` — a peça que deixa
+  // `clicar` recusar o cinza pelo NOME dele, e não por um id posicional (item 127).
+  return p ? { ...p, botao: botaoDoBruto(p.bruto) } : p;
 }
 
 /** PURO: como um gesto se chama numa mensagem — o rótulo é o que se digita em `{ dentro }`; o nome
@@ -4368,6 +4428,19 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, tetoRespostaMs = 30
   }
   if (!p) throw new Error(`webgui: clicar — ${nomeDoAlvo(alvo)} não está na tela (${tetoMs} ms)`);
   if (!p.recebeu) throw new Error(`webgui: clicar — ${recusa(p, alvo, { dentro, icone })}`);
+  // ⚠️ BOTÃO CINZA + espera de resposta = espera para SEMPRE (item 127). Medido no item 81, no
+  // laboratório `ZJBV_BTN81`: o clique num botão com `lsdata[5] === false` gera **ZERO POST** — o
+  // ITS nem monta o round-trip, enquanto o irmão habilitado posta 1 e carimba a statusbar. Sem esta
+  // guarda o script pagaria o `tetoRespostaMs` inteiro para voltar `respondeu: false`, que é o mesmo
+  // sinal de "o modal engoliu o gesto" (item 100): a falha mais cara e mais ambígua deste canal.
+  // É o par do que `navegarMenu` faz no item cinza do menu (item 48).
+  // ⚠️ **Só com `esperarResposta`.** Clicar no cinza DE PROPÓSITO é gesto legítimo de MEDIÇÃO — foi
+  // assim que o item 81 provou o zero POST —, e quem não espera resposta não trava.
+  if (esperarResposta && p.botao?.habilitado === false) {
+    throw new Error(`webgui: clicar — "${p.botao.rotulo}" (${p.botao.sid}) está DESABILITADO nesta tela; `
+      + 'o clique não sai do navegador (zero POST) e a espera de resposta iria até o teto '
+      + `de ${tetoRespostaMs} ms. Para clicar assim mesmo (medição): clicar(s, alvo) sem { esperarResposta }.`);
+  }
   if (p.desceu) {
     // Um gesto só: a descida é determinada (item 40). VÁRIOS: a escolha saiu do TAMANHO, que é
     // chute — medido no s4h em 05/09/2026 (item 68), a linha "Adicionar" (botão) + "Detalhe"
@@ -4391,8 +4464,20 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, tetoRespostaMs = 30
 }
 
 /**
- * Aciona um botão da barra pelo OK-code do SAP GUI e espera a resposta do ABAP. Aceita as três
- * formas do `okcodeDe`: `acionar(s, 'btn[11]')`, `acionar(s, 11)` e `acionar(s, 'Gravar')`.
+ * Aciona um botão e espera a resposta do ABAP. Aceita as três formas do `okcodeDe` para o botão da
+ * BARRA — `acionar(s, 'btn[11]')`, `acionar(s, 11)`, `acionar(s, 'Gravar')` — **e o próprio botão do
+ * `lerTela`**, que é como se aciona o PUSHBUTTON DA DYNPRO (item 127), o que não tem OK-code nenhum:
+ *
+ * ```js
+ * const tela = await lerTela(s);
+ * await acionar(s, tela.botoes.find((b) => b.campo === 'btnBT_ON'));   // → "ITEM81 CLICOU BT_ON"
+ * ```
+ *
+ * O endereço a guardar num script é o `campo`/`sid` (`btnBT_ON`), não o `id`: o id do pushbutton é
+ * POSICIONAL (§ `alvoDeBotao`) e muda com o layout da tela.
+ *
+ * ⚠️ **Botão DESABILITADO estoura aqui, antes do clique** (§ `clicar`), dizendo rótulo e SID — o
+ * clique nele não sairia do navegador e a espera iria até o teto (medido no item 81: zero POST).
  * ⚠️ `mudou: false` é INFORMAÇÃO: a tela ficou igual, a ação não pegou (é assim que `btn[15]` e
  * `btn[12]` se denunciam neste canal).
  *
@@ -4404,7 +4489,8 @@ export async function clicar(sessao, alvo, { tetoMs = 20000, tetoRespostaMs = 30
  * ABAP sobre a ação — foi ela que explicou o falso positivo do item 59 na via HTTP — e `janela` é
  * a janela ATIVA, que denuncia popup na frente.
  */
-export const acionar = (sessao, okcode, opts = {}) => clicar(sessao, { okcode }, { ...opts, esperarResposta: true });
+export const acionar = (sessao, alvo, opts = {}) =>
+  clicar(sessao, alvoDeBotao(alvo), { ...opts, esperarResposta: true });
 
 export const digitar = (sessao, texto) => sessao.cmd('Input.insertText', { text: String(texto) });
 

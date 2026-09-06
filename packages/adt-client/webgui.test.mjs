@@ -9,7 +9,7 @@ import {
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
   janelaAtivaDosControles, estadoDaAcaoDe,
-  habilitadoDoBotao,
+  habilitadoDoBotao, alvoDeBotao, botaoDoBruto,
   interpretarSonda, jsComando, JS_PUBLICAR_FOCO, ehTelemetria, roundTrips,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
   criarPilhaDeDesfazer, transacional,
@@ -355,6 +355,34 @@ test('webgui: o PUSHBUTTON da dynpro entra na tela mesmo sem okcode — é onde 
   expect(tela.botoes.map((b) => b.sid)).toEqual(
     ['wnd[0]/tbar[1]/btn[8]', 'wnd[0]/usr/btnBT_ON', 'wnd[0]/usr/btnBT_OFF']);
   expect(tela.botoes.map((b) => b.habilitado)).toEqual([true, true, false]);
+});
+
+test('webgui: `acionar` endereça o pushbutton pelo BOTÃO do lerTela, e o de barra pelo OK-code', () => {
+  // as três formas de sempre continuam OK-code (o `okcodeDe` é quem traduz, no `jsDoAlvo`)
+  expect(alvoDeBotao('btn[11]')).toEqual({ okcode: 'btn[11]' });
+  expect(alvoDeBotao(11)).toEqual({ okcode: 11 });
+  expect(alvoDeBotao('Gravar')).toEqual({ okcode: 'Gravar' });
+
+  // ⚠ o botão do lerTela traz id E okcode — e o OK-code GANHA: o id é o do container, cujo centro
+  // cai fora do botão; quem tem o rect certo é o `-cnt`, e só o ramo { okcode } desce até ele
+  expect(alvoDeBotao(interpretarControle(BOTAO_EXECUTAR)))
+    .toEqual({ okcode: 'btn[8]' });
+  // o PUSHBUTTON da dynpro não tem OK-code nenhum: sobra o id (item 127)
+  expect(alvoDeBotao(interpretarControle(PUSH_ON))).toEqual({ id: 'M0:46:::0:0' });
+  expect(alvoDeBotao({ seletor: '#x' })).toEqual({ seletor: '#x' });
+  // objeto sem endereço nenhum estoura AQUI, dizendo o que se aceita
+  expect(() => alvoDeBotao({ rotulo: 'BTN ON' })).toThrow(/OK-code.*ou um botão do lerTela/s);
+});
+
+test('webgui: o botão da LINHAGEM é quem responde pela habilitação do gesto', () => {
+  // o pushbutton cinza: rótulo e SID para a mensagem da guarda, `habilitado: false` para a decisão
+  expect(botaoDoBruto(PUSH_OFF)).toEqual({ id: 'M0:46:::0:24', sid: 'wnd[0]/usr/btnBT_OFF',
+    okcode: null, rotulo: 'BTN OFF', habilitado: false });
+  expect(botaoDoBruto(PUSH_ON).habilitado).toBe(true);
+  expect(botaoDoBruto(BOTAO_EXECUTAR)).toMatchObject({ okcode: 'btn[8]', habilitado: true });
+  // ⚠ o que NÃO é botão sai `null` — o `lsdata[5]` do campo é o VALOR digitado, não flag nenhuma
+  expect(botaoDoBruto(CAMPO_SE38)).toBe(null);
+  expect(botaoDoBruto(null)).toBe(null);
 });
 
 test('webgui: a tela montada é o MODELO — e o rótulo do campo é costurado pelo LABEL ao lado', () => {
