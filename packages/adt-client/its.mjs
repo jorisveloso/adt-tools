@@ -1686,6 +1686,24 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, ...
 // existem), "abrir" e "acionar" são o MESMO gesto — quem decide é o nó ter filhos ou não —, e o
 // `action/41` da seleção é dispensável (o duplo clique sozinho navegou).
 //
+// **COLAPSAR é o `action/9`** (`CellCollapse`, o que o container declara ao lado do `8`), com o
+// MESMO content. Medido (item 85, SMEN do s4h 758/250, 06/09/2026, `g-colapsar.json`) numa sessão,
+// seis POSTs sobre "Favoritos" (`Favo`, `EXPANDED` com 2 filhos no boot):
+//
+// | POST | resposta | efeito |
+// |---|---|---|
+// | `action/9` num nó `EXPANDED` | `delta` 84 ms | **COLAPSA** — 15 → 13 nós, `EXPANDED` → `COLLAPSED` |
+// | `action/9` no MESMO nó, já `COLLAPSED` | `delta` 79 ms | **nada** — 13 → 13 nós, estado igual |
+// | `action/9` numa FOLHA (`INDENT`) | `delta` 75 ms | nada |
+// | `action/9` num `COLLAPSED` que nunca abriu | `delta` 70 ms | nada |
+// | `action/8` no mesmo nó `COLLAPSED` | `delta` 77 ms | reabre — 13 → 15 nós |
+// | `action/8` no mesmo nó `EXPANDED` | `delta` 68 ms | **COLAPSA** — 15 → 13 nós |
+//
+// A assimetria é o achado: **o `9` é IDEMPOTENTE e o `8` é TOGGLE.** `action/9` num nó já fechado
+// (ou numa folha) é aceito e não faz nada; `action/8` num nó já aberto FECHA — quem quisesse
+// "garantir aberto" repetindo o `8` fecharia. Por isso `expandirNo` só posta em nó fechado e
+// `colapsarNo` só posta em nó aberto: os dois viraram operações de ESTADO, não de gesto.
+//
 // ⚠ **O acionamento é LENTO** — a folha do favorito levou 15,5 s, e o primeiro tiro estourou o teto
 // de 30 s do `postar`. Por isso `acionarNo`/`navegarArvore` sobem o teto para `TETO_ARVORE`.
 
@@ -1782,6 +1800,14 @@ export function arvore(sessao) {
  */
 export const batchExpandirNo = (sid, chave) => [{ post: `action/8/${sid}`, content: `type=node&node_key=${chave}` }];
 
+/**
+ * PURO: colapsar um nó — o `CellCollapse` do container, mesmo content do `batchExpandirNo`.
+ *
+ * Ao contrário do irmão, este é **IDEMPOTENTE** (item 85): num nó já `COLLAPSED`, ou numa folha, o
+ * servidor aceita e não muda nada. Repetir é seguro.
+ */
+export const batchColapsarNo = (sid, chave) => [{ post: `action/9/${sid}`, content: `type=node&node_key=${chave}` }];
+
 /** PURO: o duplo clique — abre o nó que tem filhos, ACIONA o que não tem. */
 export const batchAcionarNo = (sid, chave) => [{ post: `action/2/${sid}`, content: `type=OnNodeDoubleClick&node_key=${chave}` }];
 
@@ -1802,18 +1828,49 @@ export function acharNoDaArvore(nos = [], alvo) {
  * null, abriu: false, filhos: [] }` sem tocar a rede — é o POST inócuo que o percurso poupa. Sem a
  * flag na tela (`temFilhos === null`) o POST sai como antes.
  *
- * ⚠ **Num nó JÁ ABERTO isto COLAPSA** — o `action/8` é toggle (§ `batchExpandirNo`).
+ * **Num nó JÁ `EXPANDED` também não posta** (item 85), e aqui não é economia, é CORREÇÃO: o
+ * `action/8` é toggle e postá-lo num nó aberto o FECHARIA (§ `batchExpandirNo`). O `pulou` sai com
+ * os filhos que já estão visíveis — o resultado que quem pediu "abre isso" queria.
  */
 export async function expandirNo(sessao, alvo, opts) {
   const antes = arvore(sessao);
   if (!antes.sid) throw new Error('its: esta tela não tem árvore (nenhum GuiTree no delta)');
   const no = acharNoDaArvore(antes.nos, alvo);
   if (no.temFilhos === false) return { forma: null, pulou: true, no, abriu: false, filhos: [] };
+  if (no.expansao === 'EXPANDED') {
+    return { forma: null, pulou: true, no, abriu: false, filhos: antes.nos.filter((x) => x.pai === no.n) };
+  }
   const r = await despachar(sessao, batchExpandirNo(antes.sid, no.chave), opts);
   // ⚠ o índice `n` é posicional e a expansão reindexa: reachar o nó pela CHAVE, sempre
   const depois = r.forma === 'delta' ? arvore(sessao) : { nos: [] };
   const agora = depois.nos.find((x) => x.chave === no.chave) ?? null;
   return { ...r, no, abriu: depois.nos.length > antes.nos.length, filhos: agora ? depois.nos.filter((x) => x.pai === agora.n) : [] };
+}
+
+/**
+ * COLAPSA um nó e devolve `{ ...lerResposta, no, fechou, nosAntes, nosDepois }` — o `CellCollapse`
+ * (`action/9`), medido no item 85: 84 ms, e a subárvore some do `nodeindexes` ("Favoritos" aberto
+ * com 2 filhos → 15 nós viram 13). É a forma de encolher a árvore antes de reler: quanto mais nó
+ * aberto, maior o `nodeindexes` e o delta de cada POST seguinte.
+ *
+ * **Num nó que já está fechado não posta nada** — `{ pulou: true, fechou: false }` sem tocar a
+ * rede. O servidor aceitaria (o `action/9` é idempotente, medido em folha e em `COLLAPSED`), mas o
+ * POST não faria nada, e é o mesmo POST inócuo que o item 84 tirou do percurso.
+ *
+ * ⚠ `fechou: false` com `pulou: false` é INFORMAÇÃO, não erro: o comando pegou e a árvore ficou do
+ * mesmo tamanho.
+ */
+export async function colapsarNo(sessao, alvo, opts) {
+  const antes = arvore(sessao);
+  if (!antes.sid) throw new Error('its: esta tela não tem árvore (nenhum GuiTree no delta)');
+  const no = acharNoDaArvore(antes.nos, alvo);
+  // `INDENT` (folha) e `COLLAPSED` já estão fechados; `null` é "não sei" — aí o POST sai
+  if (no.expansao === 'INDENT' || no.expansao === 'COLLAPSED') {
+    return { forma: null, pulou: true, no, fechou: false, nosAntes: antes.nos.length, nosDepois: antes.nos.length };
+  }
+  const r = await despachar(sessao, batchColapsarNo(antes.sid, no.chave), opts);
+  const depois = r.forma === 'delta' ? arvore(sessao) : { nos: antes.nos };
+  return { ...r, no, fechou: depois.nos.length < antes.nos.length, nosAntes: antes.nos.length, nosDepois: depois.nos.length };
 }
 
 /**

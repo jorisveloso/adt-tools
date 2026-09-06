@@ -1297,9 +1297,36 @@ filhos ("Pesquisa de payload"). Errar para esse lado custa o POST que já se pag
 ⚠ **`temFilhos: null` é "não sei"**, não "não tem": a tela veio sem `HIC` (ou os brutos vieram de
 outra via). Aí o POST sai como antes.
 
-⚠ **`action/8` é TOGGLE:** postado num nó já `EXPANDED`, ele **COLAPSA** — "Menu SAP" aberto com 11
-filhos voltou a 2 nós em 80 ms. Quem chama `batchExpandirNo` cru precisa olhar o `expansao` antes.
-Isso responde metade da fila 85: colapsar não precisa de `action/9`.
+### Colapsar — o `action/9`, o irmão IDEMPOTENTE do `action/8` (item 85)
+
+**Medido no s4h 758/250 em 06/09/2026**; a leitura em `medicoes/item85-colapsar.md`. O container
+declara `CellCollapse → action/9` ao lado do `CellExpand → action/8`, e ele **existe** de verdade —
+mesmo content (`type=node&node_key=<chave>`), 70–84 ms. Seis POSTs sobre "Favoritos":
+
+| POST | estado antes | efeito |
+|---|---|---|
+| `action/9` | `EXPANDED` | **COLAPSA** — 15 → 13 nós |
+| `action/9` | `COLLAPSED` (o mesmo nó, ou um virgem) | **nada**, e é aceito |
+| `action/9` | FOLHA (`INDENT`) | nada, e é aceito |
+| `action/8` | `COLLAPSED` | expande — 13 → 15 nós |
+| `action/8` | `EXPANDED` | **COLAPSA** — 15 → 13 nós |
+
+⚠ **A assimetria dos irmãos é o que importa: o `9` é IDEMPOTENTE, o `8` é TOGGLE.** Quem repetisse o
+`action/8` para "garantir aberto" **fecharia** o nó. Por isso os dois viraram operações de ESTADO na
+lib, e nenhuma delas posta quando o nó já está como se pede:
+
+```js
+await colapsarNo(s, { chave: 'Root' });      // { fechou: true, nosAntes: 22, nosDepois: 4 } — 83 ms
+await colapsarNo(s, { chave: 'Root' });      // { pulou: true, fechou: false } — 0 POST
+await expandirNo(s, { chave: '0000000004' }); // nó já aberto: { pulou: true }, 0 POST — NÃO fecha mais
+```
+
+**Vale porque encolhe todo POST seguinte.** O peso do `delta` medido no mesmo E2E: 22 nós =
+**304.231 B**, 4 nós = **214.393 B** — colapsar a raiz do menu tirou **89.838 B (29,5%) de cada
+resposta**, ~5 KB por nó visível.
+
+**Reabrir restaura a árvore inteira** — `Root` voltou com os mesmos 22 nós, "Escritório" ainda
+aberto: o servidor guarda a expansão de DENTRO do nó colapsado, e o percurso já feito não se perde.
 
 ### Árvore × barra de menu — quando usar qual
 
@@ -2075,7 +2102,7 @@ na mesma função faria cada uma virar um `if` de duas pernas. O que é comum ve
 | a barra do botão não se adivinha | `acionar(s, 'btn[8]')` casa `…/btn[8]` no fim do SID da tela; fora dela estoura com a lista | item 20 D3 |
 | OK-code = `value/okcd` + `vkey/0` | `comandar` | item 8 |
 | o menu inteiro já vem no boot; a folha é `action/4/<SID>` | `itensDeMenu`, `navegarMenu` — sem abrir nada | item 49 (146 itens na SE38; SE38 → SA38 em 91 ms) |
-| a árvore do SMEN se endereça por CHAVE, no container | `arvore`, `expandirNo`, `acionarNo`, `navegarArvore` | item 50 (SMEN → SSC1 em 2,5 s; favorito → CO01 em 386 ms) |
+| a árvore do SMEN se endereça por CHAVE, no container | `arvore`, `expandirNo`, `colapsarNo`, `acionarNo`, `navegarArvore` | item 50 (SMEN → SSC1 em 2,5 s; favorito → CO01 em 386 ms); item 85 (colapsar tira 29,5% do delta) |
 | a FOLHA da árvore se declara antes do POST (`subct="HIC"`) | `expansaoDoHtml`, `arvore(s).nos[].temFilhos` | item 84 (30/31; folha: 1 POST/180 ms → 0/22 ms) |
 | o nó CORRENTE da árvore é `action/41`; sem ele o menu que age sobre o nó recusa | `postar` cru (`action/41/<SID>` + `node_key`) | item 54 (favorito inserido, acionado e apagado só por HTTP) |
 | `/nex` encerra; depois é 400 | `fechar`; `postar` recusa sessão encerrada | item 8; item 20 E |

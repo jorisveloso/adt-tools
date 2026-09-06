@@ -13,7 +13,7 @@ import {
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
   itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS, exportAsDoPopup,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
-  indiceDoNo, arvoreDosBrutos, arvore, expansaoDoHtml, expandirNo, batchExpandirNo, batchAcionarNo, acharNoDaArvore,
+  indiceDoNo, arvoreDosBrutos, arvore, expansaoDoHtml, expandirNo, colapsarNo, batchExpandirNo, batchColapsarNo, batchAcionarNo, acharNoDaArvore,
   sidDoControle, controleDoSid, eventosDoControle, batchDoEvento, eventosDoAlvo,
   mensagemDosSids, carimboDosSids, carimboDoDelta, mudouDaTela,
   criarPilhaDeDesfazer, transacional, fechar,
@@ -930,7 +930,24 @@ test('its: expandirNo numa FOLHA não posta nada — o POST inócuo do item 84',
 test('its: os batches da árvore endereçam o CONTAINER pelo SID e nomeiam o nó pela CHAVE', () => {
   const sid = 'wnd[0]/usr/cntlIMAGE_CONTAINER/shellcont/shell/shellcont[0]/shell';
   expect(batchExpandirNo(sid, '0000000004')).toEqual([{ post: `action/8/${sid}`, content: 'type=node&node_key=0000000004' }]);
+  expect(batchColapsarNo(sid, '0000000004')).toEqual([{ post: `action/9/${sid}`, content: 'type=node&node_key=0000000004' }]);
   expect(batchAcionarNo(sid, 'F00003')).toEqual([{ post: `action/2/${sid}`, content: 'type=OnNodeDoubleClick&node_key=F00003' }]);
+});
+
+test('its: expandirNo num nó JÁ ABERTO não posta — o action/8 é toggle e fecharia (item 85)', async () => {
+  // sessão só com o delta: qualquer POST estouraria
+  const r = await expandirNo({ delta: DELTA_ARVORE }, 'Favo');
+  expect(r.pulou).toBe(true);
+  expect(r.abriu).toBe(false);
+  // o pulo devolve os filhos que JÁ estão visíveis — é o que quem pediu "abre isso" queria
+  expect(r.filhos.map((x) => x.chave)).toEqual(['F00003']);
+});
+
+test('its: colapsarNo só posta em nó ABERTO — folha e COLLAPSED pulam (item 85)', async () => {
+  for (const chave of ['F00003', '0000000009']) {          // INDENT e COLLAPSED
+    const r = await colapsarNo({ delta: DELTA_ARVORE }, chave);
+    expect(r).toEqual({ forma: null, pulou: true, no: expect.objectContaining({ chave }), fechou: false, nosAntes: 5, nosDepois: 5 });
+  }
 });
 
 test('its: acharNoDaArvore acha por chave e por rótulo (sem acento nem caixa), e o erro lista o que existe', () => {
