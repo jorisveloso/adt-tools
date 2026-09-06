@@ -19,6 +19,7 @@
     "./webgui": "./webgui.mjs",
     "./fiori": "./fiori.mjs",
     "./its": "./its.mjs",
+    "./icm": "./icm.mjs",
     "./probe": "./probe.mjs",
     "./canais": "./canais.mjs",
     "./config": "./config.mjs",
