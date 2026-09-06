@@ -23,6 +23,7 @@ import {
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
   FCODES_DE_LINHA,
   tsvDoBloco, jsColarNoGrid,
+  criarCanalCdp, TETO_CMD_CDP_MS,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -1633,3 +1634,94 @@ test('webgui: estadoDaAcaoDe devolve o que o ABAP DISSE e onde a tela está', ()
     .toEqual({ mensagem: null, janela: 'wnd[1]' });
   expect(estadoDaAcaoDe([])).toEqual({ mensagem: null, janela: null });
 });
+
+// ---------- canal do CDP: o que acontece quando o socket morre (item 104) ----------
+
+/** WebSocket de mentira: guarda o que foi enviado e deixa o teste disparar os eventos na mão. */
+function wsFalso({ aoEnviar = null } = {}) {
+  const ws = {
+    enviados: [],
+    send(texto) {
+      if (aoEnviar) aoEnviar(texto);
+      ws.enviados.push(JSON.parse(texto));
+    },
+    responder: (id, result) => ws.onmessage({ data: JSON.stringify({ id, result }) }),
+    falhar: (id, error) => ws.onmessage({ data: JSON.stringify({ id, error }) }),
+    evento: (method, params = {}) => ws.onmessage({ data: JSON.stringify({ method, params }) }),
+  };
+  return ws;
+}
+
+test('webgui: o canal do CDP casa resposta com comando e junta os eventos', async () => {
+  const ws = wsFalso();
+  const { cmd, eventos } = criarCanalCdp(ws);
+
+  const p = cmd('Runtime.evaluate', { expression: '1+1' });
+  expect(ws.enviados[0]).toEqual({ id: 1, method: 'Runtime.evaluate', params: { expression: '1+1' } });
+  ws.responder(1, { value: 2 });
+  await expect(p).resolves.toEqual({ value: 2 });
+
+  const ruim = cmd('Nada.faz');
+  ws.falhar(2, { message: 'method not found', data: 'Nada.faz' });
+  await expect(ruim).rejects.toThrow(/method not found/);
+
+  ws.evento('Network.requestWillBeSent', { requestId: '7' });
+  expect(eventos).toEqual([{ method: 'Network.requestWillBeSent', params: { requestId: '7' } }]);
+
+  // moldura que não é JSON não pode derrubar o canal (nem estourar dentro do onmessage)
+  expect(() => ws.onmessage({ data: 'não é json' })).not.toThrow();
+});
+
+test('webgui: o socket fechar REJEITA todas as pendentes — não pendura para sempre (item 104)', async () => {
+  const ws = wsFalso();
+  const canal = criarCanalCdp(ws);
+  const a = cmd0(canal, 'Page.navigate');
+  const b = cmd0(canal, 'Runtime.evaluate');
+  expect(canal.pendentes()).toBe(2);
+
+  // é o que o Chrome faz quando o target morre (o `fechar()` da OUTRA sessão, crash, OOM, kill)
+  ws.onclose({ code: 1006, reason: 'target closed' });
+
+  await expect(a).rejects.toThrow(/canal do CDP fechou \(código 1006, target closed\)/);
+  await expect(b).rejects.toThrow(/o Chrome saiu ou o target morreu/);
+  expect(canal.pendentes()).toBe(0);
+
+  // e o comando SEGUINTE rejeita na hora, sem enviar: `send` em socket fechado é descartado em
+  // silêncio pela spec — era exatamente aí que o await seguinte pendurava
+  const enviadosAntes = ws.enviados.length;
+  await expect(canal.cmd('Runtime.evaluate')).rejects.toThrow(/não foi enviado — .*canal do CDP fechou/);
+  expect(ws.enviados.length).toBe(enviadosAntes);
+});
+
+test('webgui: onerror derruba o canal com a causa, e o teto por comando pega o socket mudo', async () => {
+  const ws = wsFalso();
+  const canal = criarCanalCdp(ws);
+  const p = cmd0(canal, 'Page.captureScreenshot');
+  ws.onerror({ message: 'ECONNRESET' });
+  await expect(p).rejects.toThrow(/canal do CDP falhou \(ECONNRESET\)/);
+
+  // socket VIVO e mudo: ninguém responde e ninguém fecha — só o teto salva
+  const outro = wsFalso();
+  const c2 = criarCanalCdp(outro, { tetoMs: 20 });
+  await expect(c2.cmd('Runtime.evaluate')).rejects.toThrow(/não respondeu em 20 ms/);
+  expect(c2.pendentes()).toBe(0);
+  // o teto é por comando: dá para afrouxar no que sabidamente demora
+  const lento = c2.cmd('Page.navigate', {}, { tetoMs: 5000 });
+  outro.responder(2, { frameId: 'f' });
+  await expect(lento).resolves.toEqual({ frameId: 'f' });
+  expect(TETO_CMD_CDP_MS).toBeGreaterThan(60000); // maior que a espera mais longa da lib (`ir`)
+});
+
+test('webgui: send que estoura vira rejeição do comando, não pendente órfã', async () => {
+  const ws = wsFalso({ aoEnviar: () => { throw new Error('WebSocket is not open'); } });
+  const canal = criarCanalCdp(ws);
+  await expect(canal.cmd('Page.enable')).rejects.toThrow(/não foi enviado — WebSocket is not open/);
+  expect(canal.pendentes()).toBe(0);
+});
+
+/** dispara o comando já com o `catch` armado — a rejeição chega depois, no `await expect`. */
+function cmd0(canal, method) {
+  const p = canal.cmd(method);
+  p.catch(() => {});
+  return p;
+}

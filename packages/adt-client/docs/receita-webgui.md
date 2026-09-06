@@ -276,6 +276,42 @@ num `catch {}` vazio.
 Passar `porta: <número>` continua valendo para quem precisa de um endereço conhecido (anexar um
 DevTools de fora, por exemplo) — mas aí a porta ocupada vira **erro nomeado**, nunca anexo.
 
+### ⚠ Chrome morto = comando que PENDURA PARA SEMPRE — as três saídas (item 104)
+
+O `cmd()` da sessão devolve uma promessa guardada num mapa de pendentes, casada pelo `id` que volta
+no `onmessage`. Até 06/09/2026 **não havia mais ninguém** para tocar nessas promessas: socket morto
+significava `await` eterno. Medido em `sap-accelerate/work/POC_webgui_canal/` (mata-se o Chrome de
+fora com `Stop-Process`, com um comando EM VOO e outro disparado depois):
+
+| | comando EM VOO quando o Chrome morre | comando NOVO depois da morte |
+|---|---|---|
+| antes | **pendurou** (nada em 15 000 ms) | **pendurou** (nada em 15 000 ms) |
+| depois | rejeitou em **0 ms** | rejeitou em **0 ms** |
+
+O sintoma de fora é o Node **saindo calado** com `Detected unsettled top-level await` — nenhum
+handle vivo, nenhum erro. Foi assim que apareceu no item 65 (duas sessões no mesmo Chrome: o
+`fechar()` de uma matou o target da outra), mas o gatilho é qualquer morte do navegador: crash,
+OOM, `kill` de fora, máquina que dorme.
+
+`criarCanalCdp(ws, { tetoMs })` fecha as três portas — e nenhuma cobre o caso das outras:
+
+- **`onclose`/`onerror` derrubam TODAS as pendentes** com a causa (`o canal do CDP fechou (código
+  1006, …)`). Cobre o socket que morre com comando em voo;
+- **teto por comando** (`TETO_CMD_CDP_MS`, 120 s; ajustável por sessão em `abrirNavegador({
+  tetoCmdMs })` ou por chamada em `cmd(m, p, { tetoMs })`). Cobre o socket **vivo e mudo** — que
+  nunca vai fechar nem responder. É rede de segurança, não política: 120 s é mais que a espera mais
+  longa da lib (o `ir` dá 60 s à navegação);
+- **comando novo em canal morto rejeita na hora**, sem enviar. Necessário porque `ws.send()` em
+  socket fechado é **descartado em silêncio** pela spec do WebSocket — não lança. Sem esta terceira
+  porta, o comando seguinte à morte pendurava de novo, mesmo com as duas primeiras no lugar.
+
+O handshake tem o mesmo tratamento: `onclose` e teto (`tetoMs`) na abertura, para o socket que
+nunca abre não pendurar o `abrirNavegador`.
+
+⚠ O teto usa `unref()` — comando em voo **não** segura o processo vivo. Um script que só espera um
+`cmd` continua podendo sair antes do teto; o que mudou é que ele sai com **rejeição**, não em
+silêncio.
+
 ### Entrar na tela já preenchida
 
 `abrirTransacao(s, tcode, { parametros, okcode })` monta a expressão `~transaction` do ITS:

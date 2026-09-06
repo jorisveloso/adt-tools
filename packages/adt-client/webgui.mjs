@@ -768,6 +768,78 @@ async function esperarPortaDoPerfil(perfil, { ate, saiu }) {
   return null;
 }
 
+/** Teto padrão de UM comando do CDP. Rede de segurança, não política: é maior que qualquer espera
+ *  da lib (o `ir` dá 60 s à navegação) — quem estoura aqui é canal doente, não tela lenta. */
+export const TETO_CMD_CDP_MS = 120000;
+
+/**
+ * Amarra o canal de comandos do CDP a um WebSocket já aberto: devolve `{ cmd, eventos, derrubar }`.
+ *
+ * ⚠ Existe separado porque um `cmd` PENDURAVA PARA SEMPRE quando o socket morria — ninguém
+ * rejeitava as promessas em `pendentes`. Medido em 05/09/2026 (fila 65,
+ * `POC_webgui_porta/medicoes/raw/porta-presa-antes.txt`): com duas sessões anexadas ao mesmo
+ * Chrome, o `fechar()` de uma matou o target da outra e o `await a.cmd(...)` seguinte nunca
+ * resolveu nem rejeitou — o Node saiu com "Detected unsettled top-level await". O cenário é maior
+ * que aquele: Chrome morto por crash, OOM ou kill de fora trava qualquer script em `await`.
+ *
+ * Três saídas, todas obrigatórias — sozinha nenhuma cobre o caso do outro:
+ *   • `onclose`/`onerror` derrubam TODAS as pendentes com a causa (o socket morreu: nada vai voltar);
+ *   • todo comando tem teto (o socket está vivo mas a resposta não vem);
+ *   • comando novo em canal já morto rejeita na hora — `ws.send()` em socket fechado é DESCARTADO
+ *     em silêncio pela spec do WebSocket, não lança; sem isto o comando pendurava de novo.
+ * O teto usa `unref()`: um comando em voo não segura o processo vivo.
+ */
+export function criarCanalCdp(ws, { tetoMs = TETO_CMD_CDP_MS } = {}) {
+  let seq = 0;
+  let causa = null; // Error de morte do canal; null enquanto vivo
+  const pendentes = new Map();
+  const eventos = [];
+
+  const soltar = (id) => {
+    const p = pendentes.get(id);
+    if (!p) return null;
+    pendentes.delete(id);
+    if (p.relogio) clearTimeout(p.relogio);
+    return p;
+  };
+
+  /** Mata o canal: toda pendente vira rejeição com a MESMA causa, e o que vier depois já nasce morto. */
+  const derrubar = (erro) => {
+    if (causa) return;
+    causa = erro instanceof Error ? erro : new Error(String(erro ?? 'webgui: canal do CDP encerrado'));
+    for (const id of [...pendentes.keys()]) soltar(id)?.err(causa);
+  };
+
+  ws.onmessage = (e) => {
+    let m;
+    try { m = JSON.parse(e.data); } catch { return; } // moldura estranha não derruba o canal
+    if (m.id && pendentes.has(m.id)) {
+      const { ok, err } = soltar(m.id);
+      m.error ? err(new Error(`${m.error.message} (${JSON.stringify(m.error.data ?? '')})`)) : ok(m.result);
+    } else if (m.method) eventos.push(m);
+  };
+  ws.onclose = (e) => derrubar(new Error(
+    `webgui: o canal do CDP fechou (código ${e?.code ?? '?'}${e?.reason ? `, ${e.reason}` : ''}) — o Chrome saiu ou o target morreu`));
+  ws.onerror = (e) => derrubar(new Error(`webgui: o canal do CDP falhou (${e?.message || e?.error?.message || 'o Chrome saiu ou a conexão caiu'})`));
+
+  const cmd = (method, params = {}, { tetoMs: teto = tetoMs } = {}) => new Promise((ok, err) => {
+    if (causa) return err(new Error(`webgui: ${method} não foi enviado — ${causa.message}`));
+    const id = ++seq;
+    const relogio = teto > 0 ? setTimeout(() => {
+      soltar(id)?.err(new Error(`webgui: ${method} não respondeu em ${teto} ms — o canal do CDP está vivo mas mudo`));
+    }, teto) : null;
+    relogio?.unref?.();
+    pendentes.set(id, { ok, err, relogio });
+    try {
+      ws.send(JSON.stringify({ id, method, params }));
+    } catch (e) {
+      soltar(id)?.err(new Error(`webgui: ${method} não foi enviado — ${e.message}`));
+    }
+  });
+
+  return { cmd, eventos, derrubar, pendentes: () => pendentes.size, causa: () => causa };
+}
+
 /**
  * Sobe o Chrome headless e devolve a sessão CDP `{ cfg, cmd, eventos, desfazer, fechar, porta }` já
  * autenticada no `cfg` e com o polyfill armado. Quem abre FECHA (o `fechar` desfaz o que ficou
@@ -777,7 +849,7 @@ async function esperarPortaDoPerfil(perfil, { ate, saiu }) {
  * duas ao mesmo tempo, não se atropelarem; ver o bloco acima. Passe um número só quando alguém de
  * fora precisar se anexar num endereço conhecido, sabendo que aí a porta ocupada vira erro.
  */
-export async function abrirNavegador(cfg, { porta = 0, largura = 1600, altura = 1000, tetoMs = 30000, navegador, origemSegura = true, certificado = cfg?.certificado ?? null } = {}) {
+export async function abrirNavegador(cfg, { porta = 0, largura = 1600, altura = 1000, tetoMs = 30000, tetoCmdMs = TETO_CMD_CDP_MS, navegador, origemSegura = true, certificado = cfg?.certificado ?? null } = {}) {
   const chrome = acharNavegador({ navegador });
   const cabecalho = autorizacao(cfg); // recusa ANTES de subir navegador nenhum
   const bandeirasCert = bandeirasDeCertificado(certificado); // recusa pino torto aqui, não na navegação
@@ -821,24 +893,23 @@ export async function abrirNavegador(cfg, { porta = 0, largura = 1600, altura = 
   }
 
   const ws = new WebSocket(alvo.webSocketDebuggerUrl);
-  await new Promise((ok, err) => { ws.onopen = ok; ws.onerror = () => err(new Error('webgui: WebSocket do CDP falhou')); });
-
-  let seq = 0;
-  const pendentes = new Map();
-  const eventos = [];
-  ws.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && pendentes.has(m.id)) {
-      const { ok, err } = pendentes.get(m.id);
-      pendentes.delete(m.id);
-      m.error ? err(new Error(`${m.error.message} (${JSON.stringify(m.error.data ?? '')})`)) : ok(m.result);
-    } else if (m.method) eventos.push(m);
-  };
-  const cmd = (method, params = {}) => new Promise((ok, err) => {
-    const id = ++seq;
-    pendentes.set(id, { ok, err });
-    ws.send(JSON.stringify({ id, method, params }));
+  // o handshake também tem teto e também morre por `close`: socket que nunca abre pendurava aqui
+  await new Promise((ok, err) => {
+    const relogio = setTimeout(() => err(new Error(`webgui: o WebSocket do CDP não abriu em ${tetoMs} ms`)), tetoMs);
+    relogio.unref?.();
+    const sair = (f, e) => { clearTimeout(relogio); f(e); };
+    ws.onopen = () => sair(ok);
+    ws.onerror = () => sair(err, new Error('webgui: WebSocket do CDP falhou'));
+    ws.onclose = (e) => sair(err, new Error(`webgui: o WebSocket do CDP fechou antes de abrir (código ${e?.code ?? '?'})`));
+  }).catch(async (e) => {
+    try { ws.close(); } catch { /* nem abriu */ }
+    try { proc.kill(); } catch { /* já morreu */ }
+    await apagarPerfil(perfil);
+    throw e;
   });
+
+  const canal = criarCanalCdp(ws, { tetoMs: tetoCmdMs });
+  const { cmd, eventos } = canal;
 
   await cmd('Page.enable');
   await cmd('Network.enable');
@@ -884,6 +955,8 @@ export async function abrirNavegador(cfg, { porta = 0, largura = 1600, altura = 
     const morreu = Date.now() + 3000;
     while (!saiu && Date.now() < morreu) await espera(100);
     try { ws.close(); } catch { /* já fechado */ }
+    // e derrubar o canal: quem estiver em await de um cmd recebe a rejeição, não pendura
+    canal.derrubar(new Error('webgui: a sessão foi fechada por fechar()'));
     try { proc.kill(); } catch { /* já morreu */ }
     if (!await apagarPerfil(perfil)) {
       aviso(`webgui: o perfil temporário ${perfil} NÃO saiu do disco — algum processo do Chrome ainda o segura. Apague à mão.`);
