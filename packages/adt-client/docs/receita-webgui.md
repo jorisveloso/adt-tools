@@ -1965,7 +1965,7 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   (§ "`lerGridInteiro`"). ~~Célula editável~~ **feita** (item 47): `escreverCelula` pelo navegador, com o ciclo
   escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
   na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
-  só existe no despejo DOM), e no grid faltam **ordenar/filtrar** e **selecionar linha**.
+  só existe no despejo DOM), e no grid faltam **ordenar/filtrar** e **selecionar linha**. ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -2143,6 +2143,74 @@ Quatro fatos medidos:
 (~48 ms para 11,9 MB) e só a matriz volta. E lá o `lsdata` vem com **entidade HTML** (`&#39;`,
 `&lt;`) — o DOM decodificaria sozinho, o XML cru não: sem decodificar, 28 das 8.085 células saíam
 com `&#39;` no valor.
+
+### `posicionarGrid`: a linha DISTANTE na tela, num gesto (item 75)
+
+**Medido no s4h 758/250 em 2026-09-05** (fila `adt-client`, item 75; evidência em
+`sap-accelerate/work/POC_webgui_grid/medicoes/item75-posicionar.md`). Isto é **navegação, não
+leitura**: o que se quer é *clicar* numa linha que está fora do bloco carregado — drill-down,
+seleção. Para LER a tabela inteira a via é o `lerGridInteiro` acima.
+
+O gesto é **arrastar o thumb do scrollbar vertical do grid** — `<cid>_vscroll-hdl` (`acf="Hndl"`),
+dentro do trilho `<cid>_vscroll-bar`. O `<cid>_vscroll` é um `ct="SCB"` cujo `lsdata` traz o mapa da
+tabela: `{"0":posição,"1":máximo,"2":passo,"3":janela,"6":dono,"10":total}` — na lista do RSPARAM,
+`{0:1, 1:1591, 3:27, 10:1617}` (1617 linhas, janela de 27, última posição 1591 = 1617 − 27 + 1).
+
+```js
+import { abrirNavegador, ir, urlWebgui, acionar, posicionarGrid, lerGrid, clicar } from './webgui.mjs';
+
+const p = await posicionarGrid(s, null, 900);
+// { id: 'C102', linha: 900, janela: { de: 888, ate: 914, n: 27 },
+//   gestos: [ { gesto: 'arrasto', dy: 366, desejada: 887 } ], pedidos: 1, ms: 2719 }
+
+await lerGrid(s, null, { de: 900, ate: 900 });      // a linha 900 agora está no bloco
+await clicar(s, { id: 'grid#C102#900,1#if' });      // e é clicável
+```
+
+| ir até a linha 900 | gestos | rede | tempo |
+|---|---:|---:|---:|
+| `posicionarGrid` (arrasto do thumb) | **1** | 1 pedido, ~9 KB | **~1–2,7 s** |
+| roda do mouse (item 46, fase J) | ~90 rodadas | ~9 pedidos | ~4 min |
+
+**Cinco fatos medidos**
+
+1. **Um arrasto basta.** 12 de 13 alvos (1, 50, 200, 456, 777, 900, 1234, 1500, 1600, 1617, 300)
+   acertaram no primeiro gesto; o E2E da lib fechou 6 de 6, com ~1 s por alvo.
+2. **O framework publica o gesto ao SOLTAR**, num batch só — e é o mesmo par do `lerGridInteiro`:
+
+   ```
+   POST …/batch/json  [{ "post": "action/61/<SID>",  "content": "position=899", "logic": "ignore" },
+                       { "post": "action/710/<SID>", "content": "position=899&fragments=899,925;" },
+                       { "get":  "state/ur/<SID>" }]
+   ```
+
+   O `position` é **0-based**. Arrastar de volta para uma faixa já carregada não gera requisição
+   nenhuma (medido: alvos 1 e 1617, 0 pedidos), e o bloco no DOM deixa de ser contíguo — ele passa a
+   ter buracos (`1..1617` com 221 linhas e 2 buracos), o que o `parcial`/`faltaNaFaixaDoBloco` já
+   trata.
+3. **E o servidor entende a linha nova.** Depois de posicionar em 1234, o duplo clique na célula
+   mandou `action/53 row_index=1234` — aqui **1-based**, ao contrário do `position` — e a tela virou
+   o popup "Exibir parâmetro de perfil" com o campo em `rec/empty_stxx_as_white_list`, que é a linha
+   1234 lida pelo `lerGrid`. O clique SIMPLES não gera requisição: seleção é puro cliente.
+4. ⚠️ **O `lsdata` do scrollbar não acompanha a rolagem**, nem o `firstVisibleRow` do grid: os dois
+   ficam parados em `1` e `0` mesmo com a janela na linha 1600, porque o delta que volta é PARCIAL e
+   ninguém o aplica no DOM. Quem diz onde a janela está é o **`iidx` das `<tr>` com altura > 0**
+   (0-based; a lib devolve 1-based). Perguntar ao `lsdata` seria ler sempre "linha 1".
+5. ⚠️ **Arrasto curto não move, e refinar por pixel não corrige.** O trilho tem 647 px para 1591
+   posições — 1 px vale ~2,5 linhas, 1 linha vale 0,4 px. Pedir a linha 1617 com o thumb já em 1586
+   é um deslocamento de 2 px: três arrastos seguidos não mudaram nada (46 s perdidos). Abaixo de
+   `LIMIAR_ARRASTO_PX` (4 px) o ajuste sai pela **roda**, que anda ~10 linhas por rodada.
+
+Duas decisões de desenho que a medição impôs, e que valem para qualquer gesto neste canal:
+
+- **mirar o alvo no MEIO da janela, não no topo.** O arrasto erra de 0 a +3 linhas; mirando o topo,
+  um erro de +1 já deixa o alvo *acima* da janela (medido em 777, 1234 e 1500). Mirando o meio
+  (`miraDoScrollbar`), ±3 linhas cabem folgadas numa janela de 27.
+- **esperar por CONDIÇÃO, não por tempo.** Com espera fixa de 2,2 s um dos alvos foi lido no meio do
+  repinte, com **zero** `<tr>` visível — e o "refino" seguinte, calculado sobre esse nada, jogou a
+  janela para 200 linhas longe. `posicionarGrid` espera a janela pintada CONTER a linha; e se não
+  contiver dentro das tentativas, **estoura dizendo onde ela ficou** — um posicionamento que "quase"
+  chega e volta calado faria o clique seguinte cair na linha errada.
 
 ## Escrever numa célula do ALV — e provar que gravou (item 47)
 

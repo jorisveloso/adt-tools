@@ -15,6 +15,7 @@ import {
   pinosDeCertificado, bandeirasDeCertificado, explicarErroDeNavegacao,
   jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
   jsFragmentoDoGrid, faltaNaFaixaDoBloco,
+  estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -1053,4 +1054,84 @@ test('webgui: o avanço do laço é pelo que FALTA (o servidor devolve no mínim
   expect(faltaNaFaixaDoBloco({ 1: {}, 3: {} }, 1, 3)).toBe(2);
   expect(faltaNaFaixaDoBloco({}, 5, 10)).toBe(5);
   expect(faltaNaFaixaDoBloco({ 1: {} }, 1, 0)).toBe(null);          // faixa vazia
+});
+
+// ---------- posicionar numa linha distante (item 75) ----------
+
+test('webgui: o lsdata do scrollbar vira nomes — e a posição dele NÃO é onde a janela está', () => {
+  // o lsdata REAL do C102_vscroll na lista do RSPARAM (1617 linhas, janela de 27)
+  const e = estadoDoScrollbar({ 0: 1, 1: 1591, 2: 1, 3: 27, 6: 'C102', 7: true, 10: 1617 });
+  expect(e).toEqual({ posicao: 1, maximo: 1591, passo: 1, janela: 27, dono: 'C102', ativo: true, total: 1617 });
+  expect(e.maximo).toBe(e.total - e.janela + 1);
+  // ⚠ depois de rolar até a linha 1600 o servidor CONTINUA publicando posicao 1 — medido
+  expect(estadoDoScrollbar({ 0: 1, 1: 1591, 3: 27, 10: 1617 }).posicao).toBe(1);
+  expect(estadoDoScrollbar({}).total).toBe(null);
+});
+
+test('webgui: a mira põe a linha no MEIO da janela — mirar o topo deixa o alvo escapar por 1', () => {
+  const scb = { 0: 1, 1: 1591, 2: 1, 3: 27, 6: 'C102', 7: true, 10: 1617 };
+  const geo = { scb, bar: { topo: 146, h: 674 }, hdl: { h: 27, yc: 159 } };
+  const m = miraDoScrollbar(900, geo);
+  expect(m.desejada).toBe(887);                        // 900 − 13, para o alvo cair no centro
+  expect(900 - m.desejada).toBe(13);                   // e o erro medido do arrasto (0..+3) cabe folgado
+  expect(m.pxPorLinha).toBeCloseTo((674 - 27) / 1590, 5);
+  // as bordas grudam no que o scrollbar permite, sem estourar
+  expect(miraDoScrollbar(1, geo).desejada).toBe(1);
+  expect(miraDoScrollbar(1, geo).y).toBeCloseTo(146 + 13.5, 5);
+  expect(miraDoScrollbar(1617, geo).desejada).toBe(1591);
+  expect(miraDoScrollbar(1617, geo).y).toBeCloseTo(146 + 13.5 + 647, 5);
+});
+
+test('webgui: naJanela decide pela janela PINTADA — janela vazia nunca contém linha', () => {
+  expect(naJanela({ de: 888, ate: 914, n: 27 }, 900)).toBe(true);
+  expect(naJanela({ de: 888, ate: 914, n: 27 }, 887)).toBe(false);   // o +1 que fazia o alvo escapar
+  expect(naJanela({ de: 888, ate: 914, n: 27 }, 914)).toBe(true);
+  expect(naJanela({ de: null, ate: null, n: 0 }, 900)).toBe(false);  // o repinte no meio do caminho
+  expect(naJanela(null, 900)).toBe(false);
+});
+
+// O DOM mínimo que o `jsJanelaDoGrid` toca: o grid, o `_vscroll` com o lsdata, o thumb, o trilho e
+// as `<tr iidx>` — as de altura 0 estão no DOM e NÃO estão na tela (é o bloco, não a janela).
+const rodarJanela = (js, { lsdata = { 0: 1, 1: 1591, 3: 27, 10: 1617 }, linhas = [],
+  grid = { left: 48, top: 112, width: 1470, height: 722 },
+  hdl = { left: 1505, top: 146, width: 12, height: 27 },
+  bar = { left: 1505, top: 146, width: 12, height: 674 }, innerHeight = 905 } = {}) => {
+  const caixa = (r) => ({ getBoundingClientRect: () => r });
+  const els = {
+    C102: caixa(grid),
+    C102_vscroll: { getAttribute: (a) => (a === 'lsdata' ? JSON.stringify(lsdata) : null) },
+    'C102_vscroll-hdl': hdl && caixa(hdl),
+    'C102_vscroll-bar': bar && caixa(bar),
+  };
+  const documento = {
+    getElementById: (id) => els[id] ?? null,
+    querySelectorAll: (sel) => (sel !== 'tr[iidx]' ? [] : linhas.map((l) => ({
+      id: `C102-mrss-cont-none-${l.iidx}`, offsetHeight: l.h,
+      getAttribute: () => String(l.iidx),
+    }))),
+  };
+  return new Function('document', 'innerHeight', `return ${js}`)(documento, innerHeight);
+};
+
+test('webgui: a janela do grid sai do iidx das <tr> VISÍVEIS, 1-based — não do lsdata', () => {
+  const r = rodarJanela(jsJanelaDoGrid('C102'),
+    { linhas: [{ iidx: 899, h: 16 }, { iidx: 900, h: 16 }, { iidx: 901, h: 0 }] });
+  expect(r.janela).toEqual({ de: 900, ate: 901, n: 2 });     // iidx 0-based → linha 1-based
+  expect(estadoDoScrollbar(r.scb).total).toBe(1617);
+  expect(r.hdl.yc).toBe(159.5);
+  expect(r.bar.topo).toBe(146);
+  expect(r.centro).toEqual({ x: 783, y: 473 });               // o centro do grid, para a roda
+});
+
+test('webgui: sem <tr> pintada a janela é VAZIA (e ninguém a confunde com a linha 1)', () => {
+  const r = rodarJanela(jsJanelaDoGrid('C102'), { linhas: [{ iidx: 5, h: 0 }] });
+  expect(r.janela).toEqual({ de: null, ate: null, n: 0 });
+  expect(naJanela(r.janela, 6)).toBe(false);
+});
+
+test('webgui: grid sem scrollbar devolve hdl/bar nulos — é o que faz posicionarGrid estourar', () => {
+  const r = rodarJanela(jsJanelaDoGrid('C102'), { hdl: null, bar: null, linhas: [{ iidx: 0, h: 16 }] });
+  expect(r.hdl).toBe(null);
+  expect(r.bar).toBe(null);
+  expect(rodarJanela(jsJanelaDoGrid('C999'))).toBe(null);     // grid que não existe
 });

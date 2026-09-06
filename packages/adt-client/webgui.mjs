@@ -1519,7 +1519,7 @@ export async function escreverCelula(sessao, alvo = null, { linha, coluna, valor
   if (!b.celulas[String(n)]) {
     throw new Error(`webgui: escreverCelula — a linha ${linha} não está no bloco carregado ` +
       `(${presentes[0] ?? '-'}..${presentes[presentes.length - 1] ?? '-'} de ${b.total}). ` +
-      'Este módulo escreve no que a tela já trouxe; chegar a linha distante é navegação (roda do mouse), não leitura.');
+      'Este módulo escreve no que a tela já trouxe; chegar a linha distante é navegação: `posicionarGrid(sessao, alvo, linha)`.');
   }
   const id = `grid#${g.id}#${n},${c}#if`;
   const de = b.celulas[String(n)][String(c)] ?? '';
@@ -1540,6 +1540,195 @@ export async function escreverCelula(sessao, alvo = null, { linha, coluna, valor
   detalhe(`webgui: escreverCelula ${id} (${b.colunas?.[c - 1] ?? c}) "${de}" → "${para}" — publicado, PENDENTE de round-trip`);
   return { id, sid: b.sid ?? g.sid, linha: n, coluna: c, nomeColuna: b.colunas?.[c - 1] ?? null,
     de, para, publicado: publicado ?? null, pendente: true, ms: Date.now() - t0 };
+}
+
+// ---------- posicionar o ALV numa linha DISTANTE (item 75) ----------
+//
+// Medido no s4h 758/250 em 05/09/2026 (`sap-accelerate/work/POC_webgui_grid`, fases M–M7, lista do
+// RSPARAM, 1617 linhas): para CLICAR numa linha que está fora do bloco carregado, o gesto é
+// **arrastar o thumb do scrollbar vertical do grid** — `<cid>_vscroll-hdl` (`acf=Hndl`), dentro do
+// trilho `<cid>_vscroll-bar`.
+//
+//   • **um arrasto põe a linha na tela em ~1 s e 1 requisição.** 12 de 13 alvos (1..1617) acertaram
+//     no primeiro arrasto. A roda do mouse — o único gesto medido antes (item 46, fase J) — anda 10
+//     linhas por rodada a ~2,9 s: a linha 900 custaria ~90 rodadas, ~4 min. É a diferença entre
+//     navegar e empurrar.
+//   • **o framework publica o gesto ao SOLTAR**, num batch só: `action/61` (VerticalScroll)
+//     `position=<0-based>` com `logic:ignore`, seguido do `action/710`
+//     `position=<0-based>&fragments=<de>,<ate>;` — o MESMO par que o `lerGridInteiro` posta. Voltar
+//     para uma faixa já carregada não gera requisição nenhuma.
+//   • **e o servidor entende a linha nova**: depois de posicionar em 900, o duplo clique na célula
+//     mandou `action/53 row_index=900` (1-BASED aqui, ao contrário do `position`) e a tela virou o
+//     popup do `login/fails_to_user_lock` — que é, de fato, a linha 900 da lista.
+//
+// ⚠️ **O `lsdata` do scrollbar NÃO acompanha a rolagem**, nem o `firstVisibleRow` do grid: ficam
+// parados em `1` e `0` o tempo todo, porque o delta que volta é PARCIAL e ninguém o aplica no DOM.
+// Quem diz onde a janela está é o `iidx` das `<tr>` com altura > 0 — é por ele que esta função
+// confere o resultado, nunca pelo estado publicado. Confiar no `lsdata` seria ler sempre "linha 1".
+//
+// Duas correções que a medição impôs ao desenho (fases M5 e M6):
+//
+//   1. **mirar a linha no MEIO da janela, não no topo.** O trilho tem 647 px para 1591 posições —
+//      1 px vale ~2,5 linhas — e o arrasto erra de 0 a +3 linhas. Mirando o topo, um erro de +1 já
+//      deixa o alvo ACIMA da janela (medido nos alvos 777, 1234 e 1500); mirando o meio, ±3 linhas
+//      cabem folgadas numa janela de 27.
+//   2. **arrasto CURTO não move.** Pedir a linha 1617 com o thumb já em 1586 é um deslocamento de
+//      2 px: três arrastos seguidos não mudaram nada (46 s perdidos). Abaixo de `LIMIAR_ARRASTO_PX`
+//      o ajuste sai pela RODA — e refinar por pixel não adiantaria, uma linha vale 0,4 px.
+
+/** Abaixo disto o arrasto não move o thumb (medido: 2 px = nada, três vezes seguidas). */
+export const LIMIAR_ARRASTO_PX = 4;
+/** Quanto uma rodada de roda anda no ALV — 4 × `deltaY: 250` ≈ 10 linhas (item 46, fase J). */
+export const LINHAS_POR_RODADA = 10;
+
+/**
+ * PURO: o `lsdata` do `<cid>_vscroll` (`ct="SCB"`) em nomes.
+ * ⚠️ `posicao` é o que o SERVIDOR publicou, e ele não acompanha a rolagem: fica `1`. Serve para
+ * `maximo`, `janela` e `total` — não para saber onde a janela está.
+ */
+export function estadoDoScrollbar(lsdata = {}) {
+  const n = (k) => { const v = Number(lsdata?.[k]); return Number.isFinite(v) ? v : null; };
+  return { posicao: n('0'), maximo: n('1'), passo: n('2'), janela: n('3'),
+    dono: lsdata?.['6'] ?? null, ativo: lsdata?.['7'] === true, total: n('10') };
+}
+
+/**
+ * PURO: onde soltar o thumb para a `linha` cair no MEIO da janela.
+ * Devolve `{ desejada, fracao, y, pxPorLinha }` — `desejada` é a primeira linha visível que se pede
+ * (1-based, limitada ao `maximo` do scrollbar) e `y` é o centro do thumb no destino.
+ */
+export function miraDoScrollbar(linha, { scb = {}, bar, hdl } = {}) {
+  const e = estadoDoScrollbar(scb);
+  const maximo = Math.max(e.maximo || 1, 1);
+  const janela = Math.max(e.janela || 1, 1);
+  const desejada = Math.min(Math.max(Number(linha) - Math.floor((janela - 1) / 2), 1), maximo);
+  const fracao = maximo > 1 ? (desejada - 1) / (maximo - 1) : 0;
+  const curso = bar.h - hdl.h;
+  return { desejada, fracao, y: bar.topo + hdl.h / 2 + fracao * curso,
+    pxPorLinha: maximo > 1 ? curso / (maximo - 1) : 0 };
+}
+
+/**
+ * PURO: a expressão JS que diz onde a JANELA do grid está agora — `{ cid, scb, janela, hdl, bar,
+ * centro }`, com `janela` em linhas 1-based (o `iidx` da `<tr>` é 0-based).
+ */
+export const jsJanelaDoGrid = (cid) => `(() => {
+  const p = (s) => { try { return s ? JSON.parse(s) : null; } catch (x) { return null; } };
+  const cid = ${JSON.stringify(String(cid))};
+  const grid = document.getElementById(cid);
+  if (!grid) return null;
+  const sb = document.getElementById(cid + '_vscroll');
+  const vis = [];
+  for (const tr of document.querySelectorAll('tr[iidx]')) {
+    if (!tr.id.startsWith(cid + '-mrss-cont-none-')) continue;
+    if (tr.offsetHeight > 0) vis.push(Number(tr.getAttribute('iidx')));
+  }
+  vis.sort((a, b) => a - b);
+  const r = (id) => { const el = document.getElementById(id); if (!el) return null;
+    const b = el.getBoundingClientRect();
+    return { x: b.left + b.width / 2, yc: b.top + b.height / 2, h: b.height, topo: b.top }; };
+  const bg = grid.getBoundingClientRect();
+  return { cid, scb: sb ? p(sb.getAttribute('lsdata')) : null,
+    janela: vis.length ? { de: vis[0] + 1, ate: vis[vis.length - 1] + 1, n: vis.length } : { de: null, ate: null, n: 0 },
+    hdl: r(cid + '_vscroll-hdl'), bar: r(cid + '_vscroll-bar'),
+    centro: { x: bg.left + bg.width / 2, y: bg.top + Math.min(bg.height, innerHeight) / 2 } };
+})()`;
+
+/** PURO: a linha 1-based está na janela pintada? */
+export const naJanela = (janela, linha) => !!janela?.n && janela.de <= linha && linha <= janela.ate;
+
+/** Arrasta o thumb de onde ele está até `y`, com o mouse de verdade (press → moved × n → release). */
+async function arrastarThumb(sessao, y, { hdl }, passos = 8) {
+  const x = hdl.x;
+  const y0 = hdl.yc;
+  await sessao.cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: y0, buttons: 0 });
+  await sessao.cmd('Input.dispatchMouseEvent', { type: 'mousePressed', x, y: y0, button: 'left', buttons: 1, clickCount: 1 });
+  await espera(60);
+  for (let i = 1; i <= passos; i++) {
+    await sessao.cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: y0 + (y - y0) * (i / passos), button: 'left', buttons: 1 });
+    await espera(50);
+  }
+  await sessao.cmd('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+}
+
+/** Gira a roda sobre o grid — o ajuste fino, ~10 linhas por rodada; `sinal` `+1` desce. */
+async function rodar(sessao, { x, y }, rodadas, sinal) {
+  await sessao.cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 });
+  for (let r = 0; r < rodadas; r++) {
+    for (let k = 0; k < 4; k++) {
+      await sessao.cmd('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: 250 * sinal, buttons: 0 });
+      await espera(120);
+    }
+    await espera(400);
+  }
+}
+
+/**
+ * Põe a `linha` (1-based, ABSOLUTA) **na tela** — o gesto que torna clicável uma linha que está
+ * fora do bloco carregado. É NAVEGAÇÃO: para LER a tabela inteira a via é `lerGridInteiro` (nesta
+ * mesma sessão) ou `its.lerGrid` (em outra).
+ *
+ * ```js
+ * await posicionarGrid(s, null, 900);              // a linha 900 passa a estar na janela
+ * await clicar(s, { id: 'grid#C102#900,1#if' });   // e agora dá para clicar nela
+ * ```
+ *
+ * `alvo` escolhe o grid como em `lerGrid` (índice, `{ id }`, `{ sid }`). Devolve
+ * `{ id, linha, janela, gestos, pedidos, ms }` — `janela` é a faixa 1-based que ficou na tela e
+ * `gestos` diz o que foi preciso (`[]` quando a linha já estava visível).
+ *
+ * ⚠️ Estoura quando a linha não entra na janela dentro das `tentativas`, dizendo onde ela ficou.
+ * Um `posicionarGrid` que "quase" chega e volta calado faria o clique seguinte cair na linha
+ * ERRADA — o modo de falha caro deste gesto.
+ */
+export async function posicionarGrid(sessao, alvo = null, linha, { tetoMs = 15000, tentativas = 3 } = {}) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'posicionarGrid');
+  const n = Number(linha);
+  let e = await avaliar(sessao, jsJanelaDoGrid(g.id));
+  if (!e) throw new Error(`webgui: posicionarGrid — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  const scb = estadoDoScrollbar(e.scb ?? {});
+  if (!Number.isInteger(n) || n < 1 || (scb.total && n > scb.total)) {
+    throw new Error(`webgui: posicionarGrid — a linha ${linha} está fora do ALV (ele tem ${scb.total ?? '?'} linha(s), 1-based)`);
+  }
+  const pedidos = () => sessao.eventos.filter((x) => x.method === 'Network.requestWillBeSent').length;
+  const p0 = pedidos();
+  const gestos = [];
+  if (naJanela(e.janela, n)) {
+    detalhe(`webgui: posicionarGrid ${g.id} — a linha ${n} já está na janela ${e.janela.de}..${e.janela.ate}, sem gesto`);
+    return { id: g.id, linha: n, janela: e.janela, gestos, pedidos: 0, ms: Date.now() - t0 };
+  }
+  if (!e.hdl || !e.bar) {
+    throw new Error(`webgui: posicionarGrid — o grid ${g.id} não tem scrollbar vertical (${g.id}_vscroll-hdl), ` +
+      `e a linha ${n} não está na janela ${e.janela.de ?? '-'}..${e.janela.ate ?? '-'}. Sem trilho não há o que arrastar.`);
+  }
+  for (let i = 1; i <= tentativas && !naJanela(e.janela, n); i++) {
+    const mira = miraDoScrollbar(n, e);
+    const dy = mira.y - e.hdl.yc;
+    if (Math.abs(dy) >= LIMIAR_ARRASTO_PX) {
+      await arrastarThumb(sessao, mira.y, e);
+      gestos.push({ gesto: 'arrasto', dy: Math.round(dy), desejada: mira.desejada });
+    } else {
+      // ajuste fino: o arrasto não move tão pouco (§ acima) — quem anda de 10 em 10 é a roda
+      const falta = n - (e.janela.de ?? 1);
+      const rodadas = Math.max(1, Math.ceil(Math.abs(falta) / LINHAS_POR_RODADA));
+      await rodar(sessao, e.centro, rodadas, falta >= 0 ? 1 : -1);
+      gestos.push({ gesto: 'roda', rodadas, sentido: falta >= 0 ? 'baixo' : 'cima' });
+    }
+    // espera por CONDIÇÃO: a janela PINTADA conter a linha (tempo fixo pega o repinte no meio)
+    const ate = Date.now() + tetoMs;
+    do {
+      await espera(200);
+      e = await avaliar(sessao, jsJanelaDoGrid(g.id));
+    } while (Date.now() < ate && !naJanela(e?.janela, n));
+  }
+  if (!naJanela(e.janela, n)) {
+    throw new Error(`webgui: posicionarGrid — pedi a linha ${n} e a janela ficou em ` +
+      `${e.janela.de ?? '-'}..${e.janela.ate ?? '-'} depois de ${gestos.length} gesto(s) ` +
+      `(${gestos.map((x) => x.gesto).join(', ')}). O ALV tem ${scb.total} linha(s).`);
+  }
+  detalhe(`webgui: posicionarGrid ${g.id} — linha ${n} na janela ${e.janela.de}..${e.janela.ate} com ${gestos.length} gesto(s)`);
+  return { id: g.id, linha: n, janela: e.janela, gestos, pedidos: pedidos() - p0, ms: Date.now() - t0 };
 }
 
 export async function print(sessao, arquivo) {
