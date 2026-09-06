@@ -697,6 +697,23 @@ test('desfazer: a baixa tira da pilha (é o que "confirmar" faz), e só uma vez'
   expect(() => pilha.registrar('x', 'não é função')).toThrow(/exige uma função/);
 });
 
+test('desfazer: a guarda PARA o laço e deixa na pilha o que não rodou (item 106)', async () => {
+  const pilha = criarPilhaDeDesfazer();
+  const feitos = [];
+  pilha.registrar('rascunho 1', () => { feitos.push(1); });
+  pilha.registrar('rascunho 2', () => { feitos.push(2); });
+  pilha.registrar('rascunho 3', () => { feitos.push(3); });
+
+  let viva = true;
+  const guarda = () => { if (!viva) throw new Error('sessão morta'); };
+  // a 3 roda e mata a sessão; a guarda barra as outras DUAS, que ficam com rótulo para quem limpar
+  pilha.registrar('rascunho 4 (mata a sessão)', () => { feitos.push(4); viva = false; });
+
+  expect(await pilha.executar({ guarda })).toEqual([{ rotulo: 'rascunho 4 (mata a sessão)', ok: true }]);
+  expect(feitos).toEqual([4]);
+  expect(pilha.pendentes()).toEqual(['rascunho 1', 'rascunho 2', 'rascunho 3']);
+});
+
 test('desfazer: ação que estoura NÃO impede as outras — sai no relatório, com o rótulo', async () => {
   const pilha = criarPilhaDeDesfazer();
   const feitos = [];

@@ -629,6 +629,12 @@ const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
  * `executar` é à prova de falha individual: uma ação que estoura NÃO impede as demais, e sai no
  * relatório como `{ ok: false, erro }`. A pilha esvazia sempre — executar duas vezes não repete
  * gesto destrutivo.
+ *
+ * ⚠ `executar({ guarda })` é a exceção a esse "esvazia sempre" (fila `adt-client` item 106): a
+ * `guarda` roda ANTES de cada ação e, se lançar, o laço PARA e o que não rodou **fica na pilha**,
+ * com rótulo. É para o canal cujo gesto pode "passar" sem ter feito nada — na via HTTP, o primeiro
+ * POST depois de a sessão morrer por trás volta `sem-sessao` e NÃO estoura, e sem a guarda a pilha
+ * daria o descarte por bom (`ok: true`), consumindo o rótulo do lixo que ficou no sistema.
  */
 export function criarPilhaDeDesfazer() {
   const acoes = [];
@@ -646,9 +652,12 @@ export function criarPilhaDeDesfazer() {
         return true;
       };
     },
-    async executar() {
+    async executar({ guarda } = {}) {
       const relatorio = [];
       while (acoes.length) {
+        if (guarda) {
+          try { await guarda(); } catch { return relatorio; }  // o resto FICA na pilha, com rótulo
+        }
         const { rotulo, fn } = acoes.pop();
         try {
           await fn();

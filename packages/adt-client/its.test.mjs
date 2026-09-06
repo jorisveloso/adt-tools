@@ -1119,13 +1119,21 @@ test('its: transacional aceita a sessão desta via — o descarte não sabe de C
   expect(s.desfazer.tamanho()).toBe(0);
 });
 
+// A resposta de uma sessão VIVA à sonda do `fechar`: delta com `sap.its.aParams` (sem ele o
+// `lerResposta` a leria como delta PARCIAL, que não é tela).
+const DELTA_VIVO = '<updates><delta-update><script>sap.its.aParams = {"cuatitle":"Tela"}</script></delta-update></updates>';
+
 test('its: fechar roda o desfazer ANTES do /nex — com a sessão ITS ainda viva', async () => {
   const s = sessaoIts();
   const ordem = [];
   const fetchOriginal = globalThis.fetch;
   globalThis.fetch = async (_url, opcoes) => {
-    ordem.push(`POST ${JSON.parse(opcoes.body).map((c) => c.post ?? `get ${c.get}`).join('|')}`);
-    return new Response('<html>logoff</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    const batch = JSON.parse(opcoes.body);
+    ordem.push(`POST ${batch.map((c) => c.post ?? `get ${c.get}`).join('|')}`);
+    // a SONDA de vida do fechar (só `get state/ur`) responde tela; o `/nex` responde logoff
+    return batch.length === 1 && batch[0].get
+      ? new Response(DELTA_VIVO, { status: 200, headers: { 'content-type': 'text/xml' } })
+      : new Response('<html>logoff</html>', { status: 200, headers: { 'content-type': 'text/html' } });
   };
   try {
     s.desfazer.registrar('rascunho da ME21N', () => {
@@ -1135,7 +1143,51 @@ test('its: fechar roda o desfazer ANTES do /nex — com a sessão ITS ainda viva
     const r = await fechar(s);
     expect(r).toMatchObject({ encerrada: true, via: '/nex' });
     expect(r.desfeito).toEqual([{ rotulo: 'rascunho da ME21N', ok: true }]);
-    expect(ordem).toEqual(['descartar (aberta=true)', 'POST value/wnd[0]/tbar[0]/okcd|vkey/0/ses[0]|get state/ur']);
+    expect(r.pendentes).toBeUndefined();
+    expect(ordem).toEqual([
+      'POST get state/ur',                       // a sonda de vida, ANTES da pilha (item 106)
+      'descartar (aberta=true)',
+      'POST value/wnd[0]/tbar[0]/okcd|vkey/0/ses[0]|get state/ur',
+    ]);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+// ⚠ o item 106: a sessão morta POR TRÁS mentia. `aberta` seguia `true`, o POST do descarte voltava
+// 400 `Session Timed Out` SEM estourar, e a pilha dava o gesto por bom — `ok: true`, `pendentes: []`
+// e o rascunho no banco, sem nome. Medido no s4h 758/250 em 06/09/2026.
+test('its: sessão morta POR TRÁS — a sonda de vida descobre e o descarte NÃO é dado por bom', async () => {
+  const s = sessaoIts();
+  const ordem = [];
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async (_url, opcoes) => {
+    ordem.push(`POST ${JSON.parse(opcoes.body).map((c) => c.post ?? `get ${c.get}`).join('|')}`);
+    return new Response('400 Session Timed Out', { status: 400, headers: { 'content-type': 'text/html' } });
+  };
+  try {
+    s.desfazer.registrar('rascunho da YJBV106', () => { ordem.push('descartar'); });
+    const r = await fechar(s);
+    expect(r).toMatchObject({ encerrada: false, motivo: /morrido por trás/, pendentes: ['rascunho da YJBV106'] });
+    expect(r.desfeito).toEqual([]);
+    expect(ordem).toEqual(['POST get state/ur']);   // a sonda gastou UM post; o descarte não rodou
+    expect(s.desfazer.tamanho()).toBe(1);           // o rótulo do lixo sobrevive para quem for limpar
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+test('its: sessão SEM pendência não paga a sonda de vida — fecha pelo /nex direto', async () => {
+  const s = sessaoIts();
+  const ordem = [];
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async (_url, opcoes) => {
+    ordem.push(`POST ${JSON.parse(opcoes.body).map((c) => c.post ?? `get ${c.get}`).join('|')}`);
+    return new Response('<html>logoff</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  try {
+    expect(await fechar(s)).toMatchObject({ encerrada: true, via: '/nex' });
+    expect(ordem).toEqual(['POST value/wnd[0]/tbar[0]/okcd|vkey/0/ses[0]|get state/ur']);
   } finally {
     globalThis.fetch = fetchOriginal;
   }

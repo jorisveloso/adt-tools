@@ -1880,6 +1880,52 @@ pé) e só então o `/nex`; descarte que falha → `ok: false` no relatório de 
 stderr; sessão morta com pendência → nada executado, `pendentes: ["rascunho órfão"]`, pilha
 intacta.
 
+### A morte tem DUAS caras, e uma delas mentia (item 106)
+
+O parágrafo acima cobria a sessão que morre e **o objeto sabe** (`aberta: false`). Falta a outra: a
+sessão morre **por trás** — timeout do servidor, logoff ICF pelo cookie — e `sessao.aberta` continua
+`true`, porque quem descobre é o **próximo POST**. Sem sonda, esse próximo POST era o do DESCARTE, e
+ele volta `sem-sessao` (400 `Session Timed Out`) **sem estourar**: o gesto resolvia, a pilha o dava
+por bom e **consumia o rótulo**. Medido no s4h 758/250 em 06/09/2026
+(`POC_its_retomada/medicoes/item106-retomada-sessao-b.md`):
+
+```
+fechar → {"encerrada":true,"via":"desfazer","desfeito":[{"rotulo":"rascunho …","ok":true}]}
+pilha depois: []          ← e o rascunho AINDA no banco: LINHAS=1
+```
+
+Desfeito com `ok: true`, `pendentes: []`, lixo sem nome — o oposto do que a seção acima promete.
+Hoje o `fechar` gasta um POST de `BOOT` como **sonda de vida** antes de correr a pilha (**53–63 ms**
+com a sessão viva, **87–92 ms** com ela morta) e só corre se a sessão respondeu tela; e a pilha
+aceita `executar({ guarda })`, que PARA o laço e deixa na pilha o que não rodou, para o caso de a
+sessão morrer no meio. Sessão **sem** pendência não paga a sonda — fecha pelo `/nex` direto.
+
+⚠ O contraste que explica o bug: um gesto **isolado** contra a sessão morta estoura (`its: a sessão
+já foi encerrada (logoff) — abra outra`), porque aí `aberta` já é `false`. O falso `ok` só existia
+no PRIMEIRO POST depois da morte silenciosa — exatamente o que o `fechar` fazia.
+
+### Retomar numa sessão NOVA: roda, e custa ~843 ms (item 106)
+
+Nesta via, abrir outra sessão é barato — então "sessão morta com pendência" não é necessariamente o
+fim. **Medido no s4h 758/250 em 06/09/2026** contra uma tela que cria ao entrar **e bloqueia**
+(`ENQUEUE_E_TABLEE` no `INITIALIZATION`, o que a tela do item 105 não tinha):
+
+| dependência | medida |
+|---|---|
+| LOCK, com a A **viva** | a sessão nova entra na tela e lê `LOCK ALHEIO de MVJVELOSO - nao criei`; o descarte responde `Sem o lock`. Banco inalterado |
+| LOCK, com a A **morta** | o lock **cai com a sessão** (`LOCKS=` vazio), pelas duas mortes — `/nex` e logoff ICF |
+| TELA, gesto cru | **estoura**: a sessão nova nasce em "SAP Easy Access" — `its: campo "P_ACAO" não está na tela — tenho (nenhum)` |
+| TELA, depois de navegar | **roda**: `comandar(B,'/nYJBV106')` **117 ms** + descarte **92 ms**; com a sessão nova, **~843 ms** no total. Banco: `LINHAS=0` |
+
+As duas dependências são a mesma: enquanto a A segura o lock a B não chega na tela, e quando a A
+morre o lock cai junto — que é o instante em que a retomada faria sentido.
+
+⚠ **Mas o que está na pilha hoje NÃO é retomável.** `registrar(rotulo, fn)` guarda um closure que já
+capturou a sessão A; rodá-lo na B não é reparametrizar, é reescrever. A medição só funcionou porque
+o gesto foi escrito como função **da sessão** e porque alguém sabia **em que tela** ele vale. Uma
+retomada de verdade exige a pilha guardar uma RECEITA (como chegar na tela + o gesto parametrizado),
+não uma função — mudança de API, ainda não feita.
+
 ### E contra uma dynpro que CRIA AO ENTRAR (item 105)
 
 O item 66 provou a primitiva com gestos reversíveis — nada era criado. **Medido no s4h 758/250 em

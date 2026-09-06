@@ -1972,33 +1972,64 @@ export async function navegarArvore(sessao, caminho, { acionar: aciona = true, .
  * chance de sucesso. Ele AVISA alto, com os rótulos, e devolve `pendentes`: o lixo tem nome, e a
  * pilha continua de pé para quem abrir outra sessão e limpar.
  *
+ * ⚠⚠ E a morte tem DUAS caras — a segunda mediu-se no item 106, e ela mentia. Quando a sessão morre
+ * **por trás** (timeout do servidor, logoff ICF pelo cookie), `sessao.aberta` continua `true`: só o
+ * PRÓXIMO POST descobre. Sem a sonda abaixo, esse próximo POST era o do DESCARTE — ele volta
+ * `sem-sessao` (400 `Session Timed Out`) **sem estourar**, o gesto resolve, e a pilha o marcava
+ * `ok: true` e consumia o rótulo. Medido no s4h 758/250 em 06/09/2026: `fechar` devolveu
+ * `desfeito: [{ ok: true }]`, `pendentes: []` — e o rascunho continuava no banco, agora sem nome.
+ * Por isso, quando há pendência, o `fechar` gasta um POST de `BOOT` só para saber se a sessão está
+ * viva (63 ms viva, 92 ms morta) ANTES de correr a pilha; e passa uma `guarda` que a interrompe se
+ * ela morrer no meio, deixando o que não rodou de pé.
+ *
  * Devolve `{ encerrada, via, desfeito, pendentes? }`.
  */
 export async function fechar(sessao) {
+  // A sonda de vida só se paga quando há o que desfazer — sessão sem pilha fecha pelo `/nex` direto.
+  let morreuPorTras = false;
+  if (sessao?.aberta && (sessao.desfazer?.pendentes?.().length ?? 0) > 0) {
+    try {
+      const v = await postar(sessao, BOOT);
+      if (v.forma !== 'delta') detalhe(`its: a sonda de vida veio ${v.forma} — a sessão morreu por trás`);
+    } catch (e) {
+      detalhe(`its: a sonda de vida falhou (${e.message}) — trato a sessão como morta`);
+      sessao.aberta = false;
+    }
+    morreuPorTras = !sessao.aberta;
+  }
   if (!sessao?.aberta) {
     const pendentes = sessao?.desfazer?.pendentes?.() ?? [];
+    const como = morreuPorTras ? 'tinha morrido por trás (a sonda de vida descobriu)' : 'já estava encerrada';
     for (const rotulo of pendentes) {
-      aviso(`its: NÃO consegui desfazer "${rotulo}" — a sessão do ITS já estava encerrada, sobrou no sistema`);
+      aviso(`its: NÃO consegui desfazer "${rotulo}" — a sessão do ITS ${como}, sobrou no sistema`);
     }
-    return { encerrada: false, motivo: 'já estava encerrada', desfeito: [], ...(pendentes.length ? { pendentes } : {}) };
+    return { encerrada: false, motivo: como, desfeito: [], ...(pendentes.length ? { pendentes } : {}) };
   }
   sessao.fila = [];
-  const desfeito = sessao.desfazer ? await sessao.desfazer.executar() : [];
+  const desfeito = sessao.desfazer
+    // a guarda: um descarte que só "passou" porque a sessão morreu não pode levar o próximo consigo
+    ? await sessao.desfazer.executar({ guarda: () => { if (!sessao.aberta) throw new Error('sessão morta'); } })
+    : [];
   for (const { rotulo, erro } of desfeito.filter((d) => !d.ok)) {
     aviso(`its: NÃO consegui desfazer "${rotulo}" — sobrou no sistema (${erro})`);
   }
+  const restaram = sessao.desfazer?.pendentes?.() ?? [];
+  for (const rotulo of restaram) {
+    aviso(`its: NÃO consegui desfazer "${rotulo}" — a sessão do ITS morreu no meio do fechar, sobrou no sistema`);
+  }
+  const sobrou = restaram.length ? { pendentes: restaram } : {};
   if (!sessao.aberta) {  // um descarte que mandou /nex por engano, ou a sessão caiu no meio
-    return { encerrada: true, via: 'desfazer', desfeito };
+    return { encerrada: true, via: 'desfazer', desfeito, ...sobrou };
   }
   sessao.fila = [];      // de novo: um descarte pode ter enfileirado `preencher` sem despachar
   try {
     const r = await comandar(sessao, '/nex');
-    if (r.forma === 'logoff') return { encerrada: true, via: '/nex', ms: r.ms, desfeito };
+    if (r.forma === 'logoff') return { encerrada: true, via: '/nex', ms: r.ms, desfeito, ...sobrou };
     detalhe(`its: /nex devolveu ${r.forma} — caindo no logoff do ICF`);
   } catch (e) {
     detalhe(`its: /nex falhou (${e.message}) — caindo no logoff do ICF`);
   }
   const r = await encerrarSessao({ cfg: sessao.cfg, cookie: cookieDoJar(sessao.jar) });
   sessao.aberta = false;
-  return { encerrada: r.encerrada, via: 'icf-logoff', status: r.status, desfeito };
+  return { encerrada: r.encerrada, via: 'icf-logoff', status: r.status, desfeito, ...sobrou };
 }
