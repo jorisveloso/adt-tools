@@ -1056,6 +1056,34 @@ export function teclaDoBotao(lsdata = {}) {
 }
 
 /**
+ * PURO: um BOTÃO (`ct="B"`) está habilitado? — do `lsdata[5]`, **o mesmo índice do item de menu**.
+ *
+ * Medido no item 81 (s4h 758/250, 06/09/2026) com irmãos no laboratório `ZJBV_BTN81`: dois
+ * pushbuttons na MESMA tela de seleção, um normal e outro com `SCREEN-INPUT = 0`. Os `lsdata`
+ * diferem em UM índice, e é o `5`:
+ *
+ * ```
+ * BT_ON  {"0":"BTN ON", "3":"100%",            "17":"B","20":true,"21":true,"27":{…}}
+ * BT_OFF {"0":"BTN OFF","3":"100%","5":false,  "17":"B","20":true,"21":true,"27":{…}}
+ * ```
+ *
+ * Com o `5` vêm sempre juntos `aria-disabled="true"`, `tabindex="-1"`, `hidefocus="true"`, a classe
+ * `lsButton--disabled` (e a saída de `lsButton--active`/`--focusable`), `opacity: 0.4` e
+ * `cursor: default`. Habilitado OMITE o `5` — o `lsdata` só transporta o que difere do default,
+ * como no menu (item 48).
+ *
+ * ⚠️ **A regra é por PAPEL, não geral.** No campo de entrada (`ct="CBS"`) o `lsdata[5]` é o
+ * **valor** digitado (`"ativo"`), não flag nenhuma. Ler o `5` de qualquer controle mente.
+ * ⚠️ **O `lsevents` NÃO distingue**: o `Press` continua declarado no botão cinza, idêntico ao do
+ * irmão. Quem lê pela via HTTP também precisa do `lsdata[5]`.
+ * ⚠️ **`el.disabled` é sempre `false`** — o botão é um `<div>`, e a propriedade DOM nem existe
+ * nele. Era isso que o despejo lia antes deste item: 390 botões medidos, `false` em 390.
+ */
+export function habilitadoDoBotao(lsdata, ariaDesabilitado = null) {
+  return !(lsdata?.['5'] === false || ariaDesabilitado === 'true');
+}
+
+/**
  * PURO: o rótulo LEGÍVEL de um controle — a primeira linha do texto; na falta dela, o tooltip sem
  * a tecla no fim.
  *
@@ -1091,6 +1119,9 @@ export function interpretarControle(bruto) {
   };
   switch (papel) {
     case 'campo': case 'okcode':
+      // ⚠️ quem carrega a verdade aqui é o `somenteLeitura` (`el.readOnly`), não o `desabilitado`:
+      // medido no item 81 (P_ON × P_OFF com `SCREEN-INPUT = 0`) que o campo bloqueado sai
+      // `readOnly: true` e `disabled: false`. O `lsdata[5]` do campo é o VALOR, não a habilitação.
       return { ...base, valor: bruto.valor ?? '', dica: bruto.title ?? null,
         maxlen: sid?.maxlen ?? null, editavel: !(bruto.desabilitado || bruto.somenteLeitura) };
     case 'radio':
@@ -1105,7 +1136,8 @@ export function interpretarControle(bruto) {
       // o `btn[n]` é o OK-code — e ele está no FIM do SID (`wnd[0]/tbar[1]/btn[8]`)
       const okcode = /\/(btn\[\d+\])$/.exec(sid?.SID || '')?.[1] ?? null;
       return { ...base, okcode, rotulo: rotuloLimpo(bruto.texto, bruto.title), dica: bruto.title ?? null,
-        tecla: teclaDoBotao(d), accesskey: bruto.accesskey ?? null };
+        tecla: teclaDoBotao(d), accesskey: bruto.accesskey ?? null,
+        habilitado: habilitadoDoBotao(d, bruto.ariaDesabilitado) };
     }
     case 'grid':
       return { ...base, colunas: sid?.ColumnIDs ?? null, linhas: sid?.totalRows ?? null,
@@ -1153,7 +1185,11 @@ export function montarTela(brutos, { titulo = null } = {}) {
     campos: vis(dePapel('campo')).map((c) => ({ ...c, rotulo: rotuloDoId.get(c.id) ?? null })),
     radios: vis(dePapel('radio')),
     checkboxes: vis(dePapel('checkbox')),
-    botoes: vis(dePapel('botao')).filter((b) => b.okcode),
+    // o botão da BARRA (tem `btn[n]` no fim do SID) e o PUSHBUTTON DA DYNPRO (`wnd[n]/usr/…`, sem
+    // okcode, acionado pelo id). Sem o segundo, o `habilitado` seria inalcançável: medido no item
+    // 81 que a barra não acinzenta (o `EXCLUDING` do PF-STATUS REMOVE o botão) — o cinza é do
+    // pushbutton de tela. O que sobra de fora é o shell do ITS (`sysInfoAreaToggle` e afins).
+    botoes: vis(dePapel('botao')).filter((b) => b.okcode || /^wnd\[\d+\]\/usr\//.test(b.sid ?? '')),
     grids: vis(dePapel('grid')),
     rotulos: vis(dePapel('rotulo')).filter((r) => r.texto), // o texto legível da tela (o que não é campo)
     okcode: dePapel('okcode')[0] ?? null,                 // invisível (rect 0×0), mas está lá
@@ -1166,7 +1202,10 @@ export const JS_DESPEJO_CONTROLES = `[...document.querySelectorAll('[ct]')].map(
   let lsevents = null; try { lsevents = JSON.parse(el.getAttribute('lsevents') || 'null'); } catch (x) {}
   return { id: el.id || null, ct: el.getAttribute('ct'), lsdata, lsevents,
     title: el.title || null, aria: el.getAttribute('aria-checked'),
+    ariaDesabilitado: el.getAttribute('aria-disabled'),
     accesskey: el.getAttribute('data-sap-ls-accesskey'),
+    // ⚠️ \`el.disabled\` só existe em \`<input>\`: no \`<div ct="B">\` do botão é sempre \`false\` (390
+    // botões medidos no item 81, o cinza inclusive). A habilitação do BOTÃO sai do \`lsdata[5]\`.
     valor: 'value' in el ? el.value : null, desabilitado: !!el.disabled, somenteLeitura: !!el.readOnly,
     texto: (el.innerText || '').trim().slice(0, 120) || null,
     visivel: !!(el.offsetWidth || el.offsetHeight) };
@@ -1222,12 +1261,19 @@ export function campos(sessao) {
  * `::btn[n]` (o prefixo `M0:nn` muda por tela, § OKCODES) e anota o apelido MEDIDO de cada um:
  * `{ okcode: 'btn[11]', title: 'Gravar (Ctrl+S)', nome: 'Gravar', tecla: 'Ctrl+S' }`. Botão fora do
  * mapa sai com `nome: null` — é botão da tela, não erro.
+ *
+ * `habilitado` sai do `lsdata[5]` (item 81), NÃO de `el.disabled` — ver `habilitadoDoBotao`.
+ * ⚠️ Medido: botão de BARRA cinza é raro a ponto de não ter aparecido em 390 botões de 27 estados;
+ * o `EXCLUDING` do PF-STATUS **remove** o botão em vez de acinzentá-lo. Quem fica cinza é o
+ * pushbutton da dynpro — e esse não tem `::btn[n]` no id, então é o `lerTela` que o traz.
  */
 export async function botoes(sessao) {
   return anotarBotoes(await avaliar(sessao, `[...document.querySelectorAll('*')]
     .filter(e => (e.offsetWidth || e.offsetHeight) && e.id && e.id.indexOf('::btn') > 0 &&
                  e.id.charAt(e.id.length - 1) === ']')
-    .map(e => ({ okcode: e.id.split('::').pop(), title: e.title, texto: (e.innerText||'').trim().slice(0,30) }))`));
+    .map(e => { let d = null; try { d = JSON.parse(e.getAttribute('lsdata') || 'null'); } catch (x) {}
+      return { okcode: e.id.split('::').pop(), title: e.title, texto: (e.innerText||'').trim().slice(0,30),
+               habilitado: !(d && d['5'] === false || e.getAttribute('aria-disabled') === 'true') }; })`));
 }
 
 // ---------- o ALV (grid): o BLOCO que a tela JÁ tem ----------

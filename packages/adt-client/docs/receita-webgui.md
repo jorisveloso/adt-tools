@@ -1300,6 +1300,68 @@ Medido: clicar no checkbox `chkALSOUSUB` da tela de seleção do RSPARAM **não 
 sai do ARIA.** Ler marcação pelo `lsdata` devolve o estado do último render do servidor — que numa
 tela que o script acabou de mexer é a resposta errada, e plausível.
 
+### O BOTÃO desabilitado: `lsdata[5] === false` — o mesmo índice do item de menu
+
+Medido no item 81 (s4h 758/250, 06/09/2026) com **irmãos construídos de propósito**: o report
+`ZJBV_BTN81` põe três pushbuttons na mesma tela de seleção — um normal, um com `SCREEN-INPUT = 0`,
+um com `SCREEN-ACTIVE = 0`. Mesma tela, mesmo estado, uma variável só. Os `lsdata` diferem em **um**
+índice, e é o `5`:
+
+```
+BT_ON  {"0":"BTN ON", "3":"100%",           "17":"B","20":true,"21":true,"27":{SID:"wnd[0]/usr/btnBT_ON"}}
+BT_OFF {"0":"BTN OFF","3":"100%","5":false, "17":"B","20":true,"21":true,"27":{SID:"wnd[0]/usr/btnBT_OFF"}}
+```
+
+Com o `5` vêm sempre juntos: `aria-disabled="true"`, `tabindex="-1"`, `hidefocus="true"`, a classe
+`lsButton--disabled` (e a saída de `lsButton--active`/`--focusable`), `opacity: 0.4` e
+`cursor: default`. **Habilitado OMITE o `5`** — a mesma economia do menu (item 48). Por isso
+`habilitadoDoBotao(lsdata, aria)` é `!(lsdata[5] === false || aria === 'true')`, e o `lerTela`
+devolve `habilitado` em cada botão.
+
+⚠ **A regra é por PAPEL, não geral.** No campo de entrada (`ct="CBS"`) o `lsdata[5]` é o **valor
+digitado** (`"ativo"`), não flag nenhuma. Ler o `5` de qualquer controle mente.
+
+⚠ **`el.disabled` mente sempre.** O botão é um `<div ct="B">`, e a propriedade DOM nem existe nele:
+`false` em **390 botões de 27 estados**, o cinza inclusive. Era o único campo de habilitação que o
+despejo tinha antes deste item. No CAMPO (`<input>`) quem carrega a verdade é `el.readOnly`
+(`P_OFF` com `SCREEN-INPUT = 0` sai `readOnly: true`, `disabled: false`) — o `editavel` já vinha
+certo por causa dele.
+
+⚠ **O `lsevents` NÃO distingue.** O `Press` continua declarado no botão cinza, byte a byte igual ao
+do irmão habilitado. Quem lê pela via HTTP (§ menu por HTTP) também precisa do `lsdata[5]`.
+
+**O que "desabilitado" faz:** o clique **não sai do navegador**. Contra-prova com o report
+carimbando a statusbar a cada `USER-COMMAND`:
+
+| clicado | POSTs | mensagem |
+|---|---|---|
+| `btnBT_OFF` (`5:false`) | **0** | nenhuma |
+| `btnBT_ON` (irmão, sem `5`) | **1** | `ITEM81 CLICOU BT_ON` |
+
+É mais radical que no menu (lá o clique também era engolido, mas pelo popup): aqui o ITS nem monta
+o round-trip. Esperar resposta de um botão cinza é esperar para sempre.
+
+⚠ **Desabilitado ≠ escondido.** O `BT_HID` (`SCREEN-ACTIVE = 0`) **não está no DOM** —
+`innerHTML.indexOf('btnBT_HID') === -1`. Procurá-lo e não achar não quer dizer "cinza".
+
+### ⚠ A BARRA não acinzenta: o `EXCLUDING` REMOVE o botão
+
+Foi o que custou a medição: **390 botões, 27 estados, 18 telas — nenhum botão de toolbar cinza.**
+Varridos: telas iniciais (SE38, SE16, SU01, SM37, SE11, SM30, SE93, SM59, ST22, SE24,
+SM36, SP01, SE09, SM12, SM21, AL11, SAP Easy Access), estados navegados (SM30 em exibição, SE16
+executado, ALV do RSPARAM com e sem linha selecionada, tela de seleção longa do RSUSR002) e a
+barra do ALV. O botão inaplicável **some** da barra: é o `SET PF-STATUS … EXCLUDING`, que no menu
+deixa o item cinza (item 48) e na barra não renderiza nada.
+
+Duas consequências práticas:
+
+1. **Quem fica cinza é o pushbutton da dynpro** (`wnd[n]/usr/btn…`), desabilitado por
+   `SCREEN-INPUT = 0`. Ele **não tem `::btn[n]` no id**, então `botoes()` não o vê — é o `lerTela`
+   que o traz (`okcode: null`, acionado pelo id).
+2. No SAP Easy Access não existe `btn[3]`: no lugar do Voltar o ITS põe um **placeholder**
+   `wguEmptyF3` — `ct="B"`, `aria-hidden="true"`, sem SID, sem `lsevents`, e com `lsdata[5]: false`.
+   Procurar "o botão Voltar cinza" acha esse artefato, que não é botão de tela nenhum.
+
 ### O que cada peça entrega
 
 ```js
@@ -1309,7 +1371,8 @@ t.mensagem    // { tipo: 'ERROR', texto: 'O programa ZZNAOEXISTE9 não existe' }
 t.campos      // [{ id, sid, campo, rotulo, dica, valor, maxlen, editavel, visivel }]
 t.radios      // [{ campo, grupo: '%RBG0257', rotulo, selecionado }]
 t.checkboxes  // [{ campo, rotulo, marcado }]
-t.botoes      // [{ okcode: 'btn[8]', rotulo: 'Executar', tecla: 'F8', accesskey: 'E' }]
+t.botoes      // [{ okcode: 'btn[8]', rotulo: 'Executar', tecla: 'F8', accesskey: 'E', habilitado: true }]
+              //   `okcode: null` é PUSHBUTTON de dynpro (`wnd[0]/usr/btnBT_ON`) — aciona pelo id
 t.grids       // [{ sid, colunas: ['NAME','USER_VALUE',…], linhas: 1617, editavel: false }] — as LINHAS saem do `lerGrid` (§ "O ALV")
 t.okcode      // { sid: 'wnd[0]/tbar[0]/okcd' } — sempre invisível, sempre lá
 ```

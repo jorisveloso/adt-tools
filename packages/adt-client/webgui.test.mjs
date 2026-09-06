@@ -8,6 +8,7 @@ import {
   autorizacao, acharNavegador,
   OKCODES, okcodeDe, anotarBotoes,
   sidDoLsdata, campoDoSid, teclaDoBotao, rotuloLimpo, interpretarControle, montarTela, sidsDaTela,
+  habilitadoDoBotao,
   interpretarSonda, jsComando, JS_PUBLICAR_FOCO, ehTelemetria, roundTrips,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
   criarPilhaDeDesfazer, transacional,
@@ -287,6 +288,51 @@ test('webgui: cada controle vira a peça que ele é — pelo Type que o próprio
 
   // controle sem SID (layout, container) não vira peça de tela — fica com papel null
   expect(interpretarControle({ id: 'u3F31C', ct: 'RLI', lsdata: { 0: 16, 2: 112 } }).papel).toBe(null);
+});
+
+// Os dois `lsdata` abaixo são os IRMÃOS REAIS do laboratório `ZJBV_BTN81` (s4h 758/250, 06/09/2026,
+// item 81): mesma tela de seleção, mesmo estado, e a única diferença de conteúdo é o `SCREEN-INPUT`.
+const PUSH_ON = {
+  id: 'M0:46:::0:0', ct: 'B', texto: 'BTN ON', visivel: true, desabilitado: false,
+  lsdata: { 0: 'BTN ON', 3: '100%', 17: 'B', 20: true, 21: true,
+    27: { SID: 'wnd[0]/usr/btnBT_ON', Type: 'GuiButton' } },
+};
+const PUSH_OFF = {
+  id: 'M0:46:::0:24', ct: 'B', texto: 'BTN OFF', visivel: true, desabilitado: false,
+  ariaDesabilitado: 'true',
+  lsdata: { 0: 'BTN OFF', 3: '100%', 5: false, 17: 'B', 20: true, 21: true,
+    27: { SID: 'wnd[0]/usr/btnBT_OFF', Type: 'GuiButton' } },
+};
+
+test('webgui: o botão DESABILITADO é o `lsdata[5] === false` — o mesmo índice do item de menu', () => {
+  expect(habilitadoDoBotao(PUSH_ON.lsdata)).toBe(true);
+  expect(habilitadoDoBotao(PUSH_OFF.lsdata, 'true')).toBe(false);
+  // ausente é habilitado: o lsdata só transporta o que difere do default (item 48)
+  expect(habilitadoDoBotao({})).toBe(true);
+  expect(habilitadoDoBotao(null)).toBe(true);
+  // o ARIA sozinho basta, e o `5` sozinho também — nenhum dos dois precisa do outro
+  expect(habilitadoDoBotao({ 5: false })).toBe(false);
+  expect(habilitadoDoBotao({}, 'true')).toBe(false);
+  // ⚠ o botão da barra traz `lsdata[5]` nenhum: `BOTAO_EXECUTAR` sai habilitado
+  expect(interpretarControle(BOTAO_EXECUTAR).habilitado).toBe(true);
+
+  expect(interpretarControle(PUSH_ON)).toMatchObject({ papel: 'botao', okcode: null,
+    sid: 'wnd[0]/usr/btnBT_ON', rotulo: 'BTN ON', habilitado: true });
+  expect(interpretarControle(PUSH_OFF)).toMatchObject({ papel: 'botao', okcode: null,
+    sid: 'wnd[0]/usr/btnBT_OFF', rotulo: 'BTN OFF', habilitado: false });
+
+  // ⚠ o `desabilitado` (`el.disabled`) é `false` NOS DOIS — o botão é um `<div>`, e a propriedade
+  // DOM nem existe nele. Era o único campo de habilitação que o despejo tinha antes do item 81.
+  expect(PUSH_ON.desabilitado).toBe(PUSH_OFF.desabilitado);
+});
+
+test('webgui: o PUSHBUTTON da dynpro entra na tela mesmo sem okcode — é onde o cinza mora', () => {
+  const tela = montarTela([JANELA, OKCODE, BOTAO_EXECUTAR, PUSH_ON, PUSH_OFF,
+    { id: 'sysInfoAreaToggle', ct: 'B', visivel: true, lsdata: { 0: 'Fechar informações do sistema' } }]);
+  // o do shell do ITS não tem SID e fica de fora; os dois pushbuttons de `usr` entram
+  expect(tela.botoes.map((b) => b.sid)).toEqual(
+    ['wnd[0]/tbar[1]/btn[8]', 'wnd[0]/usr/btnBT_ON', 'wnd[0]/usr/btnBT_OFF']);
+  expect(tela.botoes.map((b) => b.habilitado)).toEqual([true, true, false]);
 });
 
 test('webgui: a tela montada é o MODELO — e o rótulo do campo é costurado pelo LABEL ao lado', () => {
