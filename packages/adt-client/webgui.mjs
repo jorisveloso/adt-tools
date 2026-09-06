@@ -3150,8 +3150,15 @@ export async function selecionarBloco(sessao, alvo = null, { de, ate } = {}) {
 //     `"SID":"<sid do grid>/tbar/btn&SORT_ASC"` (ou `dbtn&MB_FILTER`) no `lsdata`. O id do DOM
 //     (`C102_toolbar_btn15`) é POSICIONAL e não sobrevive a tela com outra barra — o SID sim.
 //   • **sem coluna marcada o botão de sort abre o DIÁLOGO "Ordenação"** (`SAPLSALV_CUL_…`), em vez
-//     de ordenar. ⚠️ E ele NÃO é `wnd[1]`: o `lerTela` continua dizendo `janela.principal: true`,
-//     então um clique seguinte cai ATRÁS do modal e sai calado (foi o que cegou a fase B inteira).
+//     de ordenar — e daí um clique seguinte cai ATRÁS do modal e sai calado (foi o que cegou a fase
+//     B inteira). ⚠️ **CORRIGIDO no item 121:** o item 77 concluiu que "ele NÃO é `wnd[1]`, o
+//     `lerTela` continua dizendo `janela.principal: true`" — e isso era ARTEFATO DE TEMPO. Medido
+//     em 06/09/2026 (`POC_webgui_grid_ordmulti`, fase G), o mesmo clique, lido em quatro momentos:
+//     até ~700 ms o `lerTela` ainda responde `wnd[0]/GuiMainWindow/principal: true`; a partir de
+//     ~1,4 s responde `wnd[1]/GuiModalWindow/principal: false`, e o `JS_MODAL_DO_ALV` acende no
+//     MESMO instante. O diálogo É `wnd[1]` (todos os SIDs de dentro dele começam por `wnd[1]/`).
+//     ⚠️ O que continua verdade: **`lerTela.popup` fica `null`** e o `titulo` continua o da janela
+//     principal — quem procurar o diálogo em `t.popup` não o acha, com ou sem espera.
 //   • **a marca da coluna se perde a cada round-trip DE SORT/FILTER** — marcar e ordenar têm de ser
 //     o mesmo gesto. ⚠️ Precisado no item 120: quem apaga a marca é o REDESENHO do grid, não o
 //     round-trip; num fcode que só lê, ela sobrevive (dois `FC02` seguidos e a coluna continuou
@@ -3272,7 +3279,8 @@ export async function marcarColuna(sessao, alvo = null, coluna) {
  * (o bloco que a tela tem).
  *
  * ⚠️ **Ordenar por outra coluna SUBSTITUI o critério** (medido: com a coluna 2 em `desc`, ordenar a
- * 3 zerou o ícone da 2). Vários critérios de uma vez só pelo diálogo "Ordenação", que é outro gesto.
+ * 3 zerou o ícone da 2). Vários critérios de uma vez é `ordenarGridPorVarias`, que é outro gesto —
+ * o diálogo "Ordenação", não a barra.
  * ⚠️ **O `_linha` passa a apontar para outro dado** — e aqui o ABAP acompanha: a ordenação reordena
  * a tabela interna do programa (§ acima).
  * ⚠️ Estoura quando o ALV abre o diálogo em vez de ordenar (a marca da coluna não pegou).
@@ -3288,7 +3296,8 @@ export async function ordenarGrid(sessao, alvo = null, coluna, { ordem = 'asc', 
   await esperarMudanca(sessao, antes, { tetoMs });
   const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
   if (modal?.length) throw new Error(`webgui: ordenarGrid — o ALV abriu o diálogo "${modal[0].titulo}" (${modal[0].id}) em vez de ordenar: `
-    + 'a coluna não chegou marcada ao servidor. Esse diálogo NÃO é wnd[1] e o lerTela não o vê — feche-o antes de qualquer outro gesto.');
+    + 'a coluna não chegou marcada ao servidor. Feche-o antes de qualquer outro gesto — ou use `ordenarGridPorVarias`, '
+    + 'que é o gesto DE PROPÓSITO desse mesmo diálogo (e o único caminho para ordenar por mais de uma coluna).');
   const est = estadoDoCabecalho((await avaliar(sessao, jsCabecalhoDoGrid(m.id)) ?? []).find((h) => h.coluna === m.coluna)?.icone);
   if (est.ordem !== dir) throw new Error(`webgui: ordenarGrid — pedi ${dir} na coluna ${m.coluna} (${m.nome}) e o cabeçalho ficou ${JSON.stringify(est)}`);
   const t = await lerGrid(sessao, { id: m.id });
@@ -3364,6 +3373,206 @@ export async function lerColunas(sessao, alvo = null) {
     .map((h) => ({ coluna: h.coluna, nome: (b?.colunas ?? [])[h.coluna - 1] ?? null, ...estadoDoCabecalho(h.icone) }));
 }
 
+// ---------- ORDENAR por VÁRIAS colunas: o diálogo "Ordenação" (item 121) ----------
+//
+// O item 77 deixou aberto o que o botão da barra não alcança: `SORT_ASC`/`SORT_DSC` ordenam por UMA
+// coluna e SUBSTITUEM o critério anterior. Vários critérios de uma vez só pelo diálogo
+// `SAPLSALV_CUL_CONFIGURATION`, que aparece justamente quando o botão é acionado SEM coluna marcada
+// — e lá ele era só MODO DE FALHA. Medido no s4h 758/250 em 06/09/2026
+// (`POC_webgui_grid_ordmulti`, fases A-G, laboratório `ZJBV_ALV47_EDIT`):
+//
+//   • **o diálogo tem DOIS ALVs**, ligados por dois botões, e todos os quatro moram em
+//     `wnd[1]/usr/subSUB_CONFIGURATION:SAPLSALV_CUL_GROUPING_CRITERIA:0610/`:
+//       - `cntlCONTAINER1_SORT` — "Conjunto de colunas": as colunas ainda disponíveis (`SELTEXT`)
+//       - `cntlCONTAINER2_SORT` — "Critérios de ordenação": `SELTEXT` + `SORT_DIRECTION`
+//       - `btnAPP_WL_SING` ("Incluir critério ordenação", F7) e `btnAPP_FL_SING` ("Retirar…", F6)
+//     e o OK é o `wnd[1]/tbar[0]/btn[0]` ("Aceitar"), com `btn[12]` de Cancelar.
+//   • ⚠️ **o ID do grid do diálogo NÃO é estável**: na primeira rodada os grids foram `C138`/`C162`
+//     e, com um round-trip a mais antes de abrir, vieram `C140`/`C164`. Quem endereça por id acerta
+//     por sorte — o endereço estável é o SID do container, e é o que `jsGridDoDialogoDeOrdenacao` usa.
+//   • **a coluna MIGRA de um grid para o outro**: incluída, ela some do conjunto (3 linhas → 2). A
+//     ORDEM DE INCLUSÃO é a prioridade dos critérios.
+//   • **a direção é um combo `ct="CB"`** (o do item 114) na coluna `SORT_DIRECTION`, com duas opções
+//     — "Ordem crescente (↑)" e "Decrescente (↓)". Um clique na célula abre a lista, e isso é PURO
+//     CLIENTE (zero POST); quem posta é o clique na opção.
+//   • ⚠️ **o `lerGrid` devolve `SORT_DIRECTION: ""`** — o combo não põe o texto no innerText, ele
+//     mora no `lsdata["4"]`. E esse `lsdata` é o que o SERVIDOR mandou: uma escolha feita no cliente
+//     e ainda não postada **não** aparece nele. A direção efetiva se lê DEPOIS, no cabeçalho do ALV
+//     (`lerColunas`) — que é onde a verdade fica.
+//   • **o `lerColunas` passa a mostrar N colunas ordenadas ao mesmo tempo** (`NOME:asc`+`QTD:desc`),
+//     coisa que a barra nunca produziu.
+//   • **ordenar por várias reordena a tabela interna do ABAP**, como a de uma coluna (item 77): o
+//     `FC03` respondeu `tab1=AA` nos casos com `NOME asc` e `tab1=BB` no de `NOME desc`.
+//
+// A prova, quatro casos com o esperado CALCULADO da ordem de entrada medida (`BB/10 AA/20 BB/05
+// AA/30`) e os quatro resultados DISTINTOS entre si — 4/4 bateram (`raw/f-limpo.json`):
+//
+// | critérios | medido |
+// |---|---|
+// | `NOME asc` + `QTD desc` | `AA/30 AA/20 BB/10 BB/05` |
+// | `NOME asc` + `QTD asc`  | `AA/20 AA/30 BB/05 BB/10` |
+// | `NOME desc` + `QTD asc` | `BB/05 BB/10 AA/20 AA/30` |
+// | só `NOME asc`           | `AA/20 AA/30 BB/10 BB/05` |
+//
+// ⚠️ **A DIREÇÃO DE UM CRITÉRIO SOBREVIVE À RETIRADA DELE.** É o modo de falha que a fase E pegou, e
+// é irmão exato do `HIGH` do filtro (item 77, fases K/L): na mesma sessão, com o diálogo reaberto,
+// retirar `QTD` e reincluí-la trouxe de volta a "Decrescente (↓)" da vez anterior — e um pedido de
+// `asc` que confiasse no default sairia `desc`, sem erro nenhum. Por isso esta função **escreve a
+// direção de TODO critério, inclusive a crescente**.
+
+/** PURO: os SIDs de dentro do diálogo "Ordenação" — os nomes MEDIDOS, não a convenção. */
+export const DIALOGO_DE_ORDENACAO = {
+  conjunto: 'CONTAINER1_SORT',   // "Conjunto de colunas" — as colunas disponíveis
+  criterios: 'CONTAINER2_SORT',  // "Critérios de ordenação" — SELTEXT + SORT_DIRECTION
+  incluir: 'btnAPP_WL_SING',     // "Incluir critério ordenação (F7)"
+  retirar: 'btnAPP_FL_SING',     // "Retirar critério ordenação (F6)"
+  aceitar: 'wnd[1]/tbar[0]/btn[0]',
+  cancelar: 'wnd[1]/tbar[0]/btn[12]',
+};
+
+/** PURO: um dos dois ALVs do diálogo, achado pelo SID do CONTAINER — o id (`C138`/`C140`) não serve. */
+export const jsGridDoDialogoDeOrdenacao = (container) => `(() => {
+  const p = (s) => { try { return s ? JSON.parse(s) : null; } catch (x) { return null; } };
+  for (const el of document.querySelectorAll('[lsdata]')) {
+    if (!(el.offsetWidth || el.offsetHeight)) continue;
+    const d = p(el.getAttribute('lsdata'));
+    if (!d) continue;
+    const sid = Object.values(d).find((v) => v && typeof v === 'object' && v.Type === 'GuiGridView');
+    if (sid && String(sid.SID).indexOf('cntl' + ${JSON.stringify(String(container))}) >= 0)
+      return { id: el.id, sid: sid.SID, colunas: sid.ColumnIDs || [], totalRows: sid.totalRows ?? null };
+  }
+  return null;
+})()`;
+
+/** PURO: a direção de cada critério, lida do `lsdata` do combo — o `lerGrid` a devolve VAZIA. */
+export const jsDirecoesDosCriterios = (cid) => `(() => {
+  const p = (s) => { try { return s ? JSON.parse(s) : null; } catch (x) { return null; } };
+  const out = [];
+  for (const el of document.querySelectorAll('[id^="grid#' + ${JSON.stringify(String(cid))} + '#"][ct="CB"]')) {
+    const m = /#(\\d+),(\\d+)#dd$/.exec(el.id);
+    if (!m) continue;
+    const d = p(el.getAttribute('lsdata')) || {};
+    out.push({ linha: Number(m[1]), valor: d['4'] ?? null, listaId: d['3'] ?? null });
+  }
+  return out.sort((a, b) => a.linha - b.linha);
+})()`;
+
+/** PURO: as opções de um combo aberto (`ct="LIB_PS"` → `ct="LIB_I"`) — o vocabulário do item 114. */
+export const jsOpcoesDoCombo = (listaId) => `(() => {
+  const l = document.getElementById(${JSON.stringify(String(listaId))});
+  if (!l) return null;
+  return [...l.querySelectorAll('[ct="LIB_I"]')].map((o) => ({ id: o.id, chave: o.getAttribute('data-itemkey') }));
+})()`;
+
+/**
+ * ORDENA o ALV por VÁRIAS colunas de uma vez, pelo diálogo "Ordenação" — o que o botão da barra não
+ * alcança.
+ *
+ * ```js
+ * await ordenarGridPorVarias(s, null, [{ coluna: 'NOME' }, { coluna: 'QTD', ordem: 'desc' }]);
+ * await ordenarGridPorVarias(s, null, ['NOME', 'QTD']);   // as duas crescentes
+ * ```
+ *
+ * `criterios` é a lista NA ORDEM DE PRIORIDADE: cada item é `{ coluna, ordem }` (`'asc'` default) ou
+ * só o nome da coluna. O nome é o **`SELTEXT`** que o diálogo lista — o rótulo do fieldcat, que pode
+ * não ser o `ColumnIDs` do `lerColunas`; quando não bate, o erro diz o que o conjunto TEM.
+ *
+ * Devolve `{ id, sid, criterios, total, linhas, colunas, ms }` — `linhas` já é a tabela na ordem
+ * nova, e `colunas` é o `lerColunas` depois (com um `ordem` por critério aplicado).
+ *
+ * ⚠️ **Limpa os critérios que o diálogo trouxer** antes de montar os pedidos: na mesma sessão ele
+ * reabre com os da vez anterior, e um pedido de dois critérios sobre três antigos daria cinco.
+ * ⚠️ **A direção de todo critério é escrita, inclusive a crescente** — a `desc` de uma vez anterior
+ * sobrevive à retirada do critério (§ acima), e confiar no default é o modo de falha silencioso.
+ * ⚠️ **Isto reordena a tabela interna do ABAP** (§ acima) e invalida qualquer `_linha` guardado.
+ * ⚠️ Só serve para ALV com barra: sem `SORT_ASC` na barra do grid o erro diz o que aquela barra tem
+ * (listas como a do `RSPARAM` ordenam pela barra da APLICAÇÃO — ver o item 116).
+ */
+export async function ordenarGridPorVarias(sessao, alvo = null, criterios = [], { tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const pedidos = (Array.isArray(criterios) ? criterios : [criterios])
+    .map((c) => (typeof c === 'string' ? { coluna: c } : c))
+    .map((c) => ({ coluna: String(c.coluna), ordem: String(c.ordem ?? 'asc').toLowerCase() }));
+  if (!pedidos.length) throw new Error('webgui: ordenarGridPorVarias — a lista de critérios está vazia');
+  for (const c of pedidos) {
+    if (c.ordem !== 'asc' && c.ordem !== 'desc')
+      throw new Error(`webgui: ordenarGridPorVarias — ordem "${c.ordem}" não existe (é 'asc' ou 'desc')`);
+  }
+
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'ordenarGridPorVarias');
+  // sem coluna marcada, o botão de sort ABRE O DIÁLOGO em vez de ordenar — aqui isso é o gesto
+  const b = await botaoDaBarra(sessao, g, 'SORT_ASC');
+  await clicar(sessao, { id: b.id });
+  await esperarQuieto(sessao, { quietoMs: 1500, tetoMs });
+  const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
+  if (!modal?.length) throw new Error('webgui: ordenarGridPorVarias — o diálogo "Ordenação" não abriu, o ALV ordenou direto: '
+    + 'havia uma coluna marcada no cabeçalho. Recarregue a tela ou desmarque antes.');
+
+  const incluir = await avaliar(sessao, jsPorSid(DIALOGO_DE_ORDENACAO.incluir));
+  const retirar = await avaliar(sessao, jsPorSid(DIALOGO_DE_ORDENACAO.retirar));
+  if (!incluir || !retirar) throw new Error(`webgui: ordenarGridPorVarias — o diálogo "${modal[0].titulo}" não tem os botões `
+    + `de incluir/retirar critério (${DIALOGO_DE_ORDENACAO.incluir}/${DIALOGO_DE_ORDENACAO.retirar}) — não é o diálogo esperado`);
+  const doDialogo = (qual) => avaliar(sessao, jsGridDoDialogoDeOrdenacao(DIALOGO_DE_ORDENACAO[qual]));
+
+  // 1. LIMPA o que o diálogo trouxe (na mesma sessão ele reabre com os critérios de antes)
+  let guarda = 0;
+  while (((await doDialogo('criterios'))?.totalRows ?? 0) > 0) {
+    if (guarda++ >= 20) throw new Error('webgui: ordenarGridPorVarias — não consegui esvaziar os critérios do diálogo em 20 voltas');
+    const c = await doDialogo('criterios');
+    await clicar(sessao, { id: idDaCelula(c.id, 1, 1) });
+    await espera(300);
+    await clicar(sessao, { id: retirar.id });
+    await esperarQuieto(sessao, { quietoMs: 1200, tetoMs });
+  }
+
+  // 2. INCLUI na ordem pedida — a ordem de inclusão é a prioridade
+  for (const c of pedidos) {
+    const conj = await doDialogo('conjunto');
+    const linhas = (await lerGrid(sessao, { id: conj.id })).linhas;
+    const l = linhas.find((x) => String(x.SELTEXT ?? '').trim().toUpperCase() === c.coluna.toUpperCase());
+    if (!l) throw new Error(`webgui: ordenarGridPorVarias — a coluna "${c.coluna}" não está no conjunto do diálogo. `
+      + `Ele oferece: ${linhas.map((x) => JSON.stringify(x.SELTEXT)).join(', ') || 'nada'} `
+      + '(é o SELTEXT do fieldcat, que pode não ser o nome técnico da coluna).');
+    await clicar(sessao, { id: idDaCelula(conj.id, l._linha, 1) });
+    await espera(300);
+    await clicar(sessao, { id: incluir.id });
+    await esperarQuieto(sessao, { quietoMs: 1200, tetoMs });
+  }
+
+  // 3. a DIREÇÃO de cada critério — escrita SEMPRE (§ acima)
+  let crit = await doDialogo('criterios');
+  const montados = (await lerGrid(sessao, { id: crit.id })).linhas.map((l) => String(l.SELTEXT ?? '').trim().toUpperCase());
+  for (const c of pedidos) {
+    const i = montados.indexOf(c.coluna.toUpperCase()) + 1;
+    if (i < 1) throw new Error(`webgui: ordenarGridPorVarias — "${c.coluna}" não entrou nos critérios (ficaram: ${montados.join(', ')})`);
+    await clicar(sessao, { id: idDaCelula(crit.id, i, 2) });   // abre a lista — puro cliente
+    await espera(500);
+    const dir = (await avaliar(sessao, jsDirecoesDosCriterios(crit.id)) ?? []).find((x) => x.linha === i);
+    const ops = dir?.listaId ? await avaliar(sessao, jsOpcoesDoCombo(dir.listaId)) : null;
+    // pelo ÍNDICE (0 = crescente, 1 = decrescente): a chave vem no IDIOMA da sessão
+    const opcao = ops?.[c.ordem === 'desc' ? 1 : 0];
+    if (!opcao) throw new Error(`webgui: ordenarGridPorVarias — o combo de direção de "${c.coluna}" não ofereceu as duas `
+      + `opções (achei ${JSON.stringify(ops)}). A célula ${idDaCelula(crit.id, i, 2)} tem combo?`);
+    await clicar(sessao, { id: opcao.id });
+    await esperarQuieto(sessao, { quietoMs: 1200, tetoMs });
+    crit = await doDialogo('criterios');
+  }
+
+  // 4. Aceitar
+  const ok = await avaliar(sessao, jsPorSid(DIALOGO_DE_ORDENACAO.aceitar));
+  if (!ok) throw new Error(`webgui: ordenarGridPorVarias — o diálogo não tem o botão Aceitar (${DIALOGO_DE_ORDENACAO.aceitar})`);
+  await clicar(sessao, { id: ok.id });
+  await esperarQuieto(sessao, { quietoMs: 1500, tetoMs });
+  const aindaAberto = await avaliar(sessao, JS_MODAL_DO_ALV);
+  if (aindaAberto?.length) throw new Error(`webgui: ordenarGridPorVarias — o "Aceitar" não fechou o diálogo `
+    + `("${aindaAberto[0].titulo}" continua de pé): a ordenação não foi aplicada.`);
+
+  const colunas = await lerColunas(sessao, { id: g.id });
+  const t = await lerGrid(sessao, { id: g.id });
+  detalhe(`webgui: ordenarGridPorVarias ${g.id} — ${pedidos.map((c) => `${c.coluna} ${c.ordem}`).join(', ')}, ${t.total} linha(s)`);
+  return { id: g.id, sid: g.sid, criterios: pedidos, total: t.total, linhas: t.linhas, colunas, ms: Date.now() - t0 };
+}
+
 // ---------- INSERIR e APAGAR linha do ALV (item 78) ----------
 //
 // O terceiro par de gestos do ALV editável, e o que separa este dos dois anteriores é **quando o
@@ -3416,7 +3625,7 @@ async function gestoDeLinha(sessao, g, fcode, tetoMs) {
   await esperarMudanca(sessao, antes, { tetoMs });
   const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
   if (modal?.length) throw new Error(`webgui: o ALV abriu o diálogo "${modal[0].titulo}" (${modal[0].id}) em vez de executar "${fcode}". `
-    + 'Esse diálogo NÃO é wnd[1] e o lerTela não o vê — feche-o antes de qualquer outro gesto.');
+    + 'Feche-o antes de qualquer outro gesto — o `lerTela.popup` NÃO o enxerga (item 121).');
   return lerGrid(sessao, { id: g.id });
 }
 

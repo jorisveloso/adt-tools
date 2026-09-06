@@ -24,6 +24,7 @@ import {
   idDaCelula, normalizarCelula,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
   FCODES_DE_LINHA,
+  DIALOGO_DE_ORDENACAO, jsGridDoDialogoDeOrdenacao, jsDirecoesDosCriterios, jsOpcoesDoCombo,
   tsvDoBloco, jsColarNoGrid,
   criarCanalCdp, TETO_CMD_CDP_MS,
 } from './webgui.mjs';
@@ -1755,6 +1756,87 @@ test('webgui: os fcodes de linha do ALV são os medidos, e o SID casa com eles',
   expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.apagar), barra).id).toBe('C102_toolbar_btn12');
   // o ALV somente leitura não publica nenhum deles — e é assim que o erro sai com a lista certa
   expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.duplicar), barra)).toBe(null);
+});
+
+// ---------- o diálogo "Ordenação": ordenar por VÁRIAS colunas (item 121) ----------
+//
+// Os brutos vêm do s4h 758/250, 06/09/2026 (`POC_webgui_grid_ordmulti/medicoes/raw/`): os SIDs de
+// `a-anatomia.json`, os grids e o combo de `b-dirigir.json`/`d-direcao.json`.
+
+const SUB_ORD = 'wnd[1]/usr/subSUB_CONFIGURATION:SAPLSALV_CUL_GROUPING_CRITERIA:0610';
+const gridDoDialogo = (id, container, { totalRows = 0, colunas = ['SELTEXT'], largura = 280 } = {}) => ({
+  id, offsetWidth: largura, offsetHeight: largura ? 494 : 0,
+  getAttribute: (a) => (a === 'lsdata'
+    ? JSON.stringify({ x: 0, 34: { id, SID: `${SUB_ORD}/cntl${container}/shellcont/shell`, Type: 'GuiGridView', ColumnIDs: colunas, totalRows } })
+    : null),
+});
+const rodarNoDoc = (js, elementos, porId = {}) => new Function('document', `return ${js}`)({
+  querySelectorAll: () => elementos,
+  getElementById: (id) => porId[id] ?? null,
+});
+
+test('webgui: o grid do diálogo "Ordenação" é achado pelo SID do CONTAINER, não pelo id', () => {
+  // ⚠ medido: numa rodada os grids foram C138/C162 e, com um round-trip a mais, C140/C164.
+  const tela = [
+    gridDoDialogo('C140', 'CONTAINER2_SORT', { totalRows: 2, colunas: ['SELTEXT', 'SORT_DIRECTION'] }),
+    gridDoDialogo('C164', 'CONTAINER1_SORT', { totalRows: 3 }),
+  ];
+  const crit = rodarNoDoc(jsGridDoDialogoDeOrdenacao(DIALOGO_DE_ORDENACAO.criterios), tela);
+  expect(crit.id).toBe('C140');
+  expect(crit.colunas).toEqual(['SELTEXT', 'SORT_DIRECTION']);
+  expect(crit.totalRows).toBe(2);
+  expect(rodarNoDoc(jsGridDoDialogoDeOrdenacao(DIALOGO_DE_ORDENACAO.conjunto), tela).id).toBe('C164');
+  // o MESMO seletor, com os ids da outra rodada — o id não entra na conta
+  const outraRodada = [gridDoDialogo('C138', 'CONTAINER2_SORT'), gridDoDialogo('C162', 'CONTAINER1_SORT')];
+  expect(rodarNoDoc(jsGridDoDialogoDeOrdenacao(DIALOGO_DE_ORDENACAO.criterios), outraRodada).id).toBe('C138');
+});
+
+test('webgui: o grid ESCONDIDO do diálogo não conta, e container ausente devolve null', () => {
+  const escondido = gridDoDialogo('C140', 'CONTAINER2_SORT', { largura: 0 });
+  expect(rodarNoDoc(jsGridDoDialogoDeOrdenacao('CONTAINER2_SORT'), [escondido])).toBe(null);
+  expect(rodarNoDoc(jsGridDoDialogoDeOrdenacao('CONTAINER9_SORT'), [gridDoDialogo('C140', 'CONTAINER2_SORT')])).toBe(null);
+});
+
+test('webgui: a DIREÇÃO do critério sai do lsdata do combo — o innerText dele é vazio', () => {
+  // ⚠ é por isso que o `lerGrid` devolve `SORT_DIRECTION: ""`: o texto mora no lsdata["4"]
+  const combo = (linha, valor, listaId) => ({
+    id: `grid#C140#${linha},2#dd`,
+    getAttribute: (a) => (a === 'lsdata' ? JSON.stringify({ x: 0, 3: listaId, 4: valor, 5: valor, 7: true }) : null),
+  });
+  const r = rodarNoDoc(jsDirecoesDosCriterios('C140'), [
+    combo(2, 'Decrescente (↓)', 'cnt3_valueset_2'),
+    combo(1, 'Ordem crescente (↑)', 'cnt3_valueset_1'),
+    { id: 'grid#C140#0,2', getAttribute: () => null },        // cabeçalho: não casa o #dd
+  ]);
+  expect(r).toEqual([
+    { linha: 1, valor: 'Ordem crescente (↑)', listaId: 'cnt3_valueset_1' },
+    { linha: 2, valor: 'Decrescente (↓)', listaId: 'cnt3_valueset_2' },
+  ]);
+});
+
+test('webgui: as opções do combo saem da lista pelo aria-controls, na ORDEM (0=asc, 1=desc)', () => {
+  // a chave vem no IDIOMA da sessão — por isso a escolha é pelo ÍNDICE, nunca pelo texto
+  const lista = {
+    id: 'cnt3_valueset_1',
+    querySelectorAll: () => [
+      { id: 'u2D0CF', getAttribute: (a) => (a === 'data-itemkey' ? 'Ordem crescente (↑)' : null) },
+      { id: 'u2D0D0', getAttribute: (a) => (a === 'data-itemkey' ? 'Decrescente (↓)' : null) },
+    ],
+  };
+  const r = rodarNoDoc(jsOpcoesDoCombo('cnt3_valueset_1'), [], { cnt3_valueset_1: lista });
+  expect(r.map((o) => o.id)).toEqual(['u2D0CF', 'u2D0D0']);
+  expect(r[0].chave).toBe('Ordem crescente (↑)');
+  expect(rodarNoDoc(jsOpcoesDoCombo('naoexiste'), [])).toBe(null);
+});
+
+test('webgui: os SIDs do diálogo "Ordenação" são os MEDIDOS, e o Aceitar é o do wnd[1]', () => {
+  expect(DIALOGO_DE_ORDENACAO).toEqual({
+    conjunto: 'CONTAINER1_SORT', criterios: 'CONTAINER2_SORT',
+    incluir: 'btnAPP_WL_SING', retirar: 'btnAPP_FL_SING',
+    aceitar: 'wnd[1]/tbar[0]/btn[0]', cancelar: 'wnd[1]/tbar[0]/btn[12]',
+  });
+  // o diálogo É wnd[1] (item 121 corrigiu o item 77): todo SID de dentro começa por wnd[1]/
+  expect(DIALOGO_DE_ORDENACAO.aceitar.startsWith('wnd[1]/')).toBe(true);
 });
 
 // ---------- colar um BLOCO no ALV (item 79) ----------

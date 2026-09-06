@@ -2619,7 +2619,7 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
   na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
   só existe no despejo DOM). ~~Combo~~ **medido** (item 114): escolher uma opção é postar a
-  CHAVE, e `preencher` traduz o texto (§ "O COMBOBOX (`ct="CB"`)"). ~~Ordenar/filtrar~~ **medido** (itens 77 e 116): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"), e o `lerGridInteiro` sob filtro devolve só as filtradas — com o `totalRows` já filtrado — enquanto a sessão de fora não vê nada disso (§ "O FILTRO, a linha selecionada e o drill-down"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Desmarcar / limpar a seleção~~ **medido** (item 119): `desmarcarLinhas` (`ctrl`+clique), `limparSelecao` e `selecionarTudo` pelo toggle do cabeçalho — que alterna pelo **próprio ícone**, não pela tela (§ "Desmarcar e limpar a seleção do ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
+  CHAVE, e `preencher` traduz o texto (§ "O COMBOBOX (`ct="CB"`)"). ~~Ordenar/filtrar~~ **medido** (itens 77 e 116): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"). ~~Ordenar por VÁRIAS colunas~~ **medido** (item 121): `ordenarGridPorVarias` dirige o diálogo "Ordenação" — o que a barra não alcança, porque ela ordena por uma coluna e substitui o critério (§ "Ordenar por VÁRIAS colunas"), e o `lerGridInteiro` sob filtro devolve só as filtradas — com o `totalRows` já filtrado — enquanto a sessão de fora não vê nada disso (§ "O FILTRO, a linha selecionada e o drill-down"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Desmarcar / limpar a seleção~~ **medido** (item 119): `desmarcarLinhas` (`ctrl`+clique), `limparSelecao` e `selecionarTudo` pelo toggle do cabeçalho — que alterna pelo **próprio ícone**, não pela tela (§ "Desmarcar e limpar a seleção do ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -3303,16 +3303,36 @@ Cada botão traz `"SID":"<sid do grid>/tbar/btn&SORT_ASC"` (ou `dbtn&MB_FILTER`)
 dois ALVs. `jsBotaoDaBarra(sid, fcode)` casa pelo SID; quando o fcode não está lá, o erro **lista os
 fcodes que aquela barra tem** (`JS_FCODES_DA_BARRA`).
 
-### ⚠ Sem coluna marcada, o botão abre um diálogo que o `lerTela` NÃO vê
+### ⚠ Sem coluna marcada, o botão abre um diálogo — e o clique seguinte cai atrás dele
 
-`SORT_ASC` sem coluna marcada não ordena: abre "Ordenação" (`SAPLSALV_CUL_…`). E ele **não é
-`wnd[1]`** — o `lerTela` segue dizendo `janela.principal: true`, `mensagem: null`. O clique seguinte
-cai **atrás do modal e sai calado**; foi o que cegou a fase B inteira. Quem o enxerga é
+`SORT_ASC` sem coluna marcada não ordena: abre "Ordenação" (`SAPLSALV_CUL_…`). O clique seguinte cai
+**atrás do modal e sai calado**; foi o que cegou a fase B inteira. Quem o enxerga na hora é
 `[ct^="PW"]` visível (`JS_MODAL_DO_ALV`), e é por isso que `ordenarGrid` confere e estoura com o
 título do diálogo em vez de devolver uma tabela que não mudou.
 
-Mesma família do gotcha do `selectedRows` (item 76) e do scrollbar (item 75): **o `lerTela` responde
-pelo modelo `lsdata`, e há estado de tela que não está lá.**
+Dirigir esse diálogo **de propósito** é o gesto do item 121 — `ordenarGridPorVarias`, § "Ordenar por
+VÁRIAS colunas" abaixo. É o único caminho para mais de um critério.
+
+#### ⚠ Correção do item 121: ele **É** `wnd[1]`, e o aviso do 77 era artefato de TEMPO
+
+O item 77 concluiu que "ele não é `wnd[1]`, o `lerTela` segue dizendo `janela.principal: true`".
+Medido em **06/09/2026** (`POC_webgui_grid_ordmulti`, fase G), o mesmo clique lido em quatro
+momentos da mesma sessão:
+
+| momento | `lerTela.janela` | `JS_MODAL_DO_ALV` |
+|---|---|---|
+| logo após clicar (340 ms) | `wnd[0]` / `GuiMainWindow` / `principal: true` | 0 |
+| +300 ms (702 ms) | `wnd[0]` / `GuiMainWindow` / `principal: true` | 0 |
+| +1 s (1447 ms) | **`wnd[1]` / `GuiModalWindow` / `principal: false`** | **1** |
+| após `esperarQuieto` (3126 ms) | `wnd[1]` / `GuiModalWindow` / `principal: false` | 1 |
+
+Os dois passam a ver **no mesmo instante** — o `JS_MODAL_DO_ALV` não é "o que enxerga o que o
+`lerTela` não enxerga", é só o que estava sendo consultado **depois** da espera. Todos os SIDs de
+dentro do diálogo começam por `wnd[1]/`.
+
+⚠ **O que continua verdade:** `lerTela.popup` fica `null` e o `titulo` continua o da janela
+principal, com ou sem espera. Quem procurar o diálogo em `t.popup` não o acha — e é por isso que a
+guarda do `ordenarGrid`/`gestoDeLinha` usa o `JS_MODAL_DO_ALV`, não o `popup`.
 
 ### Ordenar mexe no ABAP; filtrar não — e é aí que o `_linha` se define
 
@@ -3357,12 +3377,105 @@ O `<th>` mostra `head<ordem>o<filtro>.png` — composicional:
 
 Daí saem duas regras medidas: **ordenar por outra coluna substitui o critério** (mas preserva o
 filtro da coluna anterior) e **limpar o filtro não derruba a ordenação**. Vários critérios de
-ordenação de uma vez só pelo diálogo "Ordenação" — outro gesto, não coberto.
+ordenação de uma vez só pelo diálogo "Ordenação" — o gesto do item 121, logo abaixo.
+
+## Ordenar por VÁRIAS colunas — o diálogo "Ordenação" (item 121)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 121; evidência em
+`sap-accelerate/work/POC_webgui_grid_ordmulti/medicoes/item121-ordenacao.md`, laboratório
+`ZJBV_ALV47_EDIT`).
+
+O botão da barra ordena por **uma** coluna e **substitui** o critério anterior (item 77). Mais de um
+critério só pelo diálogo `SAPLSALV_CUL_CONFIGURATION` — que é justamente o que aparece quando o
+botão é acionado **sem** coluna marcada:
+
+```js
+import { ordenarGridPorVarias } from './webgui.mjs';
+
+await ordenarGridPorVarias(s, null, [{ coluna: 'NOME' }, { coluna: 'QTD', ordem: 'desc' }]);
+await ordenarGridPorVarias(s, null, ['NOME', 'QTD']);   // as duas crescentes
+// → { id, sid, criterios, total, linhas, colunas, ms }
+```
+
+A lista é **na ordem de prioridade**, e o nome é o **`SELTEXT`** que o diálogo lista (o rótulo do
+fieldcat, que pode não ser o `ColumnIDs` do `lerColunas`) — quando não bate, o erro diz o que o
+conjunto tem.
+
+### A anatomia: dois ALVs e dois botões, todos em `wnd[1]/usr/subSUB_CONFIGURATION:…:0610/`
+
+| peça | SID | o que é |
+|---|---|---|
+| `cntlCONTAINER1_SORT` | …`/shellcont/shell` | "Conjunto de colunas" — as ainda disponíveis (`SELTEXT`) |
+| `cntlCONTAINER2_SORT` | …`/shellcont/shell` | "Critérios de ordenação" — `SELTEXT` + `SORT_DIRECTION` |
+| `btnAPP_WL_SING` | …`/btnAPP_WL_SING` | "Incluir critério ordenação (F7)" |
+| `btnAPP_FL_SING` | …`/btnAPP_FL_SING` | "Retirar critério ordenação (F6)" |
+| Aceitar / Cancelar | `wnd[1]/tbar[0]/btn[0]` / `btn[12]` | |
+
+A barra do grid de critérios ainda traz `btnDTC_UP`/`DTC_DOWN`/`DTC_UPPOS1`/`DTC_DOWNEND` (mover o
+critério de lugar) — não exercitados: aqui a ordem sai da ordem de inclusão.
+
+#### ⚠ O ID do grid do diálogo NÃO é estável
+
+Numa rodada os grids foram `C138`/`C162`; com **um round-trip a mais** antes de abrir, vieram
+`C140`/`C164`. Quem endereça por id acerta por sorte. O endereço estável é o **SID do container**, e
+é o que `jsGridDoDialogoDeOrdenacao(DIALOGO_DE_ORDENACAO.criterios)` usa — irmão exato do
+`jsBotaoDaBarra`, que casa o SID em vez do `C102_toolbar_btn15`.
+
+#### A direção é o COMBO do item 114 — e o `lerGrid` não a lê
+
+A célula de `SORT_DIRECTION` é um `ct="CB"` com duas opções, `Ordem crescente (↑)` e
+`Decrescente (↓)`. **Um clique na célula abre a lista, e isso é puro cliente (zero POST)**; quem
+posta é o clique na opção. A escolha vai pelo **índice** (0 = asc, 1 = desc), porque a chave vem no
+idioma da sessão.
+
+⚠ **`lerGrid` devolve `SORT_DIRECTION: ""`** — o combo não põe o texto no `innerText`, ele mora no
+`lsdata["4"]` (é o que `jsDirecoesDosCriterios` lê). E esse `lsdata` é *o que o servidor mandou*:
+uma escolha feita no cliente e ainda não postada **não aparece nele** (medido: os quatro casos da
+fase F leram "Ordem crescente" nos dois critérios e saíram com as direções certas). **A direção
+efetiva se lê depois, no cabeçalho do ALV** — `lerColunas`, que passa a mostrar N colunas ordenadas
+ao mesmo tempo (`NOME:asc` + `QTD:desc`), coisa que a barra nunca produziu.
+
+#### ⚠⚠ A DIREÇÃO DE UM CRITÉRIO SOBREVIVE À RETIRADA DELE
+
+O modo de falha caro, e irmão exato do `HIGH` do filtro (§ acima). Na mesma sessão, com o diálogo
+reaberto: retirar `QTD` e reincluí-la trouxe de volta a `Decrescente (↓)` da vez anterior — e um
+pedido de `asc` que confiasse no "default crescente" sairia **`desc`, sem erro nenhum**. Foi
+exatamente o que aconteceu na fase E (caso E2: pedi `QTD asc`, saiu `QTD desc`, e a tabela era a
+mesma do caso anterior).
+
+Por isso `ordenarGridPorVarias` **limpa os critérios que o diálogo trouxer** e **escreve a direção
+de todo critério, inclusive a crescente**.
+
+### A prova — quatro casos com o esperado calculado, e distintos entre si
+
+Ordem de entrada medida `BB/10 AA/20 BB/05 AA/30` (o laboratório foi semeado com **empate** na 1ª
+coluna de propósito: sem empate o 2º critério não tem onde se manifestar).
+
+| critérios | medido | cabeçalho depois | ABAP (`FC03`) |
+|---|---|---|---|
+| `NOME asc` + `QTD desc` | `AA/30 AA/20 BB/10 BB/05` | `NOME:asc QTD:desc` | `tab1=AA` |
+| `NOME asc` + `QTD asc` | `AA/20 AA/30 BB/05 BB/10` | `NOME:asc QTD:asc` | `tab1=AA` |
+| `NOME desc` + `QTD asc` | `BB/05 BB/10 AA/20 AA/30` | `NOME:desc QTD:asc` | `tab1=BB` |
+| só `NOME asc` | `AA/20 AA/30 BB/10 BB/05` | `NOME:asc QTD:-` | `tab1=AA` |
+| `ID desc` + `NOME` + `QTD` | `AA/30 BB/05 AA/20 BB/10` | `ID:desc NOME:asc QTD:asc` | `tab1=AA` |
+
+Os cinco resultados são **distintos entre si** — um resultado errado não passa por certo. E, como a
+ordenação de uma coluna (item 77), **isto reordena a tabela interna do ABAP**: o `tab1` acompanha.
+
+⚠ Só serve para ALV **com barra**: sem `SORT_ASC` na barra do grid o erro diz o que aquela barra tem
+(listas como a do `RSPARAM` ordenam pela barra da **aplicação** — item 116, e o item 179).
 
 ### O que ainda NÃO está medido
 
-- **O diálogo "Ordenação"** dirigido de propósito (ordenação por várias colunas). Aqui ele só
-  aparece como modo de falha detectado.
+- **Os botões de mover critério** (`btnDTC_UP`/`DOWN`/`UPPOS1`/`DOWNEND`) — a ordem aqui sai da
+  ordem de inclusão, e reordenar critério já montado não foi exercitado.
+- **O diálogo com o ALV já ordenado**: em sessão nova ele reabriu vazio (`reabriuCom: []`) nos
+  quatro casos; que ele reabra com os critérios de antes só foi visto **dentro** da mesma sessão.
+- **O mesmo diálogo por HTTP puro** (`its.mjs`), não exercitado. ⚠ Não confundir com o
+  `ordenarGrid` de lá, que aceita **lista de colunas** (item 115): aquilo é o `columns=;a;b;` da
+  barra, e é outra coisa — a precedência é a das colunas **na tela**, não a da lista, e a direção é
+  do BOTÃO (`btn[28]`/`btn[40]`), uma só para todos os critérios. **Direção por critério, e ordem de
+  precedência escolhida, só pelo diálogo.**
 - **O menu de contexto da célula** (`CellContextMenu`) — outra porta para os mesmos fcodes.
 - **`ColumnResize`** e o arrasto de coluna.
 
@@ -3396,9 +3509,10 @@ crescente — **não** um botão de exportação, ao contrário do que o item 73
 
 ⚠ **Marca inválida não é recusada, é ignorada — e aí o botão abre o diálogo "Ordenação".** Caem aí:
 nenhum `action/46`, `columns=;0;` (a coluna 0 é a caixa de seleção) e coluna fora do grid. Não vem
-`-107` nem mensagem; o sinal é a modal. **Neste canal ela É `wnd[1]` de verdade** (o `popupDaSessao`
-a vê, com título e botões) — ao contrário do navegador, onde o `lerTela` fica cego. O `ordenarGrid`
-detecta, **cancela o diálogo** e estoura: a sessão continua utilizável.
+`-107` nem mensagem; o sinal é a modal. **Neste canal ela É `wnd[1]` de verdade** — o `popupDaSessao`
+a vê, com título e botões. (O item 121 mediu que no navegador ela também é `wnd[1]`; a diferença é
+que lá o `lerTela.popup` continua `null`, então a modal só se detecta pelo `JS_MODAL_DO_ALV`.) O
+`ordenarGrid` detecta, **cancela o diálogo** e estoura: a sessão continua utilizável.
 
 ⚠ **`columns=;a;b;` é um CONJUNTO: a precedência é a das colunas na TELA, não a da string.** Medido:
 `;2;5;` e `;5;2;` deram o mesmo resultado (2 primária, 5 desempatando), e `;2;1;` ordenou por `NAME`
