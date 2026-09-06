@@ -13,7 +13,7 @@ import {
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa, botaoDeOrdenacao, batchOrdenar, indiceDaColuna,
   itsdocDoDelta, pedidoDoItsdoc, atenderItsdoc, MULTIPART_IMPORT, tetoDoImport, OK_ITSDOC, FORMATOS, exportAsDoPopup,
   verboDoItsdoc, filtroDoItsdoc, corpoDaListaDeArquivos, corpoDoClipboard, TEMP_NFS,
-  itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
+  itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu, navegarMenu,
   indiceDoNo, arvoreDosBrutos, arvore, expansaoDoHtml, expandirNo, colapsarNo, batchExpandirNo, batchColapsarNo, batchAcionarNo, acharNoDaArvore,
   navegarArvore, agregarMudou,
   sidDoControle, controleDoSid, eventosDoControle, batchDoEvento, eventosDoAlvo,
@@ -976,6 +976,45 @@ test('its: acharCaminhoDeMenu desce por rótulo pelos filhos diretos — acento 
   expect(acharCaminhoDeMenu(itens, 'Sistema > Serviços').filhos.map((f) => f.rotulo)).toEqual(['Reporting', 'Batch input']);
   // rótulo que existe em OUTRO ramo não vale: os candidatos são só os filhos diretos
   expect(() => acharCaminhoDeMenu(itens, 'Programa > Reporting')).toThrow(/"Reporting" não está sob wnd\[0\]\/mbar\/menu\[0\]/);
+});
+
+// A modal ENGOLE o action/4 (item 131). Medido no s4h 758/250 em 06/09/2026 (item 83, passo 3 de
+// `item83-com-modal-aberta.mjs`): com a `wnd[1]` na frente os 146 itens do menu CONTINUAM no delta,
+// o caminho resolve, e o POST volta `multipart`/`pegou: false`/`mudou: false` — nada acontece e
+// ninguém avisa. A guarda lança ANTES de postar; é a irmã da do item DESABILITADO (item 48).
+const DELTA_MENU_COM_MODAL = DELTA_MENU.replace('</delta-update>',
+  `${cdata('webguiPopups', `<div id="webguiPopups" ct="CO">${POPUP_NEND}</div>`)}</delta-update>`);
+
+test('its: navegarMenu LANÇA com a modal na frente — sem a guarda o action/4 sumia em silêncio (item 131)', async () => {
+  const sessao = { ...sessaoIts(), delta: DELTA_MENU_COM_MODAL, sids: sidsDaResposta(DELTA_MENU_COM_MODAL) };
+  expect(janelaAtiva(sessao.sids)).toBe('wnd[1]');
+  expect(itensDeMenu(sessao).length).toBe(6);          // o menu segue INTEIRO — é ele que mente
+
+  // a mensagem diz QUAL modal está na frente e por qual SID ela se responde
+  await expect(navegarMenu(sessao, 'Sistema > Serviços > Reporting'))
+    .rejects.toThrow(/modal wnd\[1\] "Efetuar logoff" está na frente.*wnd\[1\]\/usr\/btnSPOP-OPTION1/s);
+  // …e nada foi postado: quem tentasse a rede aqui estouraria no fetch, não na guarda
+  await expect(navegarMenu(sessao, 'Sistema > Serviços > Reporting')).rejects.toThrow(/navegarMenu/);
+
+  // DESCOBRIR o menu não posta nada, e por isso continua valendo com a modal aberta
+  expect((await navegarMenu(sessao, 'Sistema > Serviços', { acionar: false })).filhos.map((f) => f.rotulo))
+    .toEqual(['Reporting', 'Batch input']);
+  // sem modal, a guarda não atrapalha: o action/4 da FOLHA sai como sempre
+  const limpa = { ...sessaoIts(), delta: DELTA_MENU, sids: sidsDaResposta(DELTA_MENU) };
+  expect(janelaAtiva(limpa.sids)).toBe('wnd[0]');
+  const fetchOriginal = globalThis.fetch;
+  let corpoPostado = null;
+  globalThis.fetch = async (_url, opcoes) => {
+    corpoPostado = String(opcoes.body ?? '');
+    return new Response(DELTA_MENU, { status: 200, headers: { 'content-type': 'text/xml' } });
+  };
+  try {
+    const r = await navegarMenu(limpa, 'Sistema > Serviços > Reporting');
+    expect(JSON.parse(corpoPostado)[0]).toEqual({ post: 'action/4/wnd[0]/mbar/menu[5]/menu[3]/menu[0]' });
+    expect(r.popup).toBe(null);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
 });
 
 // ---------- a ÁRVORE do SAP Easy Access (item 50) ----------

@@ -1443,9 +1443,18 @@ r.popup.botoes.map((b) => b.rotulo);   // ['Detalhes', 'Avançar', 'Navegar', �
 ```
 
 ⚠ **Com uma modal já aberta o menu MENTE.** Medido: os 146 itens continuam no delta (os mesmos 7 da
-barra) e `navegarMenu` resolve o caminho sem reclamar, mas o `action/4` volta **`multipart`,
-`pegou: false`** — o modal engole o gesto. Leia `popup` **antes** de navegar; responda a modal
-primeiro. (A guarda que faria isso lançar ainda não existe — fila item 131.)
+barra) e o caminho se resolve sem reclamar, mas o `action/4` volta **`multipart`, `pegou: false`** —
+o modal engole o gesto. Por isso `navegarMenu` **lança** quando a janela ativa não é a `wnd[0]`
+(item 131, `medicoes/item131-guarda-modal.md`), antes de postar coisa nenhuma:
+
+```
+its: navegarMenu — a modal wnd[1] "Configurações individuais para usuário MVJVELOSO" está na
+frente; o action/4 em "Reporting" voltaria multipart e NADA aconteceria. Responda a modal primeiro,
+pelo SID de um botão dela (lerTela(s).popup.botoes: "Transferir" (wnd[1]/tbar[0]/btn[0]),
+"Cancelar" (wnd[1]/tbar[0]/btn[12])) — não por tecla nem por apelido.
+```
+
+`{ acionar: false }` — só DESCOBRIR o menu — não é barrado: não posta nada.
 
 ⚠ **`temPopup` não é `popup`.** `lerResposta().temPopup` é um farejador do **corpo** (`regex` por
 `wnd[n>0]`, ~0 ms) e vale `false` num `multipart` **mesmo com a modal aberta** — foi exatamente o

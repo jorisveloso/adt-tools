@@ -2295,9 +2295,10 @@ export { acharCaminhoDeMenu };
  * (O veredito ANTIGO, de só título + dynpro, dava `false` nas três primeiras — o carimbo do item 59
  * já as pegava por causa da `janelaAtiva`; o que faltava era DIZER qual das duas coisas foi.)
  *
- * ⚠ **Com uma modal já aberta o menu MENTE**: os 146 itens continuam no delta e `navegarMenu` os
+ * ⚠ **Com uma modal já aberta o menu MENTE**: os 146 itens continuam no delta e o caminho se
  * resolve sem reclamar, mas o `action/4` volta `multipart`/`pegou: false` — o modal engole o gesto
- * (medido no mesmo item 83, passo 3). Leia `popup` ANTES de navegar; responda a modal primeiro.
+ * (medido no mesmo item 83, passo 3). Por isso **lança** quando a janela ativa não é a `wnd[0]`
+ * (item 131), dizendo qual modal está na frente e por quais botões ela se responde.
  *
  * Com `{ acionar: false }` nada é postado: devolve `{ filhos }` do último nó — é como se DESCOBRE
  * o menu de uma tela (a árvore inteira já está no delta, custo zero de rede).
@@ -2309,6 +2310,19 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, ...
   const { caminho: partes, passos, alvo, filhos } = acharCaminhoDeMenu(itensDeMenu(sessao), caminho);
   if (!alvo.habilitado) throw new Error(`its: navegarMenu — "${alvo.rotulo}" está DESABILITADO nesta tela (${alvo.sid ?? alvo.id}); o action/4 não faria nada`);
   if (!aciona || alvo.submenu) return { caminho: partes, passos, folha: null, filhos, mudou: false, popup: popupDaSessao(sessao) };
+  // ⚠ a modal na frente ENGOLE o `action/4` em silêncio (item 131). O menu não sabe disso: os 146
+  // itens da SE38 continuam no delta com a `wnd[1]` aberta, o caminho resolve, e o POST volta
+  // `multipart`/`pegou: false`/`mudou: false` — nada acontece e nada acusa. Medido no s4h 758/250 em
+  // 06/09/2026 (item 83, passo 3 de `item83-com-modal-aberta.mjs`). A janela sai dos SIDs que o
+  // `postar` já extraiu (custo ~0); o objeto da modal só é montado para escrever a mensagem.
+  const janela = janelaAtiva(sessao.sids ?? []);
+  if (janela !== 'wnd[0]') {
+    const modal = popupDaSessao(sessao);
+    const quais = (modal?.botoes ?? []).map((b) => `"${b.rotulo}" (${b.sid})`).join(', ');
+    throw new Error(`its: navegarMenu — a modal ${janela}${modal?.titulo ? ` "${modal.titulo}"` : ''} está na frente; `
+      + `o action/4 em "${alvo.rotulo}" voltaria multipart e NADA aconteceria. Responda a modal primeiro, `
+      + `pelo SID de um botão dela (lerTela(s).popup.botoes${quais ? `: ${quais}` : ''}) — não por tecla nem por apelido.`);
+  }
   // o `mudou` vem do `postar` — carimbo ANTES × DEPOIS, não só título e dynpro (item 59)
   const r = await despachar(sessao, [{ post: `action/4/${alvo.sid ?? alvo.id}` }], opts);
   // ...e o `popup` diz O QUE mudou: modal na frente, ou a tela nova. Sai da TELA (não do corpo da
