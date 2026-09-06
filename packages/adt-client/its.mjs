@@ -942,8 +942,8 @@ export const prefixoDaRecusa = (causa) =>
     : causa === 'credencial' ? 'o WebGUI recusou a credencial'
     : 'resposta não prevista do WebGUI';
 
-export async function abrir(cfg, { transacao = null, parametros = {}, okcode = null, boot = true, tetoMs = 30000 } = {}) {
-  const url = urlWebgui(cfg, { transacao, parametros, okcode });
+export async function abrir(cfg, { transacao = null, parametros = {}, okcode = null, limpar = [], boot = true, tetoMs = 30000 } = {}) {
+  const url = urlWebgui(cfg, { transacao, parametros, okcode, limpar });
   const cabecalho = autorizacao(cfg);
   passo(`its: abrindo ${urlNoLog(url)}`);
   const t0 = Date.now();

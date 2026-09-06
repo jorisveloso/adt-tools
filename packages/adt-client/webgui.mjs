@@ -146,22 +146,28 @@ export const anotarBotoes = (lista = []) => lista.map((b) => ({
  * `*TCODE campo=valor;campo=valor` com `DYNP_OKCODE` fechando é o que pula a tela de entrada
  * (medido: `*YJBV4029823 P_DOCNUM=71;DYNP_OKCODE=ONLI` abre a J1B1N com os dois itens montados).
  * Sem `parametros` nem `okcode` é a transação crua, e o `*` não entra.
+ *
+ * `limpar: ['CAMPO', …]` é o MESMO mecanismo com o valor VAZIO (`*SE16 DATABROWSE-TABLENAME=`) — a
+ * via de entrar numa tela LIMPA. Ela é necessária porque abrir a transação crua **não** dá tela
+ * limpa: o campo volta com o valor da última execução DAQUELA SESSÃO (§ receita, "Entrar na tela
+ * LIMPA"; medido no s4h 758/250 em 06/09/2026, item 95). Parâmetro explícito ganha de `limpar`.
  */
-export function expressaoTransacao(tcode, { parametros = {}, okcode = null } = {}) {
+export function expressaoTransacao(tcode, { parametros = {}, okcode = null, limpar = [] } = {}) {
   if (!tcode) throw new Error('expressaoTransacao: informe o tcode');
-  const pares = Object.entries(parametros).map(([k, v]) => `${k}=${v}`);
+  const campos = { ...Object.fromEntries([].concat(limpar ?? []).map((c) => [c, ''])), ...parametros };
+  const pares = Object.entries(campos).map(([k, v]) => `${k}=${v}`);
   if (okcode) pares.push(`DYNP_OKCODE=${okcode}`);
   if (!pares.length) return String(tcode).toUpperCase();
   return `*${String(tcode).toUpperCase()} ${pares.join(';')}`;
 }
 
 /** PURO: a URL do WebGUI para o `cfg` da lib ({ base, client, idioma }). */
-export function urlWebgui(cfg, { transacao = null, parametros = {}, okcode = null } = {}) {
+export function urlWebgui(cfg, { transacao = null, parametros = {}, okcode = null, limpar = [] } = {}) {
   if (!cfg?.base) throw new Error('urlWebgui: cfg sem { base }');
   const q = new URLSearchParams();
   if (cfg.client) q.set('sap-client', cfg.client);
   if (cfg.idioma) q.set('sap-language', cfg.idioma);
-  if (transacao) q.set('~transaction', expressaoTransacao(transacao, { parametros, okcode }));
+  if (transacao) q.set('~transaction', expressaoTransacao(transacao, { parametros, okcode, limpar }));
   return `${cfg.base}/sap/bc/gui/sap/its/webgui?${q}`;
 }
 
@@ -1018,8 +1024,26 @@ export async function ir(sessao, url, { tetoMs = 60000, ...pronta } = {}) {
 }
 
 /** Abre uma transação — já preenchida, quando `parametros`/`okcode` são dados. */
-export async function abrirTransacao(sessao, tcode, { parametros, okcode, ...opts } = {}) {
-  return await ir(sessao, urlWebgui(sessao.cfg, { transacao: tcode, parametros, okcode }), opts);
+export async function abrirTransacao(sessao, tcode, { parametros, okcode, limpar, ...opts } = {}) {
+  return await ir(sessao, urlWebgui(sessao.cfg, { transacao: tcode, parametros, okcode, limpar }), opts);
+}
+
+/**
+ * Derruba a sessão SAP desta aba: apaga os cookies do navegador, e a PRÓXIMA navegação faz logon
+ * novo. É o "abrir limpo" GENÉRICO — o que serve quando não se sabe o nome dos campos da tela
+ * (`limpar` precisa dele). Medido no s4h 758/250 em 06/09/2026 (item 95, fase C5): com a memória da
+ * sessão suja de `TADIR`, `Network.clearBrowserCookies` + a URL crua devolveu a SE16 com o campo
+ * VAZIO — enquanto `/n` e `sap-sessioncmd=open`, na mesma medição, devolveram `TADIR`.
+ *
+ * ⚠ É o martelo, não o bisturi: cai TUDO da sessão — modos abertos, tela em edição, o que estiver
+ * bloqueado por ela. E não é logoff: o gesto medido é só o do lado do navegador; o que o servidor
+ * faz com a sessão que ficou sem dono NÃO foi medido. Para zerar UM campo sem perder a sessão, use
+ * `abrirTransacao(s, tcode, { limpar: ['CAMPO'] })`.
+ */
+export async function renovarSessao(sessao) {
+  await sessao.cmd('Network.clearBrowserCookies');
+  detalhe('webgui: cookies apagados — a próxima navegação abre sessão SAP nova');
+  return { renovou: true };
 }
 
 // ---------- ler a tela pelo que ELA declara (lsdata), não por heurística de DOM ----------

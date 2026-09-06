@@ -335,6 +335,65 @@ Daí o `ONLI` da J1B1N ter funcionado no SXD e não funcionar aqui: lá a transa
 `ONLI` é o fcode da tela de **seleção**, que é a primeira que aparece. Regra prática: **transação de
 report → `ONLI`; primeira tela da SE38/SA38 → `STRT`; SE16 → nenhum** (o default já avança).
 
+### Entrar na tela LIMPA — porque abrir a transação **não** limpa nada
+
+**Abrir uma transação não dá tela limpa: o campo volta com o valor da última execução DAQUELA
+SESSÃO.** Medido no s4h 758/250 em 2026-09-06 (item 95,
+`sap-accelerate/work/POC_webgui_tela_limpa/`, fases A–D). Um roteiro que só preenche PARTE dos
+campos herda o resto da vez anterior — e **o valor herdado não aparece no fio**: o renderer só
+publica `value/` quando o valor difere do que o servidor mandou (§ acima), então o passo executa
+com um valor que ninguém escreveu e que a instrumentação não mostra.
+
+**Onde o valor mora — as três explicações, separadas por construção (fase A):**
+
+| leitura | resultado | conclusão |
+|---|---|---|
+| `USR05` do usuário por `readTable` (outro canal), antes × depois de sujar | **idêntica**, 6 linhas | não é parâmetro persistido do usuário |
+| navegador NOVO (perfil novo ⇒ logon novo) depois de sujar | campo **vazio** | não atravessa o logon |
+| **mesmo** navegador, URL nova depois de sujar | campo com `TADIR` | **é a memória da SESSÃO** |
+
+É SET/GET parameter, sim — mas da **sessão externa**, não da memória persistida do usuário. A prova
+positiva veio de graça na fase B: `TADIR` foi digitado na **SE16** e apareceu na **SE11** (campo
+`RSRD1-TBMA_VAL`, outro programa, outra tela) — telas diferentes que compartilham o mesmo parameter
+ID herdam uma da outra. **A contaminação cruza transações.**
+
+**Em quais telas vale (fase B, uma sessão, gesto mínimo `preencher` + `blur` + Enter):**
+
+| transação | campo | herdou ao reabrir |
+|---|---|---|
+| SE16 | `DATABROWSE-TABLENAME` | **sim** (fase A; na fase B o Enter avançou para a tela de seleção e o assert não se aplicou) |
+| SE11 | `RSRD1-TBMA_VAL` | **sim** — e já abriu suja pela SE16 |
+| SE38 | `RS38M-PROGRAMM` | **sim** |
+| SE37 | `RS38L-NAME` | **sim** |
+| SE24 | `SEOCLASS-CLSNAME` | **sim** |
+| SM30 | `VIEWNAME` | **sim** |
+
+Seis de seis. Trate como **a regra**, não como exceção de tela.
+
+**O gesto que limpa (fase C, cada candidato medido do mesmo estado sujo, com o mesmo assert):**
+
+| candidato | resultado |
+|---|---|
+| **`*SE16 DATABROWSE-TABLENAME=`** (parâmetro VAZIO na URL) | **limpa** — e a reabertura crua seguinte também vem vazia: **zera a memória** (fase D1), o mesmo na SE38 (D2) |
+| **apagar os cookies** (`renovarSessao`) | **limpa** — sessão SAP nova |
+| publicar o campo vazio (`preencher` `''` + `blur` + Enter) | limpa, mas custa um round-trip e só serve com a tela já aberta |
+| `comandar('/n')` e reabrir | **não limpa** — `TADIR` de volta |
+| `&sap-sessioncmd=open` | **não limpa** — `TADIR` de volta |
+
+E o inverso também vale: a URL com valor **grava** na memória — `*SE16 DATABROWSE-TABLENAME=T000` e
+a reabertura CRUA seguinte veio com `T000` (fase D3).
+
+```js
+await abrirTransacao(s, 'SE16', { limpar: ['DATABROWSE-TABLENAME'] }); // bisturi: zera só o campo
+await renovarSessao(s);                                               // martelo: sessão SAP nova
+```
+
+`limpar` aceita um campo ou uma lista, vale nas duas vias (navegador e `its.mjs`), e parâmetro
+explícito ganha dele. Quem não sabe o nome do campo pergunta à tela — `await sids(s)` (§ acima).
+
+⚠ `renovarSessao` derruba **tudo** da sessão: modos abertos, tela em edição, o que estiver
+bloqueado por ela. E não é logoff — o gesto medido é só o do lado do navegador.
+
 ### A transação de PARÂMETRO é a via equivalente — e obedece às mesmas regras
 
 O `TSTCP` (`/*<chamada> CAMPO=valor;`) é a forma persistida da mesma coisa, e o WebGUI a executa

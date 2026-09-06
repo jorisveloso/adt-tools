@@ -33,6 +33,21 @@ test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da te
   expect(expressaoTransacao('SA38', { parametros: { 'RS38M-PROGRAMMA': 'YJBV_R' } }))
     .toBe('*SA38 RS38M-PROGRAMMA=YJBV_R');
   expect(() => expressaoTransacao('')).toThrow(/informe o tcode/);
+
+  // `limpar` é o MESMO mecanismo com valor vazio — a via de entrar na tela LIMPA (item 95, medido
+  // no s4h 758/250 em 06/09/2026: `*SE16 DATABROWSE-TABLENAME=` zerou o campo E a memória da sessão,
+  // e a reabertura crua seguinte veio vazia). Sem ela, a transação abre com a última execução.
+  expect(expressaoTransacao('SE16', { limpar: ['DATABROWSE-TABLENAME'] }))
+    .toBe('*SE16 DATABROWSE-TABLENAME=');
+  expect(expressaoTransacao('SE16', { limpar: 'DATABROWSE-TABLENAME' }))
+    .toBe('*SE16 DATABROWSE-TABLENAME=');   // um campo só dispensa o array
+  expect(expressaoTransacao('SE16', { limpar: ['A', 'B'], okcode: 'ONLI' }))
+    .toBe('*SE16 A=;B=;DYNP_OKCODE=ONLI');
+  // parâmetro explícito GANHA de `limpar` — o mesmo campo nos dois não sai duas vezes
+  expect(expressaoTransacao('SE16', { limpar: ['DATABROWSE-TABLENAME'], parametros: { 'DATABROWSE-TABLENAME': 'T000' } }))
+    .toBe('*SE16 DATABROWSE-TABLENAME=T000');
+  expect(urlWebgui({ base: 'http://h:8000' }, { transacao: 'SE16', limpar: ['DATABROWSE-TABLENAME'] }))
+    .toContain('%7Etransaction=*SE16+DATABROWSE-TABLENAME%3D');
 });
 
 test('webgui: a URL sai do mesmo cfg do resto da lib, e o ~transaction vai escapado', () => {
