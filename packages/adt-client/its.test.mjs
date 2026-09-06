@@ -11,7 +11,7 @@ import {
   sidDoAlvo, preencher, campos, botoes, sids, VKEYS, numeroDaTecla, janelaAtiva, janelaDoSid, ativa,
   atributosDe, controlesDoHtml, controlesDoDelta, popupDaTela, popupDaSessao, popupsDaTela, telaDoDelta, lerTela, parametrosDaTela,
   batchFragmento, celulasDoGrid, linhasDoGrid, faltaNaFaixa,
-  itsdocDoDelta, pedidoDoItsdoc, OK_ITSDOC, FORMATOS, exportAsDoPopup,
+  itsdocDoDelta, pedidoDoItsdoc, atenderItsdoc, MULTIPART_IMPORT, tetoDoImport, OK_ITSDOC, FORMATOS, exportAsDoPopup,
   itensDeMenuDoDelta, itensDeMenu, acharCaminhoDeMenu,
   indiceDoNo, arvoreDosBrutos, arvore, expansaoDoHtml, expandirNo, colapsarNo, batchExpandirNo, batchColapsarNo, batchAcionarNo, acharNoDaArvore,
   navegarArvore, agregarMudou,
@@ -1250,4 +1250,57 @@ test('its: a primeira linha da recusa aponta para onde o problema ESTÁ (item 88
   expect(prefixoDaRecusa('sem-sessao-nova')).not.toMatch(/indisponível/);
   expect(prefixoDaRecusa('credencial')).toMatch(/recusou a credencial/);
   expect(prefixoDaRecusa('inesperado')).toMatch(/não prevista/);
+});
+
+// ---------- o TETO do Import, e as duas falhas que ele expôs (item 112) ----------
+// Medido no s4h 758/250 em 06/09/2026 (POC_webgui_import/medicoes/item112-teto.md): o corte não é
+// do renderer (o `maximum file size` dele é 2^31-1, constante literal), é do ICM.
+
+test('its: tetoDoImport sai do icm/HTTP/max_request_size_KB, descontado o multipart (item 112)', () => {
+  // a conta do ICM é `floor(corpo/1024) <= max_request_size_KB` — medido AO BYTE contra o
+  // /sap/public/ping: 104 858 623 B de corpo passam (200), 104 858 624 B levam 413.
+  expect((102400 + 1) * 1024 - 1).toBe(104858623);
+  expect(MULTIPART_IMPORT).toBe(186);                    // o FormData do undici, boundary fixo
+  expect(tetoDoImport()).toBe(104858437);                // 104 858 623 − 186 de multipart
+  // e o degrau seguinte foi RECUSADO no canal real do Import (CG3Z), não só no ping
+  expect(tetoDoImport() + 1).toBe(104858438);
+  // sistema com outro parâmetro tem outro teto — a fórmula é a mesma
+  expect(tetoDoImport(10240)).toBe(10486597);
+});
+
+test('its: o ITSDoc que responde 413 ESTOURA — antes do item 112 virava "0 B, tudo bem"', async () => {
+  const s = sessaoIts();
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async () => new Response('<html>ICM error</html>', { status: 413, headers: { 'content-type': 'text/html' } });
+  try {
+    await expect(atenderItsdoc(s, { corpo: ITSDOC_IMPORT }, { dado: Buffer.alloc(9), arquivo: 'Z:\a.bin' }))
+      .rejects.toThrow(/recusou o TAMANHO \(413\).*max_request_size_KB/s);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+test('its: atenderItsdoc estourando o voltasMax ACUSA o truncamento, não devolve meio arquivo', async () => {
+  const s = sessaoIts();
+  const fetchOriginal = globalThis.fetch;
+  // um servidor que NUNCA para de pedir `Export` — é a forma do download grande: 64 MB desceram em
+  // 14 partes de 5 120 000 B (15 voltas), acima do voltasMax que era 12 até aqui.
+  globalThis.fetch = async (_url, opcoes) => (String(opcoes.body ?? '').startsWith('[')
+    ? new Response(ITSDOC_EXPORT, { status: 200, headers: { 'content-type': 'text/xml' } })
+    : new Response(Buffer.alloc(5120000), { status: 200, headers: { 'content-type': 'application/octet-stream' } }));
+  try {
+    await expect(atenderItsdoc(s, { corpo: ITSDOC_EXPORT }, { voltasMax: 3, arquivo: 'Z:\a.bin' }))
+      .rejects.toThrow(/parou em 3 volta\(s\).*TRUNCADO/s);
+    // com folga, o mesmo laço junta as partes e devolve o arquivo inteiro
+    let restantes = 2;
+    globalThis.fetch = async (_url, opcoes) => {
+      if (!String(opcoes.body ?? '').startsWith('[')) return new Response(Buffer.alloc(5120000), { status: 200 });
+      return new Response(restantes-- > 0 ? ITSDOC_EXPORT : DELTA, { status: 200, headers: { 'content-type': 'text/xml' } });
+    };
+    const r = await atenderItsdoc(s, { corpo: ITSDOC_EXPORT }, { voltasMax: 40, arquivo: 'Z:\a.bin' });
+    expect(r.partes).toBe(3);
+    expect(r.conteudo.length).toBe(3 * 5120000);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
 });

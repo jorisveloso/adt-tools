@@ -1273,6 +1273,24 @@ export function pedidoDoItsdoc(doc, { caminho = RAIZ_NFS, arquivo = `${RAIZ_NFS}
 /** O campo do multipart que o renderer usa para entregar o arquivo no `Import`. */
 const CAMPO_IMPORT = 'LOCALFILE1';
 
+/** O que o multipart do `FormData` custa por cima do arquivo — 186 B, constante (boundary de tamanho fixo). */
+export const MULTIPART_IMPORT = 186;
+
+/**
+ * O TETO de um `Import`, em bytes de ARQUIVO. Medido no s4h 758/250 em 06/09/2026 (item 112,
+ * `work/POC_webgui_import/medicoes/item112-teto.md`).
+ *
+ * Quem corta NÃO é o renderer: o `maximum file size` dele é `Math.pow(2,31)-1` (2 GiB−1), constante
+ * literal no `webgui_min.js` — não é parâmetro de sistema, e não existe nenhum `updown*` no perfil.
+ * Quem corta é o **ICM**, pelo `icm/HTTP/max_request_size_KB`, e a conta é sobre o CORPO inteiro da
+ * requisição: passa enquanto `floor(corpo/1024) <= max_request_size_KB`. Medido ao byte com esse
+ * parâmetro em 102400: 104 858 623 B de corpo passam, 104 858 624 B levam **413**.
+ *
+ * ⚠️ Acima do teto o erro pode NÃO chegar como 413: medido que o ICM também fecha a conexão no meio
+ * do envio (`ECONNRESET` / `UND_ERR_SOCKET`). Recusa é recusa — só não conte com o código.
+ */
+export const tetoDoImport = (maxRequestSizeKB = 102400) => (maxRequestSizeKB + 1) * 1024 - 1 - MULTIPART_IMPORT;
+
 /**
  * O POST do ITSDoc: fora do `batch/json`, na URL que o próprio pedido trouxe — é o XHR que o
  * renderer faz (`UpDownSendRequest`). Devolve o corpo como `Buffer` (o arquivo pode ser binário).
@@ -1301,10 +1319,22 @@ async function updown(sessao, { caminho, corpo = '', envia = false } = {}, { dad
     res = await fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(tetoMs) });
     buf = Buffer.from(await res.arrayBuffer());
   } catch (e) {
-    throw new Error(`its: o ITSDoc falhou — ${e.cause?.code || e.name}: ${e.message}`);
+    // Acima do teto o ICM pode FECHAR a conexão em vez de responder 413 — o erro de rede é a recusa.
+    const alem = envia && dado.length > tetoDoImport() ? `, ACIMA do teto medido de ${tetoDoImport()} B` : '';
+    const quanto = envia ? ` (entregando ${dado.length} B${alem})` : '';
+    throw new Error(`its: o ITSDoc falhou${quanto} — ${e.cause?.code || e.name}: ${e.message}`);
   }
   const ms = Date.now() - t0;
   logHttp('POST', urlNoLog(url), res.status, ms, buf.length);
+  // O renderer trata `200 !== status` como erro, e o **413** à parte (`UpDownFSResponseError413`):
+  // ele não vem da aplicação, vem do ICM. Antes do item 112 isto passava CALADO — um 413 virava
+  // "0 B, tudo bem" e o laço seguia devolvendo o controle à dynpro com o arquivo pela metade.
+  if (res.status !== 200) {
+    const porque = res.status === 413
+      ? `o ICM recusou o TAMANHO (413) — o corpo tem ${envia ? dado.length + MULTIPART_IMPORT : String(corpo).length} B, e o teto é o icm/HTTP/max_request_size_KB (com 102400, dá ${tetoDoImport()} B de arquivo)`
+      : `HTTP ${res.status}`;
+    throw new Error(`its: o ITSDoc recusou o POST — ${porque}`);
+  }
   return { status: res.status, tipo: res.headers.get('content-type'), bytes: buf.length, ms, corpo: buf };
 }
 
@@ -1323,11 +1353,14 @@ async function updown(sessao, { caminho, corpo = '', envia = false } = {}, { dad
  * `ultima` é a resposta do último `OK_ITSDOC`, já com a mensagem da dynpro ("File … foi transferido
  * para …").
  *
- * ⚠️ Arquivo grande vem FATIADO na SAÍDA: o HTML do item 45 veio em dois `Export` (5 120 000 B +
- * 1 643 878 B) — daí acumular PARTES em vez de tomar a primeira resposta pelo arquivo. Na ENTRADA
- * não foi medido fatiamento: 256 KB subiram num POST só.
+ * ⚠️ **As duas direções NÃO são simétricas** (medido no item 112, até 64 MB):
+ *   • a SAÍDA fatia, em pedaços de 5 120 000 B — 64 MB desceram em 14 `Export` (15 voltas), daí
+ *     acumular PARTES em vez de tomar a primeira resposta pelo arquivo;
+ *   • a ENTRADA **não fatia**: 64 MB subiram num `Import` só, 1 volta, sha256 idêntico.
+ * É por causa da saída que o `voltasMax` padrão é 40 e não 12 — e que estourá-lo agora ESTOURA, em
+ * vez de devolver o arquivo truncado calado. Conta grosseira: `voltas ≈ bytes / 5 120 000 + 2`.
  */
-export async function atenderItsdoc(sessao, resposta, { dado = null, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', caminho = RAIZ_NFS, voltasMax = 12, tetoMs = 180000 } = {}) {
+export async function atenderItsdoc(sessao, resposta, { dado = null, arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', caminho = RAIZ_NFS, voltasMax = 40, tetoMs = 180000 } = {}) {
   const partes = [], metodos = [];
   let r = resposta, voltas = 0, pedidos = 0;
   for (; voltas < voltasMax; voltas++) {
@@ -1341,6 +1374,11 @@ export async function atenderItsdoc(sessao, resposta, { dado = null, arquivo = `
       if (pedido.conteudo && q.bytes) partes.push(q.corpo);
     }
     r = await postar(sessao, OK_ITSDOC, { tetoMs });
+  }
+  // O laço acabar POR TETO com o servidor AINDA pedindo é arquivo TRUNCADO — e antes do item 112
+  // ele voltava calado, com o `conteudo` pela metade. 64 MB descem em 15 voltas; o teto era 12.
+  if (voltas === voltasMax && itsdocDoDelta(r.corpo ?? '')) {
+    throw new Error(`its: atenderItsdoc parou em ${voltasMax} volta(s) e o servidor AINDA está pedindo (${metodos.at(-1)}) — o que veio até aqui (${partes.reduce((a, p) => a + p.length, 0)} B em ${partes.length} parte(s)) está TRUNCADO; suba o voltasMax`);
   }
   const conteudo = Buffer.concat(partes);
   detalhe(`its: atenderItsdoc — ${voltas} volta(s) [${metodos.join(' → ') || '—'}], ${pedidos} pedido(s), ${conteudo.length} B recebido(s)`);
@@ -1379,7 +1417,7 @@ export async function atenderItsdoc(sessao, resposta, { dado = null, arquivo = `
  * ⚠️ Arquivo grande vem FATIADO: o HTML veio em dois `Export` (5.120.000 B + 1.643.878 B), daí
  * `partes` e a concatenação.
  */
-export async function exportarLista(sessao, { formato = 'tabuladores', arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', alvo = null, voltasMax = 12, tetoMs = 180000 } = {}) {
+export async function exportarLista(sessao, { formato = 'tabuladores', arquivo = `${RAIZ_NFS}lista.txt`, encoding = '4110', alvo = null, voltasMax = 40, tetoMs = 180000 } = {}) {
   const idx = typeof formato === 'number' ? formato : FORMATOS[formato];
   if (idx === undefined) throw new Error(`its: exportarLista — formato desconhecido "${formato}" (tem: ${Object.keys(FORMATOS).join(', ')})`);
   const t0 = Date.now();
@@ -1472,7 +1510,7 @@ const nomePadrao = () => `EXPORT_${new Date().toISOString().replace(/\D/g, '').s
  * (XLSX / Local). Sistema com mais de uma não está medido — o `exportAsDoPopup` devolve os
  * `valores` justamente para isso aparecer.
  */
-export async function exportarPlanilha(sessao, { nome = nomePadrao(), arquivo = null, encoding = '4110', alvo = null, voltasMax = 12, tetoMs = 180000 } = {}) {
+export async function exportarPlanilha(sessao, { nome = nomePadrao(), arquivo = null, encoding = '4110', alvo = null, voltasMax = 40, tetoMs = 180000 } = {}) {
   const t0 = Date.now();
   const botao = alvo ?? { sid: 'wnd[0]/tbar[1]/btn[43]' };
   if (!alvo && !sessao.sids.some((x) => x.sid === botao.sid)) {

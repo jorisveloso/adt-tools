@@ -3323,8 +3323,11 @@ programa** (item 72): `CD` = qual o diretório corrente (responder `Z:\`; vazio 
 repetir o `CD`), `FL` = o TAMANHO do arquivo em bytes, `FE` = o arquivo existe (`1`/`0`), `DE` = o
 diretório existe (`1`/`0`). A CG3Y pergunta `FE`, e respondendo `Z:\` deu **dump**. O `Z:\` é a raiz
 do filesystem VIRTUAL que o renderer inventa para o browser (`nfstosfs`), não disco de ninguém.
-⚠ **Arquivo grande vem FATIADO**: o HTML veio em dois `Export` (5 120 000 B + 1 643 878 B). Daí
-`exportarLista` acumular `partes` e concatenar.
+⚠ **A SAÍDA vem FATIADA, em pedaços de 5 120 000 B** — o HTML veio em dois `Export` (5 120 000 B +
+1 643 878 B), e 64 MB desceram em **14** (item 112). Daí `exportarLista` acumular `partes` e
+concatenar. Conta grosseira: `voltas ≈ bytes / 5 120 000 + 2`, e por isso o `voltasMax` padrão é
+**40**. Estourá-lo agora ESTOURA (era arquivo truncado devolvido calado); se um download grande
+morrer aí, suba o `voltasMax`, não o ignore.
 ⚠ **`planilha` tem uma etapa a mais**: o Avançar abre o popup *Export As*, e é o botão de lá que
 dispara o ITSDoc — § abaixo (item 73).
 
@@ -3429,8 +3432,28 @@ faz essa bifurcação; ela existe só por causa disto.
 
 **Medido:** 57 B de texto e 256 KB de binário aleatório num POST só, `sha256` idêntico na ida e na
 volta (subiu por CG3Z, voltou por CG3Y). 1 volta do ITSDoc para subir (`Import`), 2 para baixar
-(`Query(FE)` → `Export`). Teto de tamanho não medido — o renderer tem um `maximum file size` e o
-`UpDownSendRequest` trata **413** explicitamente.
+(`Query(FE)` → `Export`).
+
+### O TETO da subida — 100 MiB, e quem corta é o ICM (item 112)
+
+Medido no s4h 758/250 em 06/09/2026 (`work/POC_webgui_import/medicoes/item112-teto.md`), ao byte e
+pelo canal real:
+
+| | |
+|---|---|
+| quem corta | **não** é o renderer: o `maximum file size` dele é `Math.pow(2,31)-1` (2 GiB−1), constante literal, sem parâmetro de sistema por trás (nenhum `updown*`/`its/*` na RSPARAM) |
+| quem corta de verdade | o **ICM**, pelo `icm/HTTP/max_request_size_KB` (102400 aqui), sobre o **corpo inteiro** do POST |
+| a conta | passa enquanto `floor(corpo/1024) <= max_request_size_KB` — 1 023 B **acima** do produto |
+| o teto de ARQUIVO | `tetoDoImport(102400)` = **104 858 437 B**; o multipart custa 186 B fixos (`MULTIPART_IMPORT`) |
+| a contra-prova | 104 858 437 B ACEITO (16 s), 104 858 438 B RECUSADO, no mesmo CG3Z |
+
+⚠ **A recusa não chega como 413.** No `Import` (multipart) o ICM **fecha a conexão no meio do
+envio** — `UND_ERR_SOCKET`/`ECONNRESET`; o `413` limpo só apareceu com corpo `x-www-form-urlencoded`.
+O `updown` estoura nos dois casos e cita o teto; o que **não** dá é decidir pelo código HTTP.
+
+**Subir não fatia** (ao contrário de descer): 64 MB subiram num `Import` só, `sha256` idêntico, a
+~6,5 MB/s. Arquivo maior que o teto não tem via por aqui — teria que ser partido pela aplicação, e
+a CG3Z não tem "anexar ao fim".
 
 ### O `FileOpenDialog` — escolher o arquivo em vez de digitar
 
