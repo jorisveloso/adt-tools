@@ -2581,6 +2581,34 @@ export async function lerSelecao(sessao, alvo = null) {
 }
 
 /**
+ * PURO: o DIAGNÓSTICO que vai junto do erro de `selecionarLinhas` / `desmarcarLinhas` — o estado
+ * de ANTES, o de DEPOIS, e onde cada clique caiu.
+ *
+ * Existe porque a falha intermitente do item 124 (a caixa que não pinta depois de um round-trip)
+ * **não reproduz sob laço**: 68 tentativas no s4h 758/250 em 06/09/2026 (`POC_webgui_selfalha`,
+ * fases A e B, mais a fase H do item 78) e nenhuma falhou. Se ela só aparece na natureza, é a
+ * MENSAGEM que tem de trazer a prova — senão a próxima ocorrência custa outra investigação do zero.
+ *
+ * `coberto` é o sinal caro de obter depois do fato e barato agora: o `apontar` já calcula o
+ * `elementFromPoint` do ponto que vai ser clicado, e a lib jogava fora.
+ */
+export function diagnosticoDaSelecao(antes, depois, gestos = []) {
+  const p = (x) => `[${(x ?? []).join(', ')}]`;
+  const num = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? '?' : Math.round(Number(v)));
+  const tapados = (gestos ?? []).filter((z) => z.coberto);
+  const onde = (gestos ?? []).map((z) => `linha ${z.linha} em (${num(z.x)}, ${num(z.y)})`
+    + `${z.modificadores ? ` mod=${z.modificadores}` : ''}${z.coberto ? ` COBERTO por ${z.noPonto}` : ''}`).join('; ');
+  return `Antes dos cliques a tela tinha ${p(antes?.pintadas)} pintada(s) e o servidor sabia `
+    + `${p(interpretarSelectedRows(antes?.publicado?.linhas))}; célula corrente `
+    + `${JSON.stringify(antes?.celulaCorrente ?? null)}, ${antes?.total ?? 0} linha(s), bloco ${p(antes?.caixas)}. `
+    + `Cliques: ${onde || '(nenhum)'}. `
+    + (tapados.length
+      ? `O ponto de ${tapados.length} clique(s) estava TAPADO por outro elemento — o gesto foi para ele, não para a caixa. `
+      : 'Nenhum ponto estava tapado, então o clique caiu na caixa e o ALV não a acendeu — causa em aberto (item 124). ')
+    + `Depois: ${p(depois?.pintadas)} pintada(s).`;
+}
+
+/**
  * SELECIONA linhas do ALV pela caixa da coluna 0 — o mesmo gesto de quem usa o SAP GUI.
  *
  * ```js
@@ -2634,7 +2662,7 @@ export async function selecionarLinhas(sessao, alvo = null, linhas = [], { acres
     const ultimo = i === pedidas.length - 1;
     const modificadores = (i === 0 && !acrescentar) ? 0 : (faixa && ultimo ? MOD.shift : MOD.ctrl);
     await clique(sessao, p, { modificadores });
-    gestos.push({ linha: n, modificadores });
+    gestos.push({ linha: n, modificadores, x: p.x, y: p.y, noPonto: p.noPonto ?? null, coberto: p.coberto === true });
     await espera(250);
   }
   const d = await avaliar(sessao, jsSelecaoDoGrid(g.id));
@@ -2642,7 +2670,8 @@ export async function selecionarLinhas(sessao, alvo = null, linhas = [], { acres
   const esperadas = faixa ? Array.from({ length: pedidas[1] - pedidas[0] + 1 }, (_, k) => pedidas[0] + k) : pedidas;
   if (!acrescentar && pintadas.join(',') !== esperadas.join(',')) {
     throw new Error(`webgui: selecionarLinhas — pedi [${esperadas.join(', ')}] e a tela ficou com [${pintadas.join(', ')}] pintada(s). ` +
-      `O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)} — um ALV de seleção ÚNICA recusa a segunda linha.`);
+      `O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)} — um ALV de seleção ÚNICA recusa a segunda linha. ` +
+      diagnosticoDaSelecao(b, d, gestos));
   }
   detalhe(`webgui: selecionarLinhas ${g.id} — [${pintadas.join(', ')}] pintada(s) com ${gestos.length} clique(s), PENDENTE de round-trip`);
   return { id: g.id, sid: g.sid, linhas: pintadas, pedidas, gestos, pendente: true, ms: Date.now() - t0 };
@@ -2767,7 +2796,7 @@ export async function desmarcarLinhas(sessao, alvo = null, linhas = []) {
     const p = await apontar(sessao, { id }, { descer: false });
     if (!p) throw new Error(`webgui: desmarcarLinhas — a caixa ${id} não está apontável na tela`);
     await clique(sessao, p, { modificadores: MOD.ctrl });
-    gestos.push({ linha: n, modificadores: MOD.ctrl });
+    gestos.push({ linha: n, modificadores: MOD.ctrl, x: p.x, y: p.y, noPonto: p.noPonto ?? null, coberto: p.coberto === true });
     await espera(250);
   }
   const d = await avaliar(sessao, jsSelecaoDoGrid(g.id));
@@ -2776,7 +2805,8 @@ export async function desmarcarLinhas(sessao, alvo = null, linhas = []) {
   if (teimosas.length) {
     throw new Error(`webgui: desmarcarLinhas — pedi para tirar [${pedidas.join(', ')}] e a(s) linha(s) ` +
       `${teimosas.join(', ')} continua(m) pintada(s) (a tela tem [${pintadas.join(', ')}]). ` +
-      `O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)}.`);
+      `O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)}. ` +
+      diagnosticoDaSelecao(b, d, gestos));
   }
   detalhe(`webgui: desmarcarLinhas ${g.id} — sobrou [${pintadas.join(', ')}] com ${gestos.length} ctrl+clique(s), PENDENTE de round-trip`);
   return { id: g.id, sid: g.sid, linhas: pintadas, pedidas, jaLimpas, gestos, pendente: true, ms: Date.now() - t0 };

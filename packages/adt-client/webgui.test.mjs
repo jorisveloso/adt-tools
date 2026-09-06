@@ -19,7 +19,7 @@ import {
   jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
   jsFragmentoDoGrid, faltaNaFaixaDoBloco, jsPostarNaPagina, postarNaPagina, extratorDeCelulas,
   estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
-  jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD, clique, duploClique,
+  jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD, clique, duploClique, diagnosticoDaSelecao,
   idDoToggleDeSelecao, interpretarTituloDoToggle, normalizarToggle,
   idDaCelula, normalizarCelula,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
@@ -1506,6 +1506,48 @@ test('webgui: o selectedRows COMPACTA faixa com "-" — split(";") perderia linh
   expect(interpretarSelectedRows(';2;1;2;')).toEqual([1, 2]);    // sem repetido, ordenado
 });
 
+// ---------- o DIAGNÓSTICO do clique que não pinta (item 124) ----------
+//
+// A falha intermitente do item 78 ("pedi [1] e a tela ficou com [] pintada(s)") NÃO REPRODUZ sob
+// laço — 68 tentativas no s4h 758/250 em 06/09/2026, nenhuma falhou. Se ela só aparece na natureza,
+// a mensagem tem de bastar para diagnosticar sem uma segunda investigação.
+
+const ANTES = { pintadas: [], caixas: [1, 2, 3], total: 3, publicado: { linhas: ';2;' },
+  celulaCorrente: { linha: 4, coluna: 1 } };
+
+test('webgui: o diagnóstico do item 124 traz o estado de ANTES, que é o que faltou na ocorrência', () => {
+  const m = diagnosticoDaSelecao(ANTES, { pintadas: [] }, [{ linha: 1, modificadores: 0, x: 13.5, y: 227.5, coberto: false, noPonto: 'DIV.urST5SCMetricInner' }]);
+  expect(m).toContain('a tela tinha [] pintada(s)');
+  expect(m).toContain('o servidor sabia [2]');            // o lsdata defasado, decodificado
+  expect(m).toContain('célula corrente {"linha":4,"coluna":1}');
+  expect(m).toContain('bloco [1, 2, 3]');
+  expect(m).toContain('linha 1 em (14, 228)');            // o ponto REALMENTE clicado, arredondado
+  expect(m).toContain('Depois: [] pintada(s).');
+});
+
+test('webgui: o diagnóstico separa o ponto TAPADO do clique que caiu na caixa e não acendeu', () => {
+  const tapado = diagnosticoDaSelecao(ANTES, { pintadas: [] },
+    [{ linha: 1, modificadores: 0, x: 13, y: 227, coberto: true, noPonto: 'DIV.lsBusy' }]);
+  expect(tapado).toContain('COBERTO por DIV.lsBusy');
+  expect(tapado).toContain('O ponto de 1 clique(s) estava TAPADO');
+  expect(tapado).not.toContain('causa em aberto');
+
+  const limpo = diagnosticoDaSelecao(ANTES, { pintadas: [] },
+    [{ linha: 1, modificadores: 0, x: 13, y: 227, coberto: false, noPonto: 'DIV.urST5SCMetricInner' }]);
+  expect(limpo).toContain('o clique caiu na caixa e o ALV não a acendeu');
+  expect(limpo).toContain('causa em aberto (item 124)');
+  expect(limpo).not.toContain('TAPADO');
+});
+
+test('webgui: o diagnóstico mostra o modificador de cada clique e aguenta gesto sem dado', () => {
+  const m = diagnosticoDaSelecao(ANTES, { pintadas: [1] },
+    [{ linha: 1, modificadores: 0, x: 13, y: 227 }, { linha: 3, modificadores: MOD.ctrl, x: 13, y: 277 }]);
+  expect(m).toContain('linha 1 em (13, 227); linha 3 em (13, 277) mod=2');   // só o ctrl aparece
+  // o caso degenerado não pode estourar dentro do throw — seria trocar o erro real por um TypeError
+  expect(() => diagnosticoDaSelecao(null, null, [{ linha: 1 }])).not.toThrow();
+  expect(diagnosticoDaSelecao(null, null, [{ linha: 1 }])).toContain('linha 1 em (?, ?)');
+  expect(diagnosticoDaSelecao(null, null)).toContain('Cliques: (nenhum).');
+});
 test('webgui: a caixa de seleção NÃO tem o sufixo #if da célula de dado', () => {
   expect(idDaCaixa('C102', 3)).toBe('grid#C102#3,0');
   expect(idDaCaixa('C102', 3)).not.toContain('#if');

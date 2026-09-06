@@ -3092,6 +3092,22 @@ apontando o `posicionarGrid`.
 - **ALV de seleção ÚNICA.** O laboratório e o RSPARAM são os dois `selectionMode.type: "rowscols"`.
   `selecionarLinhas` estoura com o modo no texto quando a tela não fica como o pedido, mas o caso
   não foi exercitado num ALV que recuse a segunda linha.
+- **A caixa que NÃO PINTA depois de um round-trip — intermitente, causa ABERTA (item 124).** Visto
+  UMA vez (item 78): `selecionarLinhas` estourou com `pedi [1] e a tela ficou com [] pintada(s)`
+  logo após o round-trip de um `LOCAL&APPEND`. **68 tentativas de reprodução, zero falhas**
+  (`sap-accelerate/work/POC_webgui_selfalha/medicoes/item124-caixa-que-nao-pinta.md`): caíram por
+  medição o timing, a caixa fora do lugar, o **ponto tapado** (`elementFromPoint` = a própria caixa
+  em 40/40), o **toggle** (a linha não estava pintada antes em 40/40), o efeito observador e o
+  navegador recém-aberto. Sem reprodução não há o que consertar — então o **erro passa a carregar a
+  prova**: `diagnosticoDaSelecao` anexa a `selecionarLinhas`/`desmarcarLinhas` o que estava pintado
+  antes, o que o servidor sabia, a célula corrente, e **onde cada clique caiu** (com `COBERTO por`
+  quando o `apontar` viu algo em cima do ponto — sinal que a lib já calculava e jogava fora).
+  Na próxima ocorrência, a mensagem inteira do erro basta para separar os três mundos: overlay,
+  toggle, ou o ALV ignorando um clique que chegou.
+- **A pintura da caixa é SÍNCRONA ao clique** (item 124, 40/40): o despejo com ZERO espera depois do
+  `Input.dispatchMouseEvent` já mostra a linha pintada. Os `espera(250)` de `selecionarLinhas` não
+  são o que faz a caixa acender — eles separam cliques consecutivos de uma seleção MÚLTIPLA, caso
+  que o laço não exercitou. Não os tire com base nesta medição.
 
 ## Desmarcar e limpar a seleção do ALV — o toggle segue o ÍCONE, não a tela (item 119)
 
