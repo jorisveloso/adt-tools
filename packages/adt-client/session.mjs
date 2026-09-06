@@ -11,7 +11,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { RAIZ } from './config.mjs';
 import { confiarNaCA } from './ca.mjs';
-import { newSession, fetchToken, criarConexao } from './sap-connection.mjs';
+import { newSession, fetchToken, criarConexao, erroSessaoMorta } from './sap-connection.mjs';
 import { passo, detalhe } from './log.mjs';
 
 const ARQ_SESSAO = path.join(RAIZ, '.sessao.json');
@@ -100,6 +100,12 @@ export async function conectar(cfg, { ttlMin = TTL_MIN_PADRAO, usuario, senha } 
   await fetchToken(s);
 
   if (!s.token) throw new Error(porQueFalhou(cfg, s.status));
+  // Token NÃO é veredito (item 87). No teto de sessões HTTP o logon responde 200 COM token, mas o
+  // cookie vem sem SAP_SESSIONID — e cachear isso é o pior desfecho possível: o `connect` diz "ok",
+  // some com a senha, e todo comando seguinte (processo novo, lendo o cache) morre em
+  // 400 "Service nicht erreichbar", sem passar por `porQueFalhou`. O critério é o mesmo do item 52 —
+  // a sessão já chega marcada por `fetchToken` — e aqui ele vale ANTES do `gravarSessao`.
+  if (s.nasceuMorta) throw erroSessaoMorta(s);
 
   const dados = gravarSessao(cfg, s, ttlMin);
   cfg.pass = null; // some da memória do processo
