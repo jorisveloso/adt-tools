@@ -4649,6 +4649,18 @@ export async function comandar(sessao, texto, { tetoMs = 25000, publicarValores 
 //    é em elemento. O que a árvore tira da cascata é a leitura entre os passos: o caminho já vem
 //    resolvido por `id`, e `clicar` (que espera o alvo aparecer) basta.
 //
+// ⚠️ **E INFLAR a marcação à mão não muda isso** — medido no item 129 (s4h 758/250, 06/09/2026,
+// `POC_webgui_inflar/medicoes/item129-inflar.md`). Cada popup tem raiz própria no DOM desde o boot
+// (`<span id="mnu0_5809-r">` em `#backpackCUA`, 1×1 em (0,−100000)) com UM filho: o `<xmp>`. Trocar
+// o `<xmp>` pelo próprio texto é o que o renderer faz ao abrir, e à mão cria os **146 `POMNI` dos
+// quatro níveis em 4–5 ms**. Só que o item inflado NÃO ACIONA: nem por clique sintético, nem por
+// clique CDP com o estilo de "aberto" copiado (`z-index:20001` + `top/left` + `lsLCDropShadow`,
+// que é todo o diferencial), com o hit-test dentro do item e o menu ATIVO. O estado que falta é
+// interno ao renderer, e não sai por `sap.g4h` (com `openMenu`/`doWguMenuSelect` instrumentados, a
+// cascata que funciona não registra chamada nenhuma). Inflar é inofensivo — a cascata sobre
+// inflados chega igual (3 536 ms contra 3 221 ms) — e inútil: para LER, `arvoreDeMenu` é melhor,
+// porque não toca na página (inflar consome os `<xmp>` e leva a página de 630 a 2 955 elementos).
+//
 // ⚠️ TRÊS armadilhas, todas medidas, todas silenciosas:
 //  1. **Há DOIS menus `POMNI` na tela.** O da barra (`wnd[0]/mbar/…`) e o de informação do sistema
 //     (`sysInfoAreaMenuItem*`), que tem um item chamado **"Sistema"** — o mesmo rótulo do menu
@@ -4850,7 +4862,8 @@ export async function abrirMenu(sessao, { tetoMs = 6000, tentativas = 4 } = {}) 
  * último nó sem tocar em nada: é assim que se DESCOBRE o menu de uma tela.
  *
  * ⚠️ O ACIONAMENTO continua CASCATA, e tem de ser: a folha só vira elemento depois de o pai ser
- * clicado (§ item 82), e abrir um irmão FECHA o submenu anterior. O que a árvore tirou daqui foi a
+ * clicado (§ item 82 — e inflar a marcação à mão cria o elemento mas NÃO aciona, item 129), e
+ * abrir um irmão FECHA o submenu anterior. O que a árvore tirou daqui foi a
  * LEITURA entre os passos — cada nó já vem com o `id`, e o `clicar` espera o alvo aparecer, que é
  * a espera não-síncrona de que o submenu precisa.
  *

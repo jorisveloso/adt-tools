@@ -1239,6 +1239,30 @@ entra na página) e é por isso que `navegarMenu` resolve o caminho INTEIRO — 
 item cinza — **antes de tocar na tela**: medido na SE38, a guarda do cinza caiu de 13 559 ms (e 51
 elementos materializados, com o menu ficando aberto) para 6 ms com o DOM intocado.
 
+### ⚠ Inflar o `<xmp>` à mão cria os elementos e NÃO aciona — a cascata é irredutível
+
+Medido no s4h 758/250 em 2026-09-06 (item 129, `POC_webgui_inflar/medicoes/item129-inflar.md`).
+Cada popup tem **raiz própria já no DOM** desde o boot — `<span id="mnu0_5809-r">` dentro de
+`#backpackCUA`, 1×1 em (0, −100000), com UM filho: o `<xmp>` da sua marcação. Inflar é trocar o
+`<xmp>` pelo próprio texto, que é o que o renderer faz ao abrir (o `<xmp>` **some**, 28 → 27).
+Feito à mão para as 28 de uma vez: **146 `POMNI` vivos, os quatro níveis, em 4–5 ms**.
+
+E não serve para acionar. O item inflado ignora **quatro** gestos: o clique sintético
+(`passou: true`, `defaultPrevented: false`, `mudou: false`); o clique CDP sem estilo (impossível —
+o popup nasce fora da tela); o clique CDP com a raiz movida (o `elementFromPoint` devolve a tela
+por baixo); e o clique CDP com o **estilo de "aberto" copiado** — `position:absolute; z-index:20001;
+overflow:visible; width/height; visibility:visible; display:inline; top/left` mais as classes
+`lsLCDropShadow lsScope--s`, que é TODO o diferencial entre inflado e aberto —, com o hit-test
+caindo dentro do item e o menu ATIVO (`aria-expanded: true`): **`mudou: false`**. O que falta não
+está no DOM, está no estado interno do renderer — que também não é alcançável por `sap.g4h`: com
+`openMenu`, `doWguMenuSelect` e `closeWindow` instrumentados, a cascata que FUNCIONA não registra
+**nenhuma** chamada.
+
+Inflar é inofensivo (com tudo inflado, o botão abre o nível 0 normalmente e a cascata inteira chega
+à SA38 em 3 536 ms contra 3 221 ms da normal) e é tudo o que ele é: **não poupa um gesto**. Para
+LER é pior do que o `arvoreDeMenu`, que não toca na página — inflar consome os `<xmp>` e leva a
+página de 630 para 2 955 elementos. Por isso **nada disto entrou na lib**.
+
 Aberto, o menu é o modelo mais legível deste canal: **o `id` de cada item É o caminho**, igual ao
 SID do SAP GUI.
 
@@ -1347,9 +1371,13 @@ canal:
 - ~~A árvore do SAP Easy Access (`TV` + `MG`)~~ **medida** (item 50): é outro caminho, com outro
   vocabulário — § "A ÁRVORE do SAP Easy Access" abaixo. E o `action/74` do `lsevents` dela **não
   existe** no protocolo.
-- **A árvore inteira também está no DOM da via CDP, invisível?** O navegador recebe o mesmo
-  delta-update que traz os 146 itens. Se estiver, a cascata de cliques daqui vira uma leitura só
-  (fila item 82).
+- ~~A árvore inteira também está no DOM da via CDP, invisível?~~ **medida** (item 82): está, como
+  marcação inerte nos `<xmp>` — é o `arvoreDeMenu` (§ acima). E ~~inflar essa marcação para matar a
+  cascata no ACIONAMENTO~~ **medido que não** (item 129): os elementos nascem em 4–5 ms e não
+  acionam (§ "⚠ Inflar o `<xmp>` à mão…").
+- **Por onde sai o acionamento do menu no navegador?** Não é `sap.g4h` (item 129, instrumentado).
+  A via HTTP aciona a folha com um `action/4` levando o SID, sem menu nenhum (item 49); se o mesmo
+  POST for alcançável do lado do navegador, a cascata morre — e não por inflação (fila item 131).
 - ~~Folha de menu que abre POPUP~~ **medida** (item 83): o `mudou` diz QUE mudou, nunca O QUE —
   quem separa "abriu modal" de "trocou de tela" é o `popup` que a via HTTP agora devolve
   (§ "A folha de menu que abre POPUP" abaixo).
