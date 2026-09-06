@@ -1965,7 +1965,7 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   (§ "`lerGridInteiro`"). ~~Célula editável~~ **feita** (item 47): `escreverCelula` pelo navegador, com o ciclo
   escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
   na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
-  só existe no despejo DOM), e no grid faltam **ordenar/filtrar** e **selecionar linha**. ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
+  só existe no despejo DOM), e no grid falta **ordenar/filtrar**. ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -2211,6 +2211,104 @@ Duas decisões de desenho que a medição impôs, e que valem para qualquer gest
   janela para 200 linhas longe. `posicionarGrid` espera a janela pintada CONTER a linha; e se não
   contiver dentro das tentativas, **estoura dizendo onde ela ficou** — um posicionamento que "quase"
   chega e volta calado faria o clique seguinte cair na linha errada.
+
+## Selecionar linha no ALV — o gesto é CLIENTE, e a prova é o ABAP (item 76)
+
+**Medido no s4h 758/250 em 2026-09-05** (fila `adt-client`, item 76; evidência em
+`sap-accelerate/work/POC_webgui_grid_sel/medicoes/item76-selecionar.md`, fases A–G). O item 47 tinha
+visto o `action/50`/`action/53` saírem sozinhos ao clicar numa célula; aqui a seleção foi exercitada
+de propósito, no laboratório `ZJBV_ALV47_EDIT`, que ganhou o fcode **`FC02`** para despejar
+`get_selected_rows`/`get_selected_columns`/`get_selected_cells`/`get_current_cell`.
+
+```js
+import { abrirNavegador, ir, urlWebgui, selecionarLinhas, lerSelecao, comandar } from './webgui.mjs';
+
+await selecionarLinhas(s, null, [2]);                       // clique simples: SUBSTITUI
+await selecionarLinhas(s, null, [1, 3]);                    // ctrl no resto: acrescenta
+await selecionarLinhas(s, null, [1, 3], { faixa: true });   // shift no último: 1..3
+await selecionarLinhas(s, null, [5], { acrescentar: true }); // sem desfazer o que já estava
+
+const sel = await lerSelecao(s);
+// { linhas: [1, 2, 3],                       ← o que a TELA mostra (a verdade)
+//   publicado: { linhas: [2], texto: ';2;' },← o que o SERVIDOR sabe (um round-trip atrás)
+//   defasado: true, celulaCorrente: { linha: 3, coluna: 0 },
+//   bloco: { de: 1, ate: 3, n: 3 }, total: 3, modo: { type: 'rowscols', … } }
+
+await comandar(s, 'FC02');   // ← só AGORA o action/47 sai, e o ABAP enxerga
+```
+
+### A caixa não está no `<tr>` do dado
+
+O grid do WebGUI monta **duas faixas de `<tr>` paralelas**, e a caixa de seleção vive na congelada:
+
+| | `<tr>` | id | tag |
+|---|---|---|---|
+| dado | `<cid>-mrss-cont-**none**-Row-<n-1>` | `grid#<cid>#<n>,<c>` (campo: `…#if`) | `<td>` |
+| **caixa da linha** | `<cid>-mrss-cont-**left**-Row-<n-1>` | `grid#<cid>#<n>,0` — **sem `#if`** | `<td subct="SC">` |
+| cabeçalho da caixa | `<cid>-mrss-hdr-left-Row-0` | `grid#<cid>#0,0` | `<th subct="HC">` |
+
+A caixa é uma `SAPTABLECSSELECTIONCELL`; o cabeçalho, `{"2":"SELECTIONCOLUMN","3":"SELECTION_TOGGLE"}`.
+Quem procura a coluna 0 no `<tr>` do dado não acha nada — foi o que a fase A fez, e por isso ela
+concluiu (errado) que a coluna 0 não existe, com o `lsdata` dizendo `hasSelectionColumn: true`.
+
+O estado de cada caixa está na **classe do `<div role="gridcell">`** de dentro:
+`urSTRowUnSelIcon urST4LbUnselIcon` ↔ `urSTRowSelIcon urST4LbSelIcon`.
+
+### ⚠ Zero requisição — e o `lsdata` está sempre um round-trip atrás
+
+Cinco gestos de seleção, cada um com 2,5 s de espera (mais que o `delayedChangedSelectionTimeout`
+de 1500 ms que o próprio `lsdata` anuncia): **0 requisição**, nas cinco. E o `selectedRows` ficou
+`";"` o tempo todo.
+
+É o mesmo modo de falha do scrollbar no item 75: o `lsdata` é o que o **servidor** publicou. Com as
+linhas 1 e 3 pintadas na tela ele ainda dizia `";2;"` — a seleção do round-trip anterior —, e só
+virou `";1;3;"` **depois** do `FC02`. Por isso `lerSelecao` responde pela classe da caixa e devolve
+o `publicado` à parte, com `defasado: true` quando os dois divergem.
+
+### A prova: o `action/47` e o que o ABAP respondeu
+
+| pintado no DOM | o batch levou | **`get_selected_rows` devolveu** |
+|---|---|---|
+| nenhuma (contra-prova) | — | `rows=0: cols=0: cells=1 cur=1/1/ID` |
+| linha 2 | `action/47 rows=;2;` | `rows=1:0000000002` |
+| 1 e 3 (ctrl) | `action/47 rows=;1;3;` | `rows=2:0000000001,0000000003` |
+| 1..3 (shift) | `action/47 rows=;1-3;` | `rows=3:…001,…002,…003` |
+| clique numa **célula** | `action/50` + `action/53`, **sem `action/47`** | `rows=0: cells=1 cur=2/3/QTD` |
+
+`action/47` é a seleção de LINHAS, `action/48` a de células, `action/50` o bloco e `action/53` a
+célula corrente. Duas armadilhas:
+
+1. **`action/47` compacta faixa contígua com `-`**: 1, 2 e 3 saem como `;1-3;`, não `;1;2;3;`. Um
+   `split(';')` leria "a linha 1-3" e perderia duas linhas — é o que `interpretarSelectedRows` trata.
+2. **Clicar numa célula NÃO seleciona a linha.** O que muda é a célula corrente e o bloco; o
+   `get_selected_rows` volta vazio. Quem quer linha clica na caixa da coluna 0.
+
+### Compõe com o `posicionarGrid`, e o bloco só cresce
+
+No RSPARAM (1617 linhas, somente leitura, `hasSelectionColumn: true`):
+
+```
+posicionarGrid(s, null, 900)    janela 888..914, 1 arrasto, 1211 ms
+selecionarLinhas(s, null, [900]) linhas=[900] pendente=true, 368 ms
+lerSelecao(s)                    linhas=[900] bloco=1..941 (247 caixas) defasado=true
+voltar para a linha 1            e a caixa da 900 CONTINUA no DOM, ainda lida como selecionada
+```
+
+O bloco de caixas **só cresce** (166 → 247): rolar não apaga a seleção. O que `lerSelecao` não
+enxerga é a linha que **nunca** esteve na tela — aí `selecionarLinhas` estoura dizendo o bloco e
+apontando o `posicionarGrid`.
+
+### O que ainda NÃO está medido
+
+- **Desmarcar.** O cabeçalho `grid#<cid>#0,0` **marca tudo** com a seleção limpa (3 de 3, 0
+  requisição), mas com tudo marcado o mesmo clique **não desmarcou** — apesar do nome
+  `SELECTION_TOGGLE`. Não há gesto medido para limpar a seleção.
+- **Selecionar COLUNA e BLOCO de células.** `action/48` (`cells=`) e `action/50`
+  (`top_left`/`bottom_right`) existem, e o `lsevents` publica `ClientColumnSelect`/`BlockSelect`;
+  `get_selected_columns` respondeu `0` em todos os casos porque ninguém selecionou coluna.
+- **ALV de seleção ÚNICA.** O laboratório e o RSPARAM são os dois `selectionMode.type: "rowscols"`.
+  `selecionarLinhas` estoura com o modo no texto quando a tela não fica como o pedido, mas o caso
+  não foi exercitado num ALV que recuse a segunda linha.
 
 ## Escrever numa célula do ALV — e provar que gravou (item 47)
 

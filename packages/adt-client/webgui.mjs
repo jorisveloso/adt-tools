@@ -1731,6 +1731,201 @@ export async function posicionarGrid(sessao, alvo = null, linha, { tetoMs = 1500
   return { id: g.id, linha: n, janela: e.janela, gestos, pedidos: pedidos() - p0, ms: Date.now() - t0 };
 }
 
+// ---------- SELECIONAR linha e célula no ALV (item 76) ----------
+//
+// Medido no s4h 758/250 em 05/09/2026 (`sap-accelerate/work/POC_webgui_grid_sel`, fases A–F, no
+// laboratório `ZJBV_ALV47_EDIT` do item 47, que ganhou o fcode `FC02` para despejar
+// `get_selected_rows`/`get_selected_columns`/`get_selected_cells`/`get_current_cell`):
+//
+//   • **a caixa de seleção da linha é `grid#<cid>#<n>,0`** — um `<td subct="SC">` de tipo
+//     `SAPTABLECSSELECTIONCELL`, e ele NÃO tem o sufixo `#if` das células de dado. Ele vive num
+//     `<tr>` diferente das células: a faixa CONGELADA (`<cid>-mrss-cont-left-Row-<n-1>`), enquanto
+//     o dado está em `-cont-none-Row-<n-1>`. Procurar a coluna 0 no `<tr>` do dado não acha nada.
+//   • **os três gestos do ALV do SAP GUI valem aqui**: clique simples SUBSTITUI a seleção,
+//     `ctrl`+clique ACRESCENTA, `shift`+clique fecha a FAIXA a partir da última âncora.
+//   • **o gesto é 100% CLIENTE: 5 gestos, ZERO requisição.** Nada de seleção sai na rede na hora —
+//     nem depois do `delayedChangedSelectionTimeout` (1500 ms) que o `lsdata` anuncia.
+//   • **e o ABAP a enxerga no round-trip seguinte**, provado pelo `FC02` do laboratório:
+//
+//     | pintado no DOM | o que o batch levou | o que o ABAP respondeu |
+//     |---|---|---|
+//     | nenhuma (contra-prova) | — | `rows=0: cells=1 cur=1/1/ID` |
+//     | linha 2 | `action/47 rows=;2;` | `rows=1:0000000002` |
+//     | linhas 1 e 3 (ctrl) | `action/47 rows=;1;3;` | `rows=2:0000000001,0000000003` |
+//     | linhas 1..3 (shift) | `action/47 rows=;1-3;` | `rows=3:…1,…2,…3` |
+//     | clique numa CÉLULA | `action/50` + `action/53`, sem `action/47` | `rows=0: cells=1 cur=2/3/QTD` |
+//
+//     `action/47` é a seleção de LINHAS (e ela compacta faixa: `;1-3;`), `action/48` a de células,
+//     `action/50` o bloco e `action/53` a célula corrente. Clicar numa célula **não** seleciona
+//     linha: sai `cells=1`, e `get_selected_rows` volta vazio.
+//
+// ⚠️ **O `selectedRows` do `lsdata` está sempre UM ROUND-TRIP ATRASADO.** Ele é o que o SERVIDOR
+// publicou: com as linhas 1 e 3 pintadas na tela, ele ainda dizia `";2;"` (a seleção do round-trip
+// anterior), e só virou `";1;3;"` DEPOIS do `FC02`. Quem sabe a verdade é a CLASSE da caixa
+// (`urSTRowSelIcon`) — é por ela que `lerSelecao` responde, e o `publicado` sai à parte, com
+// `defasado: true` quando os dois divergem. É o mesmo modo de falha do scrollbar no item 75:
+// confiar no estado publicado seria ler sempre a seleção passada.
+
+/** O id da caixa de seleção de uma linha — sem o `#if` que a célula de dado tem. */
+export const idDaCaixa = (cid, linha) => `grid#${cid}#${Number(linha)},0`;
+
+/**
+ * PURO: o `selectedRows` do `lsdata` (`";1;3;"`, `";1-3;"`, `";"`) vira lista de linhas 1-based.
+ * O framework COMPACTA faixa contígua com `-` (medido: 1,2,3 selecionadas saem como `";1-3;"`),
+ * então quem só fizesse `split(';')` leria "a linha 1-3" e perderia duas linhas.
+ */
+export function interpretarSelectedRows(texto) {
+  const out = [];
+  for (const p of String(texto ?? '').split(';')) {
+    const t = p.trim();
+    if (!t) continue;
+    const m = /^(\d+)-(\d+)$/.exec(t);
+    if (m) { for (let i = Number(m[1]); i <= Number(m[2]); i++) out.push(i); continue; }
+    if (/^\d+$/.test(t)) out.push(Number(t));
+  }
+  return [...new Set(out)].sort((a, b) => a - b);
+}
+
+/**
+ * PURO: a expressão JS que lê a seleção do grid — `{ cid, pintadas, caixas, publicado,
+ * celulaCorrente, … }`. `pintadas` sai da CLASSE da caixa (o estado do cliente, que é a verdade);
+ * `publicado` sai do `lsdata` (o do servidor, atrasado).
+ */
+export const jsSelecaoDoGrid = (cid) => `(() => {
+  const p = (s) => { try { return s ? JSON.parse(s) : null; } catch (x) { return null; } };
+  const cid = ${JSON.stringify(String(cid))};
+  const grid = document.getElementById(cid);
+  if (!grid) return null;
+  const d = p(grid.getAttribute('lsdata')) || {};
+  const sid = Object.values(d).find((v) => v && typeof v === 'object' && v.Type === 'GuiGridView') || {};
+  const pintadas = [];
+  const caixas = [];
+  for (const td of document.querySelectorAll('td[subct="SC"]')) {
+    const q = td.id.split('#');
+    if (q.length !== 3 || q[1] !== cid) continue;
+    const n = Number(q[2].split(',')[0]);
+    if (!Number.isFinite(n) || n < 1) continue;
+    const div = td.querySelector('div[role="gridcell"]');
+    if (div && /urSTRowSelIcon|urST4LbSelIcon/.test(div.className)) pintadas.push(n);
+    caixas.push(n);
+  }
+  pintadas.sort((a, b) => a - b);
+  caixas.sort((a, b) => a - b);
+  return { cid, pintadas, caixas,
+    publicado: { linhas: sid.selectedRows ?? null, celulas: sid.selectedCells ?? null,
+      colunas: sid.selectedColumns ?? null, bloco: sid.selectedBlock ?? null },
+    celulaCorrente: { linha: sid.currentCellRow ?? null, coluna: sid.currentCellColumn ?? null },
+    temColunaDeSelecao: sid.hasSelectionColumn === true,
+    modo: sid.selectionMode ?? null, total: sid.totalRows || 0 };
+})()`;
+
+/**
+ * Lê a seleção do ALV **do que a tela mostra** — sem tocar a rede.
+ *
+ * ```js
+ * const sel = await lerSelecao(s);
+ * sel.linhas       // [1, 3] — as linhas pintadas AGORA (1-based, absolutas)
+ * sel.publicado    // { linhas: [2], texto: ';2;' } — o que o SERVIDOR sabe, um round-trip atrás
+ * sel.defasado     // true: o servidor ainda não viu o que está pintado
+ * ```
+ *
+ * `alvo` escolhe o grid como em `lerGrid` (índice, `{ id }`, `{ sid }`). Devolve
+ * `{ id, sid, linhas, publicado, defasado, celulaCorrente, bloco, total, modo, ms }`.
+ *
+ * ⚠️ **`linhas` só enxerga o BLOCO carregado** — `bloco` diz que faixa de caixas existe. O bloco
+ * só CRESCE (medido no RSPARAM: 166 caixas na abertura, 247 depois de rolar até a linha 900, e a
+ * caixa da 900 continuou lá ao voltar para o topo), então a seleção não se perde ao rolar; o que
+ * nunca esteve na tela é que não tem caixa. Quem quiser a seleção que o ABAP vê, com bloco ou sem,
+ * pergunta ao ABAP (um fcode que despeje `get_selected_rows`).
+ */
+export async function lerSelecao(sessao, alvo = null) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'lerSelecao');
+  const b = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: lerSelecao — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  const publicadas = interpretarSelectedRows(b.publicado?.linhas);
+  const linhas = b.pintadas ?? [];
+  const caixas = b.caixas ?? [];
+  const defasado = linhas.join(',') !== publicadas.join(',');
+  detalhe(`webgui: lerSelecao ${g.id} — ${linhas.length} linha(s) pintada(s) [${linhas.join(', ')}], ` +
+    `o servidor sabe [${publicadas.join(', ')}]${defasado ? ' (DEFASADO)' : ''}`);
+  return { id: g.id, sid: g.sid, linhas,
+    publicado: { linhas: publicadas, texto: b.publicado?.linhas ?? null, celulas: b.publicado?.celulas ?? null,
+      colunas: b.publicado?.colunas ?? null, bloco: b.publicado?.bloco ?? null },
+    defasado, celulaCorrente: b.celulaCorrente ?? null,
+    bloco: { de: caixas[0] ?? null, ate: caixas[caixas.length - 1] ?? null, n: caixas.length },
+    total: b.total ?? 0, modo: b.modo ?? null, ms: Date.now() - t0 };
+}
+
+/**
+ * SELECIONA linhas do ALV pela caixa da coluna 0 — o mesmo gesto de quem usa o SAP GUI.
+ *
+ * ```js
+ * await selecionarLinhas(s, null, [2]);                        // só a linha 2
+ * await selecionarLinhas(s, null, [1, 3]);                     // 1 e 3 (ctrl no resto)
+ * await selecionarLinhas(s, null, [1, 3], { faixa: true });    // 1..3 de uma vez (shift)
+ * await selecionarLinhas(s, null, [5], { acrescentar: true }); // sem desfazer o que já estava
+ * await comandar(s, 'FC02');                                   // e AGORA o ABAP a vê
+ * ```
+ *
+ * `alvo` escolhe o grid como em `lerGrid`. `faixa: true` usa `shift` no ÚLTIMO clique, fechando
+ * tudo entre a primeira e a última (aí `linhas` são as duas pontas). `acrescentar: true` não
+ * substitui a seleção existente — o primeiro clique também vai com `ctrl`.
+ *
+ * ⚠️ **NÃO manda nada ao servidor** — por isso devolve `pendente: true`, como o `escreverCelula`.
+ * A seleção viaja como `action/47` no próximo round-trip (`comandar`, `acionar`), e antes disso o
+ * ABAP não a enxerga. Um `get_selected_rows` sem round-trip no meio devolve a seleção ANTERIOR.
+ *
+ * ⚠️ Estoura quando a linha não tem caixa no DOM (rolou para fora do bloco): chegar até ela é
+ * navegação — `posicionarGrid(sessao, alvo, linha)` primeiro.
+ */
+export async function selecionarLinhas(sessao, alvo = null, linhas = [], { acrescentar = false, faixa = false } = {}) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'selecionarLinhas');
+  const b = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  if (!b) throw new Error(`webgui: selecionarLinhas — o grid ${g.id} sumiu do DOM entre a leitura da tela e o despejo`);
+  if (b.temColunaDeSelecao !== true) {
+    throw new Error(`webgui: selecionarLinhas — o grid ${g.id} não tem coluna de seleção ` +
+      `(o lsdata dele diz hasSelectionColumn=${b.temColunaDeSelecao}). Sem a caixa da coluna 0 não há o que clicar; ` +
+      'mover a célula corrente ainda dá, clicando na célula de dado.');
+  }
+  const pedidas = [...new Set((linhas ?? []).map(Number))].sort((x, y) => x - y);
+  if (!pedidas.length) throw new Error('webgui: selecionarLinhas — nenhuma linha pedida');
+  if (faixa && pedidas.length !== 2) {
+    throw new Error(`webgui: selecionarLinhas — com { faixa: true } são exatamente 2 linhas (as pontas da faixa), e vieram ${pedidas.length}`);
+  }
+  const caixas = new Set(b.caixas ?? []);
+  const fora = pedidas.filter((n) => !caixas.has(n));
+  if (fora.length) {
+    const c = b.caixas ?? [];
+    throw new Error(`webgui: selecionarLinhas — a(s) linha(s) ${fora.join(', ')} não tem caixa no bloco carregado ` +
+      `(${c[0] ?? '-'}..${c[c.length - 1] ?? '-'} de ${b.total}). ` +
+      'Chegar a uma linha distante é navegação: `posicionarGrid(sessao, alvo, linha)`.');
+  }
+  const gestos = [];
+  for (let i = 0; i < pedidas.length; i++) {
+    const n = pedidas[i];
+    const id = idDaCaixa(g.id, n);
+    const p = await apontar(sessao, { id }, { descer: false });
+    if (!p) throw new Error(`webgui: selecionarLinhas — a caixa ${id} não está apontável na tela`);
+    const ultimo = i === pedidas.length - 1;
+    const modificadores = (i === 0 && !acrescentar) ? 0 : (faixa && ultimo ? MOD.shift : MOD.ctrl);
+    await clique(sessao, p, { modificadores });
+    gestos.push({ linha: n, modificadores });
+    await espera(250);
+  }
+  const d = await avaliar(sessao, jsSelecaoDoGrid(g.id));
+  const pintadas = d?.pintadas ?? [];
+  const esperadas = faixa ? Array.from({ length: pedidas[1] - pedidas[0] + 1 }, (_, k) => pedidas[0] + k) : pedidas;
+  if (!acrescentar && pintadas.join(',') !== esperadas.join(',')) {
+    throw new Error(`webgui: selecionarLinhas — pedi [${esperadas.join(', ')}] e a tela ficou com [${pintadas.join(', ')}] pintada(s). ` +
+      `O modo de seleção deste grid é ${JSON.stringify(d?.modo ?? null)} — um ALV de seleção ÚNICA recusa a segunda linha.`);
+  }
+  detalhe(`webgui: selecionarLinhas ${g.id} — [${pintadas.join(', ')}] pintada(s) com ${gestos.length} clique(s), PENDENTE de round-trip`);
+  return { id: g.id, sid: g.sid, linhas: pintadas, pedidas, gestos, pendente: true, ms: Date.now() - t0 };
+}
+
+
 export async function print(sessao, arquivo) {
   const r = await sessao.cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   fs.writeFileSync(arquivo, Buffer.from(r.data, 'base64'));
@@ -1901,12 +2096,19 @@ export async function apontar(sessao, alvo, { descer = true, dentro = null } = {
  * do nó só entra quando não há rótulo (ícone sem tooltip existe). */
 export const nomeDoGesto = (g) => (g?.rotulo ? `"${g.rotulo}"` : `<sem rótulo> (${g?.nome})`);
 
+/** Os modificadores do CDP (`Input.dispatchMouseEvent.modifiers`), que são um mapa de bits. */
+export const MOD = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
+
 /** O gesto de mouse INTEIRO. Medido: press+release sem `buttons` e sem o `mouseMoved` antes não
- * aciona o Unified Renderer. */
-export async function clique(sessao, p) {
-  await sessao.cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y, buttons: 0 });
-  await sessao.cmd('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', buttons: 1, clickCount: 1 });
-  await sessao.cmd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'left', buttons: 0, clickCount: 1 });
+ * aciona o Unified Renderer.
+ *
+ * `modificadores` é o mapa de bits do `MOD` — `MOD.ctrl` para acrescentar à seleção do ALV,
+ * `MOD.shift` para a faixa (§ "Selecionar linha e célula no ALV"). Sem ele, clique simples. */
+export async function clique(sessao, p, { modificadores = 0 } = {}) {
+  const m = { x: p.x, y: p.y, modifiers: modificadores };
+  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseMoved', buttons: 0 });
+  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1 });
+  await sessao.cmd('Input.dispatchMouseEvent', { ...m, type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 });
 }
 
 /**

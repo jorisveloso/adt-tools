@@ -16,6 +16,7 @@ import {
   jsBlocoDoGrid, linhasDoBloco, escolherGrid, indiceDaColuna,
   jsFragmentoDoGrid, faltaNaFaixaDoBloco,
   estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
+  jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -1134,4 +1135,89 @@ test('webgui: grid sem scrollbar devolve hdl/bar nulos — é o que faz posicion
   expect(r.hdl).toBe(null);
   expect(r.bar).toBe(null);
   expect(rodarJanela(jsJanelaDoGrid('C999'))).toBe(null);     // grid que não existe
+});
+
+// ---------- selecionar linha e célula no ALV (item 76) ----------
+
+// o `lsdata` REAL do grid `C102` do laboratório ZJBV_ALV47_EDIT (s4h 758/250, 05/09/2026,
+// `POC_webgui_grid_sel/medicoes/raw/a-anatomia.json`) — só as chaves que a seleção usa
+const LSDATA_SEL = (extra = {}) => JSON.stringify({
+  x: 0,
+  34: {
+    SID: 'wnd[0]/shellcont/shell', Type: 'GuiGridView', editable: true,
+    ColumnIDs: ['ID', 'NOME', 'QTD'], totalRows: 3, visibleRows: 25,
+    selectedRow: -1, selectedRows: ';', selectedCells: '', selectedColumns: ';',
+    selectedBlock: { RefCol: -1, RefRow: -1, TopLeftCol: -1, TopLeftRow: -1, BottomRightCol: -1, BottomRightRow: -1 },
+    selectionMode: { web: 0, rows: 2, type: 'rowscols', cells: 0, native: true, columns: 2 },
+    currentCellRow: 1, currentCellColumn: 1, hasSelectionColumn: true,
+    delayedChangedSelectionTimeout: 1500,
+    ...extra,
+  },
+});
+
+// a caixa da coluna 0: `<td subct="SC">` com um `<div role="gridcell">` cuja CLASSE diz o estado
+const caixaReal = (linha, selecionada, cid = 'C102') => ({
+  id: `grid#${cid}#${linha},0`,
+  parentElement: { className: '' },
+  querySelector: (sel) => (sel !== 'div[role="gridcell"]' ? null : {
+    className: 'urBorderBox lsSapTable--expandWidth lsSTCellHeight100 urSTSCOuterDiv ' +
+      (selecionada ? 'urSTRowSelIcon urST4LbSelIcon' : 'urSTRowUnSelIcon urST4LbUnselIcon'),
+  }),
+});
+
+const rodarSelecao = (js, { caixas = [], lsdata = LSDATA_SEL(), cid = 'C102' } = {}) => {
+  const documento = {
+    getElementById: (id) => (id === cid ? { getAttribute: (a) => (a === 'lsdata' ? lsdata : null) } : null),
+    querySelectorAll: (sel) => (sel === 'td[subct="SC"]' ? caixas : []),
+  };
+  return new Function('document', `return ${js}`)(documento);
+};
+
+test('webgui: quem diz a seleção é a CLASSE da caixa, não o lsdata (que fica um round-trip atrás)', () => {
+  // a tela tem 1 e 3 pintadas; o servidor ainda publica a seleção ANTERIOR (só a 2)
+  const r = rodarSelecao(jsSelecaoDoGrid('C102'), {
+    caixas: [caixaReal(1, true), caixaReal(2, false), caixaReal(3, true)],
+    lsdata: LSDATA_SEL({ selectedRows: ';2;', currentCellRow: 2, currentCellColumn: 3 }),
+  });
+  expect(r.pintadas).toEqual([1, 3]);
+  expect(r.caixas).toEqual([1, 2, 3]);                       // o BLOCO: que linhas têm caixa
+  expect(r.publicado.linhas).toBe(';2;');
+  expect(r.celulaCorrente).toEqual({ linha: 2, coluna: 3 });
+  expect(r.temColunaDeSelecao).toBe(true);
+  expect(r.modo.type).toBe('rowscols');
+  expect(r.total).toBe(3);
+  expect(rodarSelecao(jsSelecaoDoGrid('C999'))).toBe(null);  // grid fora da tela
+});
+
+test('webgui: a caixa de OUTRO grid, o cabeçalho e a caixa sem div não entram na conta', () => {
+  const r = rodarSelecao(jsSelecaoDoGrid('C102'), {
+    caixas: [
+      caixaReal(1, true),
+      caixaReal(2, true, 'C999'),                            // outro grid
+      { ...caixaReal(0, true), id: 'grid#C102#0,0' },         // o cabeçalho (SELECTION_TOGGLE)
+      { id: 'grid#C102#3,0', parentElement: {}, querySelector: () => null },   // sem o div interno
+    ],
+  });
+  expect(r.pintadas).toEqual([1]);
+  expect(r.caixas).toEqual([1, 3]);                          // a 3 tem caixa, só não está pintada
+});
+
+test('webgui: o selectedRows COMPACTA faixa com "-" — split(";") perderia linhas', () => {
+  expect(interpretarSelectedRows(';1-3;')).toEqual([1, 2, 3]);   // medido: 1,2,3 saem assim
+  expect(interpretarSelectedRows(';1;3;')).toEqual([1, 3]);      // medido: ctrl+clique
+  expect(interpretarSelectedRows(';2;')).toEqual([2]);           // medido: uma linha
+  expect(interpretarSelectedRows(';')).toEqual([]);              // medido: nenhuma
+  expect(interpretarSelectedRows('')).toEqual([]);
+  expect(interpretarSelectedRows(null)).toEqual([]);
+  expect(interpretarSelectedRows(';1-3;7;10-11;')).toEqual([1, 2, 3, 7, 10, 11]);
+  expect(interpretarSelectedRows(';2;1;2;')).toEqual([1, 2]);    // sem repetido, ordenado
+});
+
+test('webgui: a caixa de seleção NÃO tem o sufixo #if da célula de dado', () => {
+  expect(idDaCaixa('C102', 3)).toBe('grid#C102#3,0');
+  expect(idDaCaixa('C102', 3)).not.toContain('#if');
+});
+
+test('webgui: os modificadores do clique são o mapa de bits do CDP', () => {
+  expect(MOD).toEqual({ alt: 1, ctrl: 2, meta: 4, shift: 8 });
 });
