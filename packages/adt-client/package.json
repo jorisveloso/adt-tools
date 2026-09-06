@@ -23,6 +23,7 @@
     "./probe": "./probe.mjs",
     "./canais": "./canais.mjs",
     "./config": "./config.mjs",
+    "./ca": "./ca.mjs",
     "./session": "./session.mjs",
     "./search": "./search.mjs",
     "./landscape": "./landscape.mjs",

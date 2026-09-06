@@ -9,6 +9,10 @@
     "  certificado — SÓ para ICM em HTTPS com certificado de CA interna: o pino \"sha256/<base64>\" que",
     "                o Chrome do canal webgui aceita (leia-o uma vez com spkiDoHost(url)), ou true para não",
     "                validar certificado nenhum naquela sessão. Ausente = validação normal, que é o default.",
+    "  ca          — a MESMA situação vista pelo Node, que é outro validador: sem isto o fetch de todo",
+    "                canal ADT (adt, its, icm, probe, rfc-soap) morre no handshake. Aponte o arquivo .pem",
+    "                da CA do cliente, ou \"sistema\" para usar as CAs já instaladas no Windows. Aceita lista.",
+    "                Um ICM com CA interna quer OS DOIS: certificado (Chrome) e ca (Node).",
     "Alias que não existe no SAP GUI também pode ser cadastrado aqui, com todos os campos.",
     "É gitignored porque host e mandante de cliente não entram num repositório.",
     "Rode `node abapgit.mjs sistemas` para ver o que já está resolvido e o que falta."
@@ -25,6 +29,7 @@
     "cliente": "acme",
     "url": "https://icm-interno.exemplo.local:44300",
     "mandante": "100",
-    "certificado": "sha256/COLE_AQUI_O_PINO_QUE_O_spkiDoHost_LEU_DESTE_HOST="
+    "certificado": "sha256/COLE_AQUI_O_PINO_QUE_O_spkiDoHost_LEU_DESTE_HOST=",
+    "ca": "C:/caminho/ca-interna-do-cliente.pem"
   }
 }

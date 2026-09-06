@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lerLandscape, caminhoPadraoLandscape } from './landscape.mjs';
+import { confiarNaCA } from './ca.mjs';
 import { passo, detalhe } from './log.mjs';
 
 // Estado local (sistemas.json, destinos.json, .sessao.json) fica NA PASTA DESTA LIB — assim tudo que é
@@ -135,7 +136,13 @@ export function resolverAlvo(spec) {
     // (leia-o uma vez com `spkiDoHost(base)`), ou `true` para não validar nada na sessão do
     // navegador. Ausente = validação normal — não se ignora certificado por default.
     certificado: s.certificado ?? null,
+    // A MESMA situação vista pelo Node, que é OUTRO validador: sem isto o `fetch` de todo canal ADT
+    // morre no handshake antes de qualquer HTTP. Arquivo .pem da CA do cliente, ou "sistema". Ver ca.mjs.
+    ca: s.ca ?? null,
   };
+  // Cedo de propósito: o `fetch` mantém keep-alive por origem, então declarar a CA depois do primeiro
+  // request não reabre a conexão que já foi recusada (medido — ver ca.mjs).
+  if (cfg.ca) confiarNaCA(cfg.ca, { rotulo: cfg.alias.toUpperCase(), raiz: RAIZ });
   detalhe(`alvo: ${cfg.alias} → ${cfg.base} mandante ${cfg.client} idioma ${cfg.lang} cliente "${cfg.cliente}" (origem: ${s.origem})`);
   return cfg;
 }

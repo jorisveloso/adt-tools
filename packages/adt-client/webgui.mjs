@@ -288,9 +288,17 @@ export function interpretarSonda({ status = null, statusText = '', cookies = [],
     //   `UNABLE_TO_VERIFY_LEAF_SIGNATURE`— assinado por CA interna que esta máquina não conhece;
     //   `ERR_TLS_CERT_ALTNAME_INVALID`   — a CA confia, mas o nome do certificado não é o do host.
     if (/CERT|SELF_SIGNED|LEAF_SIGNATURE/i.test(String(erro))) {
+      // A saída depende de QUAL dos três é: CA desconhecida se resolve declarando a CA (`ca` no
+      // sistemas.json → ca.mjs); nome que não bate, não — nenhuma CA faz `awskartsxd01` valer por
+      // um certificado emitido para outro nome. Aí é usar o host que está no certificado.
+      const nomeNaoBate = /ALTNAME/i.test(String(erro));
       return { ok: false, causa: 'certificado', status: null, bytes: 0, cookies: [],
-        motivo: `o ICM respondeu, mas o Node recusou o certificado (${erro}) — CA interna que esta máquina não conhece. ` +
-          'A opção `certificado` do `abrirNavegador` é do CHROME e NÃO cobre este `fetch`; ver receita-webgui.md § HTTPS com certificado interno.' };
+        motivo: `o ICM respondeu, mas o Node recusou o certificado (${erro}) — ` +
+          (nomeNaoBate
+            ? 'o certificado é de OUTRO nome. Declarar a CA não cobre isto: use na `url` o host que consta no certificado (leia-o com spkiDoHost).'
+            : 'CA interna que esta máquina não conhece. Declare a CA do cliente em sistemas.json: ' +
+              '{ "<alias>": { "ca": "C:/caminho/ca-interna.pem" } } — ou "sistema", se ela já estiver no store do Windows.') +
+          ' A opção `certificado` é do CHROME e NÃO cobre este `fetch`: são dois validadores (ver ca.mjs e receita-webgui.md § HTTPS com certificado interno).' };
     }
     return { ok: false, causa: 'sem-icm', motivo: `sem resposta do ICM: ${erro}`, status: null };
   }

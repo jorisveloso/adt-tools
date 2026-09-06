@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { RAIZ } from './config.mjs';
+import { confiarNaCA } from './ca.mjs';
 import { newSession, fetchToken, criarConexao } from './sap-connection.mjs';
 import { passo, detalhe } from './log.mjs';
 
@@ -77,6 +78,10 @@ function gravarSessao(cfg, session, ttlMin) {
     alias: cfg.alias, cliente: cfg.cliente, descricao: cfg.descricao || '', base: cfg.base,
     client: cfg.client, lang: cfg.lang, user: cfg.user,
     cookie: session.cookie, token: session.token,
+    // Como cada comando é um processo NOVO, o que o `connect` resolveu sobre certificado tem que
+    // viajar junto: sem isto o canal webgui perde o pino e o canal do Node volta a recusar a CA
+    // interna no primeiro fetch. Nenhum dos dois é segredo — são um hash público e um caminho.
+    certificado: cfg.certificado ?? null, ca: cfg.ca ?? null,
     expiraEm: new Date(Date.now() + ttlMin * 60_000).toISOString(),
   };
   fs.writeFileSync(ARQ_SESSAO, JSON.stringify(dados, null, 2));
@@ -142,7 +147,13 @@ export function sessaoAtual() {
   // Sem a senha, quem sustenta a sessão é o COOKIE. Por isso `pass` fica vazio — e o adt-client, nesse
   // caso, omite o header Authorization (ver a nota "MUDANÇA 2" no topo de adt-client.mjs): mandar um
   // Basic com senha vazia faria o ICF responder 401 antes mesmo de olhar o cookie.
-  const cfg = { base: d.base, user: d.user, pass: '', client: d.client, lang: d.lang, alias: d.alias, cliente: d.cliente };
+  const cfg = {
+    base: d.base, user: d.user, pass: '', client: d.client, lang: d.lang, alias: d.alias, cliente: d.cliente,
+    certificado: d.certificado ?? null, ca: d.ca ?? null,
+  };
+  // Processo novo, confiança zerada: a CA do cliente é declarada de novo AQUI, antes que qualquer
+  // canal use o cookie — o `fetch` recusaria o handshake antes de olhar para ele.
+  if (cfg.ca) confiarNaCA(cfg.ca, { rotulo: cfg.alias.toUpperCase(), raiz: RAIZ });
   return { cfg, session: { cfg, cookie: d.cookie, token: d.token, status: null }, info: d };
 }
 

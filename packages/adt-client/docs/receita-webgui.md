@@ -504,9 +504,34 @@ antes de qualquer HTTP. Medidos os três casos:
 | assinado por CA interna desconhecida | `UNABLE_TO_VERIFY_LEAF_SIGNATURE` |
 | CA confiável, nome que não bate | `ERR_TLS_CERT_ALTNAME_INVALID` |
 
-O que existe hoje é o **veredito honesto**: `interpretarSonda` devolve causa `certificado` (antes
-dizia `sem-icm`, que manda procurar rede e host — o lugar errado, porque o ICM está de pé). Fazer o
-`fetch` aceitar CA interna é outro item (fila `adt-client` 69).
+`interpretarSonda` devolve causa `certificado` (antes dizia `sem-icm`, que manda procurar rede e
+host — o lugar errado, porque o ICM está de pé). E, desde 2026-09-05, existe a saída: **declarar a
+CA do cliente**, num campo próprio, porque o pino do Chrome não vale aqui.
+
+```json
+{ "sxd": { "certificado": "sha256/<pino>", "ca": "C:/certs/ca-interna.pem" } }
+```
+
+Os dois campos, o mesmo ICM, validadores diferentes: `certificado` é o Chrome (canal webgui), `ca` é
+o Node (`fetch` de todo o resto). O `ca` também aceita `"sistema"` — as CAs já instaladas no
+Windows — e uma lista. Ver `ca.mjs`; medido em
+`sap-accelerate/work/POC_https_cert/medicoes/item69-ca-fetch.md`:
+
+| via | o ICM da CA interna | uma raiz NÃO declarada |
+|---|---|---|
+| default do Node | barra | barra |
+| `"ca": "…/ca.pem"` (`tls.setDefaultCACertificates`) | **passa** | **barra** |
+| `NODE_TLS_REJECT_UNAUTHORIZED=0` | passa | **passa** ← por isso não existe na lib |
+
+Ponta a ponta, com o código do `connect` de verdade contra um HTTPS de CA interna: `fetchToken`
+devolveu token e cookie, e `sondarWebgui` devolveu `ok` — enquanto o "ICM" de uma raiz não declarada
+seguiu barrado nos dois.
+
+Dois gotchas medidos: **declare antes do primeiro `fetch`** daquele host (o `fetch` mantém
+keep-alive por origem, e a conexão já recusada não se refaz), e o efeito é do **processo** — fazer
+por chamada exigiria um dispatcher do undici, que este Node não expõe. Nome que não bate
+(`ERR_TLS_CERT_ALTNAME_INVALID`) **nenhuma CA resolve**: use na `url` o host que consta no
+certificado.
 
 ## ⚠ `crypto.randomUUID` — o cadáver bonito
 
