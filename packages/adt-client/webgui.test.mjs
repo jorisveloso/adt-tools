@@ -696,6 +696,9 @@ const criarNo = (spec, pai = null) => {
     getBoundingClientRect: () => ({ width: spec.area ?? 0, height: 1, x: 0, y: 0 }),
     parentElement: pai,
     querySelectorAll: () => descendentes(e),
+    getAttribute: (n) => spec.attrs?.[n] ?? null,
+    innerText: spec.texto ?? '',
+    contains: (o) => o === e || descendentes(e).includes(o),
   };
   e.filhos = (spec.filhos ?? []).map((f) => criarNo(f, e));
   return e;
@@ -745,6 +748,74 @@ test('webgui: caixa sem nada acionável dentro NÃO inventa alvo — devolve o p
   ] });
   expect(resolver(escondido).id).toBe('liOculto');
   expect(resolver(null)).toBe(null);
+});
+
+// ─── VÁRIOS gestos no mesmo contêiner: endereçar por rótulo (item 68) ──────
+// Medido no s4h 758/250 em 05/09/2026 (UI5 1.114.0, `medicoes/item68-dois-gestos.md`): o
+// `sap.ui.core.Icon` com tooltip rende `aria-label` no controle e `title` no recheio; o
+// `sap.m.Button` não tem nenhum dos dois — só o `innerText`, repetido em 4 nós encaixados
+// (button > -inner > -content > -BDI-content), todos com `cursor: pointer`.
+
+const ICONE = (id, rot, area = 224) => ({
+  id, tag: 'SPAN', classe: 'sapUiIcon', cursor: 'pointer', area, attrs: { 'aria-label': rot },
+  filhos: [{ tag: 'SPAN', classe: 'sapUiIconTitle', cursor: 'pointer', area, attrs: { title: rot } }],
+});
+const BOTAO = (id, rot) => ({
+  id, tag: 'BUTTON', marcador: true, area: 4012, texto: rot, filhos: [
+    { id: `${id}-inner`, tag: 'SPAN', cursor: 'pointer', area: 3343, texto: rot, filhos: [
+      { id: `${id}-content`, tag: 'SPAN', cursor: 'pointer', area: 2188, texto: rot, filhos: [
+        { id: `${id}-BDI-content`, tag: 'BDI', cursor: 'pointer', area: 921, texto: rot }] }] }],
+});
+const LI_CATALOGO = criarNo({ id: 'liCatalogo', tag: 'LI', cursor: 'auto', area: 9500, filhos: [
+  { id: '__text0', tag: 'SPAN', cursor: 'text', area: 2005 },
+  ICONE('iconeCatAdd', 'Adicionar'), ICONE('iconeCatDet', 'Detalhe')] });
+const LI_MISTO = criarNo({ id: 'liMisto', tag: 'LI', cursor: 'auto', area: 9500, filhos: [
+  { id: '__text1', tag: 'SPAN', cursor: 'text', area: 2005 },
+  BOTAO('btnMistoAdd', 'Adicionar'), ICONE('iconeMistoDet', 'Detalhe')] });
+
+test('webgui: com VÁRIOS gestos, o menor-por-área é chute — e no misto ele erra de verdade', () => {
+  // duas caixas iguais: quem ganha é a ORDEM do DOM, não a intenção (medido: sempre iconeCatAdd)
+  expect(resolver(LI_CATALOGO).id).toBe('iconeCatAdd');
+  // botão largo + ícone pequeno: pedir a linha e receber "Detalhe" é acionar o gesto ERRADO calado
+  expect(resolver(LI_MISTO).id).toBe('iconeMistoDet');
+});
+
+test('webgui: `{ dentro }` escolhe o gesto pelo RÓTULO, sem caixa nem acento', () => {
+  expect(resolver(LI_CATALOGO, { dentro: 'Detalhe' }).id).toBe('iconeCatDet');
+  expect(resolver(LI_CATALOGO, { dentro: 'adicionar' }).id).toBe('iconeCatAdd');
+  // o rótulo do botão só existe no texto — e o alvo é o BUTTON, não o <bdi> de dentro
+  expect(resolver(LI_MISTO, { dentro: 'Adicionar' }).id).toBe('btnMistoAdd');
+  expect(resolver(LI_MISTO, { dentro: 'detalhe' }).id).toBe('iconeMistoDet');
+  // acento não separa: "endereco" acha "Endereço"
+  const li = criarNo({ id: 'li', tag: 'LI', cursor: 'auto', area: 9000,
+    filhos: [ICONE('ico', 'Endereço'), ICONE('ico2', 'Outro')] });
+  expect(resolver(li, { dentro: 'endereco' }).id).toBe('ico');
+});
+
+test('webgui: `{ dentro }` sem casamento ÚNICO devolve null — não sorteia alvo', () => {
+  expect(resolver(LI_CATALOGO, { dentro: 'Excluir' })).toBe(null);
+  // dois gestos com o mesmo rótulo: é ambíguo de verdade, e o chute é o que se quer evitar
+  const dobrado = criarNo({ id: 'liDobrado', tag: 'LI', cursor: 'auto', area: 9500,
+    filhos: [ICONE('a1', 'Adicionar'), ICONE('a2', 'Adicionar')] });
+  expect(resolver(dobrado, { dentro: 'Adicionar' })).toBe(null);
+  // e o rótulo VAZIO não casa com tudo — senão { dentro: '' } viraria o menor-por-área de novo
+  const mudo = criarNo({ id: 'liSemRotulo', tag: 'LI', cursor: 'auto', area: 9500,
+    filhos: [{ id: 'ico', tag: 'SPAN', cursor: 'pointer', area: 200 }] });
+  expect(resolver(mudo, { dentro: 'x' })).toBe(null);
+});
+
+test('webgui: o rótulo é aria-label → title → texto, e a pilha do botão conta como UM gesto', () => {
+  const H = new Function('getComputedStyle', `return ${JS_ACIONAVEL}`)((e) => ({ cursor: e.cursor }));
+  expect(H.rotulo(acharNo(LI_CATALOGO, 'iconeCatAdd'))).toBe('Adicionar');
+  expect(H.rotulo(acharNo(LI_MISTO, 'btnMistoAdd'))).toBe('Adicionar');
+  // o recheio do ícone não tem aria-label; o title dele é a segunda via
+  expect(H.rotulo(descendentes(acharNo(LI_CATALOGO, 'iconeCatDet'))[0])).toBe('Detalhe');
+  // o nome do ícone (`sap-icon://add`) NÃO está no DOM — medido: só o char em data-sap-ui-icon-content
+  expect(H.rotulo(criarNo({ tag: 'SPAN', classe: 'sapUiIcon' }))).toBe('');
+  // 6 nós acionáveis no liMisto (button + 3 encaixados + ícone + recheio) → 2 gestos independentes
+  const cand = descendentes(LI_MISTO).filter((e) => H.motivo(e) && H.area(e) > 0);
+  expect(cand.length).toBe(6);
+  expect(H.externos(cand).map((e) => e.id)).toEqual(['btnMistoAdd', 'iconeMistoDet']);
 });
 
 test('webgui: a marca de ação se LÊ no DOM — e o Unified Renderer declara a dele', () => {

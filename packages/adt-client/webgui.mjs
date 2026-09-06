@@ -1407,6 +1407,13 @@ export async function print(sessao, arquivo) {
 // marca de ação, ele mira o de MENOR caixa e conta no retorno (`desceu`, `recebeu`, `porQue`,
 // `candidatos`) qual nó recebeu o gesto — "não pegou" sem saber onde o mouse caiu não diz o que
 // fazer em seguida.
+//
+// ⚠️ **Com MAIS DE UM gesto lá dentro, o menor-por-caixa é chute — e chute que erra calado.** Medido
+// no s4h 758/250 em 05/09/2026 (item 68, `POC_ui5_clicar_descendente/medicoes/item68-dois-gestos.md`):
+// numa linha com o botão "Adicionar" (4012 px²) e o ícone "Detalhe" (224 px²), clicar a linha
+// dispara SEMPRE o **Detalhe** — não é "não pegou", é o gesto ERRADO. Por isso `{ dentro: '<rótulo>' }`,
+// que escolhe pelo `aria-label`/`title`/texto do descendente; e por isso o `clicar`, quando desce
+// sem `dentro` havendo vários, DIZ que escolheu por tamanho e lista os rótulos.
 
 /**
  * PURO: as marcas de ação que se LEEM no DOM, sem perguntar ao framework. As três primeiras linhas
@@ -1421,9 +1428,20 @@ export const SELETOR_ACIONAVEL = [
   '[lsevents]', '[lsdata]', '[ct]',
 ].join(',');
 
-/** PURO: as funções que o navegador usa para julgar um nó — visibilidade, marca de ação, caixa e
- * como chamá-lo numa mensagem. `cursor: pointer` é a última via porque é a mais frouxa (e HERDADA:
- * o recheio de um ícone clicável também "parece" clicável). */
+/** PURO: as funções que o navegador usa para julgar um nó — visibilidade, marca de ação, caixa,
+ * RÓTULO e como chamá-lo numa mensagem. `cursor: pointer` é a última via porque é a mais frouxa
+ * (e HERDADA: o recheio de um ícone clicável também "parece" clicável).
+ *
+ * `rotulo` é o que torna o gesto ENDEREÇÁVEL. Medido no s4h 758/250 em 05/09/2026 (item 68,
+ * UI5 1.114.0): um `sap.ui.core.Icon` com tooltip rende `aria-label="Adicionar"` no `<span>` do
+ * controle e `title="Adicionar"` no recheio; um `sap.m.Button` não tem nem um nem outro — só o
+ * `innerText`. O NOME do ícone (`sap-icon://add`) **não chega ao DOM**: fica em
+ * `data-sap-ui-icon-content`, que é o CARACTERE da fonte SAP-icons, não o nome. Por isso a ordem é
+ * aria-label → title → texto → value, e não há via por `sap-icon`.
+ *
+ * `externos` tira da lista quem está DENTRO de outro da própria lista: um `sap.m.Button` publica 4
+ * nós acionáveis encaixados (button > inner > content > bdi, todos com o mesmo rótulo), e contá-los
+ * como 4 gestos faria toda linha parecer ambígua. */
 export const JS_ACIONAVEL = `(() => {
   const SEL = ${JSON.stringify(SELETOR_ACIONAVEL)};
   const visivel = (e) => !!(e && e.nodeType === 1 && (e.offsetWidth || e.offsetHeight));
@@ -1438,22 +1456,40 @@ export const JS_ACIONAVEL = `(() => {
   const desc = (e) => !e ? null : (e.id || (e.tagName.toLowerCase() +
     (typeof e.className === 'string' && e.className.trim()
       ? '.' + e.className.trim().split(' ').filter(Boolean).slice(0, 2).join('.') : '')));
-  return { SEL, visivel, motivo, area, desc };
+  const norm = (s) => String(s == null ? '' : s).normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+    .toLowerCase().replace(/\\s+/g, ' ').trim();
+  const rotulo = (e) => {
+    if (!e) return '';
+    const at = (n) => (e.getAttribute ? e.getAttribute(n) : null) || '';
+    return (at('aria-label') || at('title') || String(e.innerText || '').trim() || String(e.value || '')).trim();
+  };
+  const externos = (lista) => lista.filter((e) => !lista.some((o) => o !== e && o.contains && o.contains(e)));
+  const casa = (e, alvo) => { const r = norm(rotulo(e)); return !!r && r.includes(norm(alvo)); };
+  return { SEL, visivel, motivo, area, desc, norm, rotulo, externos, casa };
 })()`;
 
 /**
  * PURO: a expressão que resolve o nó que VAI receber o gesto. Alvo com marca de ação é o próprio
  * alvo — só quem não tem nenhuma desce. `{ descer: false }` devolve o alvo cru (é o que se usa para
  * medir o contrafactual: clicar no contêiner e ver que nada acontece).
+ *
+ * `{ dentro: '<rótulo>' }` escolhe o gesto pelo RÓTULO em vez do tamanho, e IMPLICA a descida. Ele
+ * devolve `null` quando nenhum casa **ou** quando casa mais de um: escolher no empate seria o mesmo
+ * chute que ele existe para evitar — quem chama recebe erro com a lista, não um gesto sorteado.
  */
-export function jsAlvoEfetivo(js, { descer = true } = {}) {
-  if (!descer) return `(${js})`;
+export function jsAlvoEfetivo(js, { descer = true, dentro = null } = {}) {
+  if (!descer && !dentro) return `(${js})`;
   return `(() => {
     const raiz = ${js};
     if (!raiz) return null;
     const H = ${JS_ACIONAVEL};
-    if (H.motivo(raiz)) return raiz;
+    const DENTRO = ${JSON.stringify(dentro)};
+    if (!DENTRO && H.motivo(raiz)) return raiz;
     const cand = [...raiz.querySelectorAll('*')].filter((e) => H.motivo(e) && H.area(e) > 0);
+    if (DENTRO) {
+      const casaram = H.externos(cand.filter((e) => H.casa(e, DENTRO)));
+      return casaram.length === 1 ? casaram[0] : null;
+    }
     if (!cand.length) return raiz;
     let no = cand.reduce((a, b) => (H.area(b) < H.area(a) ? b : a));
     // \`cursor: pointer\` é HERDADO — o menor por área costuma ser o RECHEIO do nó clicável (o span
@@ -1473,11 +1509,14 @@ export function jsAlvoEfetivo(js, { descer = true } = {}) {
  *     Designer, item 40) — daí o rebaixamento, que o retorno sempre conta.
  *
  * Devolve, além do ponto: `recebeu` (quem leva o gesto), `de` (o que foi pedido), `desceu`,
- * `porQue` (a marca de ação que valeu) e `candidatos` (os descendentes acionáveis que havia).
+ * `porQue` (a marca de ação que valeu), `candidatos` (os descendentes acionáveis que havia) e
+ * `gestos` (os acionáveis INDEPENDENTES, com o rótulo de cada um — é a lista que se endereça com
+ * `{ dentro }`). Com `{ dentro }` sem casamento único, volta com `recebeu: null` e `casaram`
+ * preenchido — cabe a quem chama recusar; aqui não se sorteia alvo.
  */
-export async function apontar(sessao, alvo, { descer = true } = {}) {
+export async function apontar(sessao, alvo, { descer = true, dentro = null } = {}) {
   const js = jsDoAlvo(alvo);
-  const efetivo = jsAlvoEfetivo(js, { descer });
+  const efetivo = jsAlvoEfetivo(js, { descer, dentro });
   const rolou = await avaliar(sessao, `(() => {
     const e = ${efetivo};
     if (!e) return false;
@@ -1489,8 +1528,15 @@ export async function apontar(sessao, alvo, { descer = true } = {}) {
   return await avaliar(sessao, `(() => {
     const raiz = ${js};
     const e = ${efetivo};
-    if (!e) return null;
+    if (!raiz) return null;
     const H = ${JS_ACIONAVEL};
+    const cand = [...raiz.querySelectorAll('*')].filter((z) => H.motivo(z) && H.area(z) > 0)
+      .sort((a, c) => H.area(a) - H.area(c));
+    const gestos = H.externos(cand).map((z) => ({ nome: H.desc(z), rotulo: H.rotulo(z), porQue: H.motivo(z) }));
+    if (!e) return { recebeu: null, de: H.desc(raiz), desceu: false, porQue: null, gestos,
+                     dentro: ${JSON.stringify(dentro)},
+                     casaram: H.externos(cand.filter((z) => H.casa(z, ${JSON.stringify(dentro)}))).map(H.desc),
+                     candidatos: cand.slice(0, 8).map(H.desc) };
     const b = e.getBoundingClientRect();
     const x = b.x + b.width / 2, y = b.y + b.height / 2;
     const no = document.elementFromPoint(x, y);
@@ -1498,11 +1544,14 @@ export async function apontar(sessao, alvo, { descer = true } = {}) {
     return { id: e.id, title: e.title, x, y, noPonto: no ? (no.id || no.tagName) : null,
              coberto: !(no === e || e.contains(no) || (no && no.contains(e))),
              recebeu: H.desc(e), de: H.desc(raiz), desceu, porQue: H.motivo(e),
-             candidatos: desceu ? [...raiz.querySelectorAll('*')]
-               .filter((z) => H.motivo(z) && H.area(z) > 0)
-               .sort((a, c) => H.area(a) - H.area(c)).slice(0, 8).map(H.desc) : [] };
+             gestos: desceu ? gestos : [],
+             candidatos: desceu ? cand.slice(0, 8).map(H.desc) : [] };
   })()`);
 }
+
+/** PURO: como um gesto se chama numa mensagem — o rótulo é o que se digita em `{ dentro }`; o nome
+ * do nó só entra quando não há rótulo (ícone sem tooltip existe). */
+export const nomeDoGesto = (g) => (g?.rotulo ? `"${g.rotulo}"` : `<sem rótulo> (${g?.nome})`);
 
 /** O gesto de mouse INTEIRO. Medido: press+release sem `buttons` e sem o `mouseMoved` antes não
  * aciona o Unified Renderer. */
@@ -1523,15 +1572,28 @@ export async function clique(sessao, p) {
  * suspenso, `document.title` vazio); com `acionar`, o `mudou: false` teria denunciado em 30 s.
  * Quem precisa SABER que a ação pegou usa `acionar` e lê o `mudou`.
  */
-export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false, descer = true } = {}) {
+export async function clicar(sessao, alvo, { tetoMs = 20000, esperarResposta = false, descer = true, dentro = null } = {}) {
   const ate = Date.now() + tetoMs;
   let p = null;
   while (Date.now() < ate && !p) {
-    p = await apontar(sessao, alvo, { descer });
+    p = await apontar(sessao, alvo, { descer, dentro });
     if (!p) await espera(400);
   }
   if (!p) throw new Error(`webgui: clicar — ${nomeDoAlvo(alvo)} não está na tela (${tetoMs} ms)`);
-  if (p.desceu) detalhe(`webgui: ${nomeDoAlvo(alvo)} não aciona nada — o gesto foi no descendente ${p.recebeu} (${p.porQue})`);
+  if (!p.recebeu) {
+    const lista = (p.gestos ?? []).map(nomeDoGesto).join(', ') || '(nenhum)';
+    throw new Error(p.casaram?.length > 1
+      ? `webgui: clicar — dentro de ${nomeDoAlvo(alvo)} o rótulo "${dentro}" casa com ${p.casaram.length} gestos (${p.casaram.join(', ')}) — seja mais específico ou endereçe o descendente direto`
+      : `webgui: clicar — dentro de ${nomeDoAlvo(alvo)} nenhum gesto tem rótulo "${dentro}" — os gestos de lá são: ${lista}`);
+  }
+  if (p.desceu) {
+    // Um gesto só: a descida é determinada (item 40). VÁRIOS: a escolha saiu do TAMANHO, que é
+    // chute — medido no s4h em 05/09/2026 (item 68), a linha "Adicionar" (botão) + "Detalhe"
+    // (ícone) sempre cai no DETALHE, porque o ícone é menor. Isso não pode passar calado.
+    const varios = !dentro && (p.gestos ?? []).length > 1;
+    detalhe(`webgui: ${nomeDoAlvo(alvo)} não aciona nada — o gesto foi no descendente ${p.recebeu} (${p.porQue})`
+      + (varios ? `; havia ${p.gestos.length} gestos lá dentro e a escolha foi por TAMANHO — mande no certo com { dentro: '<rótulo>' }: ${p.gestos.map(nomeDoGesto).join(', ')}` : ''));
+  }
   const antes = esperarResposta ? await carimbo(sessao) : null;
   await clique(sessao, p);
   if (esperarResposta) p.mudou = await esperarMudanca(sessao, antes);

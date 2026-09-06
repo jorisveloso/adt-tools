@@ -627,6 +627,42 @@ para onde o gesto foi**: `{ desceu, recebeu, de, porQue, candidatos }`.
   é acionável, então o alvo fica onde está), mas `desceu: false` num contêiner que se sabe inerte
   quer dizer **tela ainda se pintando**, não "não havia o que descer".
 
+### ⚠ VÁRIOS gestos na mesma linha: escolha pelo RÓTULO, não pelo tamanho
+
+**Medido no s4h 758/250 em 05/09/2026** (fila `adt-client`, item 68, UI5 1.114.0 —
+`sap-accelerate/work/POC_ui5_clicar_descendente/medicoes/item68-dois-gestos.md`). Quando o contêiner
+inerte tem **mais de um** descendente acionável, o menor-por-caixa deixa de ser "o único que havia" e
+vira chute — **e o chute erra acionando OUTRA coisa**, sem erro nenhum:
+
+| linha | gestos lá dentro | quem o tamanho escolhe | efeito |
+|---|---|---|---|
+| dois ícones iguais (224 px² cada) | `Adicionar`, `Detalhe` | `Adicionar` — só porque vem antes no DOM | disparou `cat:adicionar` |
+| botão `Adicionar` (4012 px²) + ícone `Detalhe` (224 px²) | `Adicionar`, `Detalhe` | **`Detalhe`** | disparou `misto:detalhe` — **o gesto errado** |
+
+Por isso **`{ dentro: '<rótulo>' }`**, que endereça o descendente pelo rótulo e implica a descida:
+
+```js
+await clicar(s, { id: 'liCatalogo' }, { dentro: 'Adicionar' });  // sai no botão, não no ícone menor
+```
+
+- **O rótulo é `aria-label` → `title` → texto → `value`**, nessa ordem, comparado sem caixa e sem
+  acento (`endereco` acha `Endereço`). Medido: um `sap.ui.core.Icon` com tooltip rende
+  `aria-label="Adicionar"` no controle e `title="Adicionar"` no recheio; um `sap.m.Button` **não tem
+  nenhum dos dois** — só o `innerText`.
+- **Não há via por nome de ícone.** `sap-icon://add` **não chega ao DOM**: o que existe é
+  `data-sap-ui-icon-content`, o *caractere* da fonte SAP-icons, e a classe genérica `sapUiIcon`.
+  Endereçar "por `sap-icon`" foi **descartado por medição**, não por gosto.
+- **Sem casamento ÚNICO, o `clicar` levanta erro com a lista** — nunca sorteia. Medido: `dentro:
+  'Excluir'` → `nenhum gesto tem rótulo "Excluir" — os gestos de lá são: "Adicionar", "Detalhe"`;
+  `dentro: 'a'` (casa com os dois) → `casa com 2 gestos (…) — seja mais específico`. Nas duas, zero
+  ação disparada.
+- **O padrão continua o de antes** (menor caixa), para não quebrar o caso de um gesto só — mas
+  agora, havendo vários, o `clicar` **avisa** que escolheu por tamanho e lista os rótulos.
+- **`gestos` no retorno de `apontar`** é a lista que se endereça: os acionáveis **independentes**,
+  com rótulo. Um `sap.m.Button` publica 4 nós acionáveis encaixados (`button > -inner > -content >
+  -BDI-content`, todos `cursor: pointer`); eles colapsam em **um** gesto — senão toda linha com
+  botão pareceria ambígua.
+
 ## A caixa de comando (OK-code) **pelo navegador**
 
 **Medido no s4h 758/250 em 2026-09-04** (fila `adt-client`, item 13). O canal do navegador também
