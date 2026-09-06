@@ -576,14 +576,29 @@ export const IDCANCEL = 2;
 
 /**
  * O PowerShell que clica o **Cancelar** (IDCANCEL) de cada hwnd dado. Uma linha por hwnd, campos
- * por TAB: `hwnd, resultado, textoDoBotao, titulo`. Resultados:
+ * por TAB: `hwnd, resultado, textoDoBotao, titulo, textoNoCache`. Resultados:
  *   `cancelado` · `sumiu` (a janela já não existe) · `nao-e-dialogo` (classe mudou — não toca) ·
  *   `sem-cancelar` (o diálogo não tem IDCANCEL) · `recusado-ok` (o controle 2 é um OK — ver acima).
  *
  * O botão é achado por `GetDlgItem(h, 2)`, não pelo texto: o rótulo muda com o idioma do GUI
  * ('Cancelar', 'Cancel', 'Abbrechen') e o id não. O texto sai na saída só para a evidência.
- * `PostMessage` (não `SendMessage`): o diálogo roda o laço modal na thread do pad, e um Send
- * pendurava o PowerShell junto se o pad estivesse ocupado.
+ * `PostMessage` (não `SendMessage`) para o CLIQUE: o diálogo roda o laço modal na thread do pad, e
+ * um Send pendurava o PowerShell junto se o pad estivesse ocupado.
+ *
+ * ⚠ O rótulo é lido por DUAS vias, e a trava recusa se QUALQUER uma disser OK — porque
+ * `GetWindowText` cross-process **não** envia `WM_GETTEXT`: devolve o texto que o gerenciador de
+ * janelas guardou, e nos botões do SAP GUI esse cache MENTE. Medido 06/09/2026 (item 103, bruto
+ * `sap-accelerate/work/POC_rot_sapgui/medicoes/raw/item103-controle-positivo.txt`) no diálogo
+ * `Ligação SAP GUI - logon (S4H, 250, PT, )`: o `GetDlgItem(h, 2)` (hwnd 24250530) tem
+ * `GetWindowText = "&Cancel"` (inglês, do template do recurso) e `WM_GETTEXT = "&Cancelar"` (o PT
+ * que a tela desenha). É o MESMO controle que esta trava lê. Aqui as duas leituras concordam em
+ * "não é OK", então a decisão não muda — mas a trava passa a não depender de uma fonte que já se
+ * provou mentirosa: quem lê só o cache pode ver um rótulo estrangeiro num botão que é o OK, clicar,
+ * e AUTORIZAR o script. Falha fechada: das duas leituras, basta uma dizer OK para recusar.
+ * `SendMessageTimeout` (SMTO_ABORTIFHUNG, 300 ms), não `SendMessage`: é a mesma defesa do clique —
+ * um Send puro pendura junto com o pad ocupado.
+ * O buffer é lido pelo valor RETORNADO, nunca até o NUL: um controle que não responde deixa o
+ * buffer com lixo, e foi assim que o item 63 leu `杀ࣆscrição sistema:` num ComboBox.
  */
 export const psCancelarDialogos = (hwnds) => `
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -595,32 +610,52 @@ public class CSap {
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
- static string Txt(IntPtr h){ var t=new StringBuilder(256); GetWindowText(h,t,256); return t.ToString().Replace("\\r"," ").Replace("\\n"," ").Replace("\\t"," ").Trim(); }
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, IntPtr w, IntPtr l, uint f, uint ms, out UIntPtr r);
+ static string Uma(string s){ return s.Replace("\\r"," ").Replace("\\n"," ").Replace("\\t"," ").Trim(); }
+ static string Txt(IntPtr h){ var t=new StringBuilder(256); GetWindowText(h,t,256); return Uma(t.ToString()); }
  static string Cls(IntPtr h){ var c=new StringBuilder(256); GetClassName(h,c,256); return c.ToString(); }
+ // WM_GETTEXT pelo PRÓPRIO controle. "" quando ele não responde (timeout/acesso negado) — nunca lixo.
+ static string Msg(IntPtr h){
+   const int N = 256; IntPtr buf = Marshal.AllocHGlobal(N*2);
+   try { UIntPtr n;
+     IntPtr ok = SendMessageTimeout(h, 0x000D, (IntPtr)N, buf, 0x0002, 300, out n); // WM_GETTEXT, SMTO_ABORTIFHUNG
+     if(ok == IntPtr.Zero) return "";
+     int c = (int)Math.Min((long)n.ToUInt64(), (long)(N-1));
+     if(c <= 0) return "";
+     return Uma(Marshal.PtrToStringUni(buf, c));
+   } catch { return ""; } finally { Marshal.FreeHGlobal(buf); } }
+ static string Rot(string s){ return s.Replace("&","").ToUpperInvariant(); }
  public static string Cancelar(long bruto){
    IntPtr h = new IntPtr(bruto);
-   if(!IsWindow(h)) return bruto+"\\tsumiu\\t\\t";
+   if(!IsWindow(h)) return bruto+"\\tsumiu\\t\\t\\t";
    string tit = Txt(h);
-   if(Cls(h) != "#32770") return bruto+"\\tnao-e-dialogo\\t\\t"+tit;
+   if(Cls(h) != "#32770") return bruto+"\\tnao-e-dialogo\\t\\t"+tit+"\\t";
    IntPtr b = GetDlgItem(h, ${IDCANCEL});
-   if(b == IntPtr.Zero) return bruto+"\\tsem-cancelar\\t\\t"+tit;
-   string rot = Txt(b).Replace("&","");
-   // trava dura: se o controle ${IDCANCEL} for um OK, NÃO clica — clicar autorizaria o script
-   if(rot.ToUpperInvariant() == "OK") return bruto+"\\trecusado-ok\\t"+rot+"\\t"+tit;
+   if(b == IntPtr.Zero) return bruto+"\\tsem-cancelar\\t\\t"+tit+"\\t";
+   string cache = Txt(b).Replace("&","");     // GetWindowText: o cache, que MENTE (§ acima)
+   string real = Msg(b).Replace("&","");      // WM_GETTEXT: o que o controle DESENHA
+   string rot = real.Length > 0 ? real : cache;
+   // trava dura: se o controle ${IDCANCEL} for um OK por QUALQUER das duas leituras, NÃO clica —
+   // clicar autorizaria o script. Discordância entre elas conta como OK (falha fechada).
+   if(Rot(cache) == "OK" || Rot(real) == "OK") return bruto+"\\trecusado-ok\\t"+rot+"\\t"+tit+"\\t"+cache;
    PostMessage(b, 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
-   return bruto+"\\tcancelado\\t"+rot+"\\t"+tit;
+   return bruto+"\\tcancelado\\t"+rot+"\\t"+tit+"\\t"+cache;
  } }
 '@
 ${hwnds.map((h) => `[CSap]::Cancelar(${Number(h)})`).join('\n')}`;
 
-/** PURO: a saída de `psCancelarDialogos` vira `[{ hwnd, resultado, botao, titulo }]`. */
+/**
+ * PURO: a saída de `psCancelarDialogos` vira `[{ hwnd, resultado, botao, titulo, botaoCache }]`.
+ * `botao` é o rótulo que o controle respondeu (`WM_GETTEXT`), `botaoCache` o que `GetWindowText`
+ * devolveu — guardar os dois é o que deixa a divergência do item 103 visível na evidência.
+ */
 export function interpretarCancelamentos(texto) {
   const linhas = [];
   for (const bruta of String(texto).split(/\r?\n/)) {
     if (!bruta.trim()) continue;
-    const [hwnd, resultado, botao = '', titulo = ''] = bruta.split('\t');
+    const [hwnd, resultado, botao = '', titulo = '', botaoCache = ''] = bruta.split('\t');
     if (!hwnd || !resultado) continue;
-    linhas.push({ hwnd: Number(hwnd), resultado, botao, titulo });
+    linhas.push({ hwnd: Number(hwnd), resultado, botao, titulo, botaoCache });
   }
   return linhas;
 }

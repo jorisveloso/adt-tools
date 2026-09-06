@@ -268,9 +268,18 @@ test('gui: cancelar o órfão do pedágio NEGA o acesso — o OK é intocável (
   // BM_CLICK por PostMessage: o diálogo roda o laço modal na thread do pad, e um Send penduraria
   // o PowerShell junto — o que já é o defeito que este item ataca
   expect(ps).toContain('PostMessage(b, 0x00F5');
-  expect(ps).not.toContain('SendMessage');
-  // ⚠ a trava dura: clicar OK AUTORIZARIA o script — é o aviso de segurança do cliente
-  expect(ps).toContain('if(rot.ToUpperInvariant() == "OK") return');
+  // a ÚNICA via de Send é a leitura do rótulo, e com timeout (SMTO_ABORTIFHUNG) — nunca um Send puro
+  expect(ps).not.toMatch(/SendMessage\(/);
+  expect(ps).toContain('SendMessageTimeout(h, 0x000D, (IntPtr)N, buf, 0x0002, 300, out n)');
+  // ⚠ a trava dura: clicar OK AUTORIZARIA o script — é o aviso de segurança do cliente.
+  // Item 103: o cache do GetWindowText MENTE no rótulo de Button do SAP GUI ('&Cancel' EN no cache,
+  // '&Cancelar' PT no controle) — a trava lê as DUAS vias e basta UMA dizer OK para recusar.
+  expect(ps).toContain('if(Rot(cache) == "OK" || Rot(real) == "OK") return');
+  expect(ps).toContain('string cache = Txt(b)');
+  expect(ps).toContain('string real = Msg(b)');
+  // o buffer do WM_GETTEXT é cortado pelo valor RETORNADO: um controle que não responde deixa lixo
+  expect(ps).toContain('Marshal.PtrToStringUni(buf, c)');
+  expect(ps).toContain('if(ok == IntPtr.Zero) return "";');
   expect(ps).not.toContain('GetDlgItem(h, 1)');
   // e só toca em #32770: se a janela virou outra coisa entre o sensor e o gesto, não clica
   expect(ps).toContain('if(Cls(h) != "#32770")');
@@ -281,15 +290,19 @@ test('gui: cancelar o órfão do pedágio NEGA o acesso — o OK é intocável (
 
 test('gui: interpretarCancelamentos lê o que aconteceu com cada órfão', () => {
   const r = interpretarCancelamentos([
-    '3868398\tcancelado\tCancelar\tSAP Logon',
-    '12345\tsumiu\t\t',
-    '999\trecusado-ok\tOK\tSAP Logon',
+    // 5º campo: o rótulo do CACHE. Divergir dele é o normal do SAP GUI (item 103) — a linha abaixo
+    // é o caso medido em 06/09/2026: WM_GETTEXT 'Cancelar' (PT) x GetWindowText 'Cancel' (EN).
+    '3868398\tcancelado\tCancelar\tSAP Logon\tCancel',
+    '12345\tsumiu\t\t\t',
+    '999\trecusado-ok\tOK\tSAP Logon\tOK',
     '',
   ].join('\r\n'));
   expect(r).toHaveLength(3);
-  expect(r[0]).toEqual({ hwnd: 3868398, resultado: 'cancelado', botao: 'Cancelar', titulo: 'SAP Logon' });
+  expect(r[0]).toEqual({ hwnd: 3868398, resultado: 'cancelado', botao: 'Cancelar', titulo: 'SAP Logon', botaoCache: 'Cancel' });
   expect(r[1].resultado).toBe('sumiu');
-  expect(r[2]).toMatchObject({ resultado: 'recusado-ok', botao: 'OK' });
+  expect(r[2]).toMatchObject({ resultado: 'recusado-ok', botao: 'OK', botaoCache: 'OK' });
+  // linha antiga (4 campos, sem o cache) continua legível — `botaoCache` só fica vazio
+  expect(interpretarCancelamentos('999\trecusado-ok\tOK\tSAP Logon')[0]).toMatchObject({ botao: 'OK', botaoCache: '' });
   expect(interpretarCancelamentos('')).toEqual([]);
 });
 

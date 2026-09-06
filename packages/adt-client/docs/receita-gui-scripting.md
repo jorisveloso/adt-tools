@@ -238,9 +238,26 @@ Gotchas medidos no caminho:
   acentos em UTF-8 e sem *best-fit*. Cuidado com expectativa escrita de memória: o diálogo diz
   *"Entrar o nome **de** usuário e a senha"*, não *"do usuário"*.
 - **`GetWindowText` cross-process não envia `WM_GETTEXT`** — devolve o texto em cache do gerenciador
-  de janelas. No diálogo `Características do atalho SAP` os dois divergem (`txt=Connection Parameters`
-  vs `msg=Parâmetros de conexão`; um `ComboBox` devolve lixo por `WM_GETTEXT`). Nas janelas que a lib
-  usa eles coincidem — mas não conte com isso ao ler um controle novo.
+  de janelas, e nos `Button` do SAP GUI esse cache guarda o **template do recurso em inglês**.
+  Medido 06/09/2026 (item 103, `medicoes/item103-cache-mente.md`) no diálogo
+  `Ligação SAP GUI - logon (S4H, 250, PT, )`: o `GetDlgItem(h, 2)` tem `GetWindowText = "&Cancel"` e
+  `WM_GETTEXT = "&Cancelar"` — é o mesmo controle que a trava de `cancelarPedagio()` lê (por isso ela
+  lê as duas vias, § *O órfão é CANCELADO*). No popup do **pedágio** as duas vias coincidem em todos
+  os 5 controles; nas 4 janelas medidas, título e `Static` sempre coincidem. Onde o cache mente ou
+  cala:
+
+  | controle | `GetWindowText` | `WM_GETTEXT` |
+  |---|---|---|
+  | `Button` (rótulo) | pode vir do template **em inglês** | o PT que a tela desenha |
+  | `Edit` comum | **vazio** | o conteúdo (`MVJVELOSO`) |
+  | `Edit` de **senha** | vazio | **negado** — `SendMessageTimeout` = 0, `GetLastError=5` |
+  | título e `Static` | correto | igual |
+
+  ⚠ **Trocar cegamente por `WM_GETTEXT` é pior que o defeito.** O buffer precisa ir com sentinela e
+  ser cortado pelo **valor retornado**, nunca lido até o NUL: um controle que não responde deixa a
+  memória com resto de heap, e foi assim que o item 63 leu `msg="杀ࣆscrição sistema:"` num `ComboBox`
+  — com o retorno checado o mesmo controle dá `""`. E use `SendMessageTimeout` (`SMTO_ABORTIFHUNG`),
+  nunca `SendMessage`: um Send puro pendura junto com o pad ocupado.
 - **Para medir janela, o alvo NÃO pode ser um console**: a janela de um console pertence ao
   conhost.exe/terminal, não a quem escreve nele — `GetWindowThreadProcessId` devolve o pid do host e
   o filtro por processo não acha nada. E `spawn(…, { detached: true })` no Windows vira
@@ -401,6 +418,11 @@ no fim). Enquanto o `cscript` roda, `rodarVbs` olha as janelas (`janelasSapGui` 
   quem administra o desktop (`WarnOnAttach=0`, § acima), não da lib. Cancelar **nega**, que é o que já
   valia: a chamada morreu no abort. O código tem trava dura: controle `2` com rótulo `OK` ⇒
   `recusado-ok`, sem clique. E nada de `SendKeys {ENTER}` — o Enter aciona o botão **default**, o OK.
+  ⚠ **A trava lê o rótulo por duas vias e falha fechada** (item 103): `GetWindowText` (o cache, que
+  mente nos `Button` do SAP GUI — § *Encoding*) **e** `WM_GETTEXT` por `SendMessageTimeout`; basta uma
+  delas dizer `OK` para recusar. `interpretarCancelamentos` devolve as duas (`botao` = o que o
+  controle respondeu, `botaoCache` = o que o cache disse). Medido contra o pedágio real em
+  06/09/2026: `{ resultado: 'cancelado', botao: 'Cancelar', botaoCache: 'Cancelar' }`, `restantes: []`.
 - **Opções:** `vigiarPedagio` (default `true`), `primeiroPollMs` (2000), `intervaloPollMs` (1500),
   `limparPedagio` (default `true`) — passam por `sessoesAbertas`, `rodarGui` e `fecharSapGui`. Com
   `limparPedagio: false` o órfão **fica** na tela e a chamada seguinte empilha mais um: é o
