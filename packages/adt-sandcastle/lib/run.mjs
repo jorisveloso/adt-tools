@@ -27,12 +27,30 @@ import { run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { claudeCodeHost } from './agente.mjs';
 import { listarFilas, next, itemDaFila, adiar, status, FILAS_DIR } from 'adt-todo';
-import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite } from './veredito.mjs';
+import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite, ultimoLimite, esperaDoEvento } from './veredito.mjs';
 import { repoDaFila, sujos, fecharNoGit } from './git.mjs';
 
 const RAIZ = fileURLToPath(new URL('../../../', import.meta.url)); // raiz do monorepo adt-tools
 const PROMPT = fileURLToPath(new URL('../prompts/item.md', import.meta.url));
 const LOGS = fileURLToPath(new URL('../logs/', import.meta.url));
+
+/** Os últimos `bytes` de um arquivo (o log da fila passa de 20 MB — ler inteiro é desperdício).
+ *  A primeira linha sai cortada ao meio; quem lê o log descarta o que não faz JSON. */
+function lerCauda(caminho, bytes = 512 * 1024) {
+  let fd;
+  try {
+    const tam = fs.statSync(caminho).size;
+    const inicio = Math.max(tam - bytes, 0);
+    const buf = Buffer.alloc(Math.min(bytes, tam));
+    fd = fs.openSync(caminho, 'r');
+    fs.readSync(fd, buf, 0, buf.length, inicio);
+    return buf.toString('utf8');
+  } catch {
+    return ''; // log ainda não existe, ou sumiu no meio do caminho
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
 
 const opts = lerArgs(process.argv.slice(2));
 const filas = escolherFilas(listarFilas(FILAS_DIR), opts.fila);
@@ -105,12 +123,19 @@ for (const fila of filas) {
 
     // 0. Limite de uso do Claude: o item não falhou — espera o reset e tenta O MESMO item de novo.
     //    Adiar aqui esvaziaria a fila em cascata sem fazer nada (05/09/2026: 47 adiados em 15 min).
-    const espera = esperaDoLimite(erro);
+    //    O reset vem PRIMEIRO do `rate_limit_event` do log (epoch, sem fuso); a frase em inglês
+    //    do erro é a reserva, para o caso de o evento não ter sido gravado.
+    //    Só se a sessão FALHOU: numa sessão que terminou bem o evento no log é de outra sessão.
+    const evento = erro ? ultimoLimite(lerCauda(path.join(LOGS, `${fila}.log`))) : null;
+    const espera = erro ? (esperaDoEvento(evento) ?? esperaDoLimite(erro)) : null;
     if (espera !== null) {
       tentados.delete(alvo.n);
       r.sessoes--;
       const ate = new Date(Date.now() + espera).toTimeString().slice(0, 5);
-      console.log(`${hora()} ⏸ limite de uso do Claude — espero até ${ate} (local) e retomo o item ${alvo.n}: ${erro}`);
+      const fonte = esperaDoEvento(evento) !== null
+        ? `evento ${evento.janela} (uso ${Math.round(evento.utilizacao * 100)}%)`
+        : 'texto do erro';
+      console.log(`${hora()} ⏸ limite de uso do Claude — espero até ${ate} (local) e retomo o item ${alvo.n} · fonte: ${fonte}: ${erro}`);
       await new Promise((ok) => setTimeout(ok, espera));
       continue;
     }

@@ -1,7 +1,7 @@
 // veredito.test.mjs — o veredito do runner é PURO: item parseado → ação. Sem disco, sem sandcastle.
 import { test, expect } from 'vitest';
 import { parseFila } from 'adt-todo';
-import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite } from './veredito.mjs';
+import { veredito, escolherFilas, lerArgs, resumoCurto, tituloBreve, umaLinha, esperaDoLimite, ultimoLimite, esperaDoEvento } from './veredito.mjs';
 
 test('tituloBreve corta no "— detalhe" e no tamanho', () => {
   expect(tituloBreve('Anomalia do ROT — medido em 04/09: ~40 s depois')).toBe('Anomalia do ROT');
@@ -94,4 +94,24 @@ test('esperaDoLimite: só erro de limite espera; a hora do reset vem da mensagem
 
 test('lerArgs: o `--` que o pnpm repassa é ignorado', () => {
   expect(lerArgs(['--', '--dry']).dry).toBe(true);
+});
+
+test('ultimoLimite: pega o ÚLTIMO evento, usa a janela que rejeitou e ignora linha quebrada', () => {
+  const log = [
+    'Agent started',
+    '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1789228800,"rateLimitType":"seven_day","utilization":0.34,"unifiedWindows":{"five_hour":{"utilization":0.1,"resetsAt":1788720600},"seven_day":{"utilization":0.34,"resetsAt":1789228800}}}}',
+    '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1788648600,"rateLimitType":"five_hour","utilization":1,"unifiedWindows":{"five_hour":{"utilization":1,"resetsAt":1788648600}}}}',
+    '{"type":"rate_limit_event","rate_limit_i',           // linha cortada pela cauda
+  ].join('\n');
+  const e = ultimoLimite(log);
+  expect(e).toEqual({ rejeitado: true, janela: 'five_hour', utilizacao: 1, resetsAtMs: 1788648600_000 });
+  expect(ultimoLimite('nenhum evento aqui')).toBeNull();
+});
+
+test('esperaDoEvento: só `rejected` espera; o passado vira só a folga de 1 min', () => {
+  const rej = { rejeitado: true, janela: 'five_hour', utilizacao: 1, resetsAtMs: 2_000_000 };
+  expect(esperaDoEvento(rej, { agora: 1_000_000 })).toBe(1_000_000 + 60_000);
+  expect(esperaDoEvento(rej, { agora: 9_000_000 })).toBeNull(); // reset já passou: evento VELHO
+  expect(esperaDoEvento({ ...rej, rejeitado: false }, { agora: 1 })).toBeNull();
+  expect(esperaDoEvento(null)).toBeNull();
 });

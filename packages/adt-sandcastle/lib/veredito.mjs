@@ -32,6 +32,45 @@ export function umaLinha(s) {
 }
 
 /**
+ * O ÚLTIMO `rate_limit_event` do log verboso da fila — a fonte AUTORITATIVA do reset: carimbo em
+ * epoch (segundos), sem fuso nem inglês pelo meio. Cada sessão grava um; o texto do erro
+ * ("resets 10:50am") é a mesma informação já traduzida e ambígua (dia? fuso?).
+ * → { rejeitado, janela, utilizacao, resetsAtMs } | null (nenhum evento no texto).
+ */
+export function ultimoLimite(texto) {
+  const linhas = String(texto ?? '').split(/\r?\n/).filter((l) => l.includes('"rate_limit_event"'));
+  for (let i = linhas.length - 1; i >= 0; i--) {
+    let ev;
+    try { ev = JSON.parse(linhas[i]); } catch { continue; }
+    const info = ev?.rate_limit_info;
+    if (!info) continue;
+    const janela = info.rateLimitType ?? 'five_hour';
+    const w = info.unifiedWindows?.[janela] ?? info;
+    const seg = Number(w.resetsAt ?? info.resetsAt);
+    if (!Number.isFinite(seg)) continue;
+    return {
+      rejeitado: info.status === 'rejected' || info.overageStatus === 'rejected',
+      janela,
+      utilizacao: Number(w.utilization ?? info.utilization ?? 0),
+      resetsAtMs: seg * 1000,
+    };
+  }
+  return null;
+}
+
+/**
+ * Quanto esperar segundo o EVENTO (+1 min de folga), ou null se ele não diz para esperar.
+ * Só o evento `rejected` manda parar: `allowed_warning` com utilização alta ainda passa.
+ * Reset JÁ PASSADO devolve null — o evento é VELHO (ficou no log de uma sessão anterior) e
+ * honrá-lo faria o runner esperar sem motivo, ou repetir um item que falha por outra causa.
+ */
+export function esperaDoEvento(evento, { agora = Date.now() } = {}) {
+  if (!evento?.rejeitado) return null;
+  if (evento.resetsAtMs <= agora) return null;
+  return evento.resetsAtMs - agora + 60_000;
+}
+
+/**
  * A sessão morreu no LIMITE de uso do Claude ("You've hit your session limit · resets 7:50pm")?
  * Então o item NÃO falhou — nem pode ser adiado: adiar em cascata esvazia a fila em minutos sem
  * fazer nada (05/09/2026: 47 itens adiados em 15 min). Devolve quantos ms esperar até o reset
