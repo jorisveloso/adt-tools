@@ -73,6 +73,64 @@ const r = await selecionar(s, '__xmlview9--targetTypeInput', 'TR');
 atuais, a lista de itens (chave, texto, id) e os campos visíveis. É por onde se começa quando o id
 do controle ainda é chute.
 
+## `verificarUi5` — por que a página está sem UI5
+
+> **"A página não carregou" é um diagnóstico, e ele tem que ser medido.** Não existe timing que
+> cure um `sap-ui-core.js` que responde 200 com corpo vazio.
+
+O `inventario` (e portanto o `selecionar`) já faz isso sozinho: quando a página vem sem
+`window.sap`, ele chama o `verificarUi5` antes de estourar, e o erro sai com a **causa medida** em
+vez de um palpite. Passando `{ conexao }` ele também **cura**.
+
+```js
+import { verificarUi5 } from 'adt-client/fiori';
+
+const v = await verificarUi5(s, { conexao });          // `conexao` = a do criarConexao
+// { ui5, versao, causa, medidos, envenenados, curados, recarregou }
+
+await inventario(s, 'tipoInput', { conexao });          // o mesmo, embutido
+await selecionar(s, 'tipoInput', 'TR', { conexao });
+```
+
+| `causa` | o que houve | o que ele faz |
+|---|---|---|
+| `null` | o UI5 está de pé | nada — **zero requisição** |
+| `'recurso-vazio'` | algum recurso volta 200 com corpo VAZIO do cache do ICM | invalida (`curarRecursoVazio`) e recarrega com `ignoreCache` |
+| `'nao-e-o-cache'` | os recursos medidos vieram INTEIROS do servidor | **não invalida nada** — olhe bootstrap, console e contexto seguro |
+| `'sem-o-que-medir'` | a página não declarou recurso UI5 nenhum | nada — provavelmente o canal certo é o `webgui` |
+
+**Medido no s4h 758/250 em 06/09/2026** (item 108,
+`sap-accelerate/work/POC_ui5_recurso_vazio/medicoes/item108-verificar-ui5.md`):
+
+- **página saudável não custa nada**: `ui5: true`, UI5 1.114.0, **0 requisições**, nada tocado;
+- **o sintoma reproduzido** (o `sap-ui-core.js` servido 200 com corpo vazio pela interceptação do
+  CDP): a página fica **sem `window.sap`**, o Resource Timing marca `decodedBodySize = 0` e o
+  helper mede **1 URL** — não a lista inteira (baixar o `library-preload.js` de 3 MB "para
+  conferir" seria custo puro);
+- **ele não invalida às cegas**: nesse mesmo caso o servidor estava íntegro
+  (`gzip=identity=br=200/774788`), o veredito foi `nao-e-o-cache` e **nenhum classrun rodou**;
+- **o carimbo não voltou**: 25 entradas de `sap-ui-core.js` no cache do ICM antes e depois da
+  rodada inteira, **nenhuma nova**.
+
+### ⚠ Por que aqui, e não no `abrirNavegador`
+
+No `abrirNavegador` **não há o que medir** — a aba é `about:blank`, nenhum recurso foi pedido e não
+se sabe quais o app vai pedir; e é a mesma sessão do canal WebGUI/dynpro, que **não usa UI5**. O
+`inventario` é o único ponto que tem o sintoma (`window.sap` faltando) e a evidência (o que a
+página pediu, e com quantos bytes) ao mesmo tempo.
+
+### ⚠ Carimbar a URL está proibido
+
+`?jbv=<timestamp>` também "resolve" — e **cria uma entrada nova no cache do ICM por carga de
+página**, com 7 dias de validade, sem curar a entrada ruim. O laboratório do item 39 fazia isso; a
+POC do 108 rodou com a URL do bootstrap **nua**. Curar > disfarçar. Ver
+[a receita do cache do ICM](receita-icm-cache-estatico.md).
+
+O recarregamento vai com **`ignoreCache: true`**, e isso não é detalhe: medido que, na segunda
+carga, o Chrome serve o `sap-ui-core.js` do **próprio cache** (`transferSize: 0`) — o corpo vazio
+gruda no navegador também, e curar só o ICM deixaria a página como estava. `ignoreCache` é header
+de requisição, não chave de cache: não suja o ICM.
+
 ## ⚠ Armadilhas medidas
 
 - **O `li` da lista é o próprio `sap.ui.core.Item`.** Medido: o item de chave `TR` (id `__item16`)
@@ -90,9 +148,9 @@ do controle ainda é chute.
 - **O `sap-ui-core.js` vem VAZIO na segunda vez.** Medido no s4h 758/250 em 05/09/2026: o primeiro
   GET de `/sap/public/bc/ui5_ui5/resources/sap-ui-core.js` trouxe 774.764 bytes; os seguintes vieram
   **200 com `Content-Length: 0`**, e a página UI5 ficou muda (sem `window.sap`). Não é cache do
-  navegador: o `fetch` do Node, sem cache nenhum, recebe o mesmo vazio — e uma query qualquer na URL
-  (`?jbv=<timestamp>`) traz o conteúdo de volta. O `sap-ui-core-nojQuery.js` e os `library-preload.js`
-  do mesmo diretório nunca vieram vazios. Fila `adt-client` item 67.
+  navegador: o `fetch` do Node, sem cache nenhum, recebe o mesmo vazio. É o **cache do ICM**, e a
+  cura é invalidar a entrada — ver [`verificarUi5`](#verificarui5--por-que-a-página-está-sem-ui5)
+  logo abaixo. Fila `adt-client` itens 67 e 108.
 - **Criar é mutação imediata** no FLP Designer — vale tudo o que a
   [receita do WebGUI](receita-webgui.md#-criar-é-mutação-imediata--fechar-o-navegador-não-é-rollback)
   diz sobre `transacional` e `sessao.desfazer`. Selecionar dentro de um formulário aberto por
@@ -106,3 +164,7 @@ do controle ainda é chute.
 - **`sap.m.MultiComboBox`, `sap.m.Input` com value help e `sap.ui.comp.smartfield`** — outros
   controles de seleção, com outro gesto (token, popover de F4). Fora do escopo deste helper.
 - **Lista com paginação/`growing`** — o item pode não estar renderizado quando o popover abre.
+- **A cura de ponta a ponta do `verificarUi5`** (`envenenado → invalidar → recarregar → `window.sap`
+  volta`). Não há como produzir uma entrada envenenada sob demanda: o GATILHO segue sem reprodução
+  (fila `adt-client` #107). O que está medido é cada metade — a invalidação tem contra-prova do
+  item 67, e a orquestração está coberta por teste unitário.

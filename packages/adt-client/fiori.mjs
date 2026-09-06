@@ -33,8 +33,26 @@
 //     `selecionar` abrir a lista e CLICAR no item, e só cair no disparo programático (avisando
 //     `gesto: 'programa'`) quando a lista não abre.
 
+// ⚠️ **"A página não carregou" é um diagnóstico, e ele tem que ser MEDIDO.** O modo de falha do
+// item 67 (ver o cabeçalho do `icm.mjs`) entrega a página com o `sap-ui-core.js` respondendo 200
+// com corpo VAZIO: o `onload` do script dispara, não há erro nem status ruim, e a página fica sem
+// `window.sap`. Quem dirige o app lê isso como timing e espera mais — e não há timing que cure.
+//
+// POR QUE A CURA ENTRA AQUI, e não no `abrirNavegador` (decidido na fila adt-client #108):
+//   • no `abrirNavegador` **não há o que medir** — a aba é `about:blank`, nenhum recurso foi
+//     pedido ainda, e não se sabe quais o app vai pedir; medir na sorte custaria 3 GETs de ~775 KB
+//     por sessão;
+//   • aquele mesmo `abrirNavegador` é a sessão do canal WebGUI/dynpro, que **não usa UI5** —
+//     pagar diagnóstico de UI5 lá seria custo puro no caminho que não tem o problema;
+//   • aqui, no `inventario`, a página JÁ disse o que pediu (Resource Timing) e já falhou o teste
+//     `window.sap` — é o único ponto que tem o sintoma e a evidência ao mesmo tempo. É exatamente
+//     a linha que hoje chuta "o canal certo pode ser o webgui".
+// A cura é `curarRecursoVazio` (invalidação no ICM) + recarregar com `ignoreCache`. **Carimbar a
+// URL com `?ts=` está proibido**: cria entrada nova no cache do ICM a cada carga e não cura nada.
+
 import { passo, detalhe, aviso } from './log.mjs';
 import { avaliar, clicar } from './webgui.mjs';
+import { medirRecurso, curarRecursoVazio, ENCODINGS_MEDIDOS } from './icm.mjs';
 
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -146,13 +164,188 @@ export function diferencaDeCampos(antes = [], depois = []) {
   };
 }
 
-/** O estado do controle e da tela agora — o mesmo modelo que o `selecionar` compara. */
-export async function inventario(sessao, alvo) {
+// ---------- a página que ficou sem UI5: MEDIR antes de culpar o timing ----------
+
+/**
+ * PURO: o que a própria página sabe dizer sobre o carregamento — se o UI5 subiu, e QUAIS recursos
+ * de mesma origem ela pediu, com quantos bytes cada um chegou (Resource Timing).
+ *
+ * ⚠️ O caminho vem **sem a query**: a chave do cache do ICM inclui o hash da query, então medir a
+ * URL carimbada (`?jbv=…`) mediria OUTRA entrada — não a que envenenou a página.
+ */
+export function jsEstadoUi5() {
+  return `(() => {
+    const org = location.origin;
+    const doCaminho = (u) => {
+      try { const x = new URL(u, location.href); return x.origin === org ? x.pathname : null; }
+      catch (e) { return null; }
+    };
+    const recursos = (performance.getEntriesByType ? performance.getEntriesByType('resource') : [])
+      .map((e) => ({ caminho: doCaminho(e.name), tipo: e.initiatorType,
+                     bytes: e.decodedBodySize, transferidos: e.transferSize }))
+      .filter((r) => r.caminho);
+    const scripts = [...document.querySelectorAll('script[src]')]
+      .map((e) => doCaminho(e.getAttribute('src'))).filter(Boolean);
+    return {
+      ui5: !!(window.sap && sap.ui),
+      versao: (window.sap && sap.ui && sap.ui.version) || null,
+      url: location.href, recursos, scripts,
+    };
+  })()`;
+}
+
+/** PURO: um recurso do UI5? O bootstrap e os módulos moram sob um diretório `resources/` — é a
+ * convenção do framework (`/sap/public/bc/ui5_ui5/resources/…`, `/sap/bc/ui5_ui5/sap/<app>/resources/…`). */
+export const ehRecursoUi5 = (caminho) =>
+  /\/resources\//i.test(String(caminho ?? '')) && /\.js$/i.test(String(caminho ?? ''));
+
+/** PURO: o `sap-ui-core.js` na frente — é o script cuja ausência apaga o `window.sap` inteiro. */
+const pesoDoSuspeito = (c) => (/sap-ui-core[^/]*\.js$/i.test(c) ? 0 : 1);
+
+/**
+ * PURO: o que vale medir por HTTP, e em que ordem.
+ *
+ * Quando a PRÓPRIA página já denuncia script de mesma origem com **0 byte**, só esses vão — é o
+ * alvo, e medir o resto seria baixar megabytes à toa. Sem denúncia (sem Resource Timing, ou o
+ * corpo veio do cache do navegador), vai a lista dos scripts UI5 declarados, até o `teto`.
+ */
+export function recursosSuspeitos(estado, { teto = 6 } = {}) {
+  const recursos = estado?.recursos ?? [];
+  const vazios = recursos.filter((r) => r.tipo === 'script' && r.bytes === 0).map((r) => r.caminho);
+  if (vazios.length) return [...new Set(vazios)].slice(0, teto);
+  const declarados = new Set([
+    ...(estado?.scripts ?? []),
+    ...recursos.filter((r) => r.tipo === 'script').map((r) => r.caminho),
+  ]);
+  return [...declarados].filter(ehRecursoUi5)
+    .sort((a, b) => pesoDoSuspeito(a) - pesoDoSuspeito(b)).slice(0, teto);
+}
+
+/**
+ * PURO: o veredito, do estado da página mais as medições HTTP. É aqui que "a página não carregou"
+ * vira uma CAUSA:
+ *
+ *   `null`              — o UI5 está de pé, não há o que explicar;
+ *   `'recurso-vazio'`   — algum recurso volta 200 com corpo VAZIO do cache do ICM (curável);
+ *   `'nao-e-o-cache'`   — os recursos estão inteiros no servidor; a página está sem UI5 por outra
+ *                         causa (bootstrap que não rodou, erro de JS, contexto inseguro, tela errada);
+ *   `'sem-o-que-medir'` — a página não declarou recurso UI5 nenhum (provavelmente não é app UI5).
+ */
+export function diagnosticoDaPagina(estado, medidos = []) {
+  if (estado?.ui5) return { ui5: true, causa: null, envenenados: [] };
+  const envenenados = medidos.filter((m) => m?.envenenado).map((m) => m.url);
+  if (envenenados.length) return { ui5: false, causa: 'recurso-vazio', envenenados };
+  return { ui5: false, causa: medidos.length ? 'nao-e-o-cache' : 'sem-o-que-medir', envenenados: [] };
+}
+
+/**
+ * A página tem UI5 de pé? E, se NÃO tem, **por quê** — medido, não suposto.
+ *
+ * É o antídoto do modo de falha do item 67: o `sap-ui-core.js` volta 200 com corpo vazio do cache
+ * do ICM, o `onload` do script dispara igual, não há erro em lugar nenhum e a página fica sem
+ * `window.sap` — quem dirige o app vê "a página não terminou de carregar" e culpa o timing.
+ *
+ * Ordem: lê `window.sap` (de graça) → só se faltar, escolhe os suspeitos pelo que a página pediu →
+ * mede por HTTP (`medirRecurso`) → cura o que estiver vazio (`curarRecursoVazio`) → recarrega e
+ * confere. Página saudável **não custa requisição nenhuma** e não toca em nada.
+ *
+ * ⚠️ **Não carimba URL.** O `?jbv=<timestamp>` também "resolve", mas cria uma ENTRADA NOVA no
+ * cache do ICM por carga de página (7 dias de validade cada) e não CURA a entrada ruim — ver o
+ * cabeçalho do `icm.mjs`. O recarregamento vai com `ignoreCache` (que é header de requisição, não
+ * chave de cache): tira o corpo vazio do cache do NAVEGADOR sem sujar o do ICM.
+ *
+ * `conexao` (a do `criarConexao`) é o que permite CURAR — a invalidação é um classrun. Sem ela a
+ * função ainda MEDE e diz o que houve, com a instrução do que chamar.
+ *
+ * `{ recarregar: false }` para página montada por `Page.setDocumentContent` (o reload a perderia).
+ */
+export async function verificarUi5(sessao, {
+  conexao = null, curar = true, recarregar = true, teto = 6,
+  encodings = ENCODINGS_MEDIDOS, tetoMs = 30000,
+} = {}) {
+  const vazio = { medidos: [], envenenados: [], curados: [], recarregou: false };
+  const estado = await avaliar(sessao, jsEstadoUi5());
+  if (estado?.ui5) {
+    detalhe(`fiori: UI5 ${estado.versao ?? '(sem versão)'} de pé — nada a medir`);
+    return { ...vazio, ui5: true, versao: estado.versao ?? null, causa: null, estado };
+  }
+
+  passo('fiori: a página está sem window.sap — medindo os recursos antes de culpar o timing');
+  const alvos = recursosSuspeitos(estado, { teto });
+  const cfg = conexao?.cfg ?? sessao?.cfg;
+  const medidos = [];
+  if (cfg?.base) for (const url of alvos) medidos.push(await medirRecurso(cfg, url, { encodings }));
+  const d = diagnosticoDaPagina(estado, medidos);
+
+  if (d.causa === 'sem-o-que-medir') {
+    aviso('fiori: a página está sem UI5 e não declarou recurso UI5 nenhum — pode não ser uma app UI5 (o canal certo talvez seja o webgui)');
+    return { ...vazio, ui5: false, versao: null, causa: d.causa, medidos, estado };
+  }
+  if (d.causa === 'nao-e-o-cache') {
+    aviso(`fiori: os ${medidos.length} recurso(s) medido(s) estão INTEIROS no servidor — a página está sem UI5 por outra causa, não é o cache do ICM`);
+    return { ...vazio, ui5: false, versao: null, causa: d.causa, medidos, estado };
+  }
+
+  if (!curar || !conexao) {
+    aviso(`fiori: ${d.envenenados.join(', ')} volta(m) VAZIO(s) do cache do ICM — cure com curarRecursoVazio(conexao, url) do icm.mjs (carimbar a URL só desvia, e entope o cache)`);
+    return { ...vazio, ui5: false, versao: null, causa: d.causa, medidos, envenenados: d.envenenados, estado };
+  }
+
+  const curados = [];
+  for (const url of d.envenenados) curados.push(await curarRecursoVazio(conexao, url, { encodings }));
+  if (!recarregar) {
+    return { ...vazio, ui5: false, versao: null, causa: d.causa, medidos, envenenados: d.envenenados, curados };
+  }
+
+  passo('fiori: recarregando a página com o cache do ICM curado');
+  await sessao.cmd('Page.reload', { ignoreCache: true });
+  const ate = Date.now() + tetoMs;
+  let depois = null;
+  while (Date.now() < ate) {
+    await espera(300);
+    depois = await avaliar(sessao, jsEstadoUi5()).catch(() => null);
+    if (depois?.ui5) break;
+  }
+  const ok = !!depois?.ui5;
+  (ok ? detalhe : aviso)(`fiori: depois de curar ${d.envenenados.length} recurso(s), a página ${ok ? `subiu com UI5 ${depois.versao ?? ''}` : 'CONTINUA sem window.sap — a causa não era só o cache'}`);
+  return {
+    ui5: ok, versao: depois?.versao ?? null, causa: d.causa,
+    medidos, envenenados: d.envenenados, curados, recarregou: true, estado: depois ?? estado,
+  };
+}
+
+/**
+ * O estado do controle e da tela agora — o mesmo modelo que o `selecionar` compara.
+ *
+ * Quando a página vem **sem UI5**, ele não chuta mais "canal errado / não carregou": chama o
+ * `verificarUi5`, e o erro sai com a CAUSA medida. Passe `{ conexao }` para que ele também CURE o
+ * recurso vazio e recarregue — aí a leitura é refeita e o inventário volta normal.
+ */
+export async function inventario(sessao, alvo, { conexao = null, medirUi5 = true, ...opcoesUi5 } = {}) {
   const id = idDoControle(alvo);
-  const r = await avaliar(sessao, jsInventario(id));
+  let r = await avaliar(sessao, jsInventario(id));
+  if (!r?.ui5 && medirUi5) {
+    const v = await verificarUi5(sessao, { conexao, ...opcoesUi5 });
+    if (v.ui5) r = await avaliar(sessao, jsInventario(id));
+    else throw new Error(`fiori: esta página não tem UI5 carregado (procurando ${id}) — ${explicarSemUi5(v)}`);
+  }
   if (!r?.ui5) throw new Error(`fiori: esta página não tem UI5 carregado (procurando ${id}) — o canal certo pode ser o webgui`);
   if (!r.achou) throw new Error(`fiori: nenhum controle UI5 com id "${id}" na página`);
   return { id, ...r };
+}
+
+/** PURO: o que dizer a quem chamou, a partir do veredito do `verificarUi5`. */
+export function explicarSemUi5(v) {
+  if (v?.causa === 'recurso-vazio' && v.recarregou) {
+    return `${v.envenenados.join(', ')} estava(m) VAZIO(s) no cache do ICM; curei e recarreguei, e a página CONTINUA sem window.sap — há outra causa além do cache`;
+  }
+  if (v?.causa === 'recurso-vazio') {
+    return `${v.envenenados.join(', ')} volta(m) 200 com corpo VAZIO do cache do ICM (é isto, não timing) — passe { conexao } para curar, ou chame curarRecursoVazio(conexao, url) do icm.mjs`;
+  }
+  if (v?.causa === 'nao-e-o-cache') {
+    return `medi ${v.medidos.length} recurso(s) UI5 e todos vieram INTEIROS do servidor — não é o cache do ICM; olhe o bootstrap, o console da página e o contexto seguro`;
+  }
+  return 'a página não declarou recurso UI5 nenhum — o canal certo pode ser o webgui';
 }
 
 /**
@@ -167,9 +360,11 @@ export async function inventario(sessao, alvo) {
  * estoura se não pegou) e nenhum campo entrou ou saiu da tela.
  *
  * `{ viaPrograma: true }` pula o gesto real e dispara por API — para tela onde o popover não abre.
+ * `{ conexao }` deixa o `inventario` CURAR um recurso vazio no cache do ICM antes de desistir da
+ * página (ver `verificarUi5`).
  */
-export async function selecionar(sessao, alvo, valor, { tetoMs = 15000, esperaCampoMs = 4000, viaPrograma = false } = {}) {
-  const antes = await inventario(sessao, alvo);
+export async function selecionar(sessao, alvo, valor, { tetoMs = 15000, esperaCampoMs = 4000, viaPrograma = false, conexao = null } = {}) {
+  const antes = await inventario(sessao, alvo, { conexao });
   const id = antes.id;
   const item = escolherItem(antes.itens, valor);
   passo(`fiori: selecionar ${item.chave ?? item.texto} em ${id}`);

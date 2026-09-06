@@ -75,9 +75,27 @@ oito entradas de ~213 KB, expiração de 7 dias, uma por timestamp, num cache qu
 de 10.000 entradas** (`MAX_ENTR`) e 182 MB de 419 MB. Carimbar a cada carga de página queima a
 capacidade do cache do sistema do cliente para disfarçar um estado que se cura em um comando.
 
-**Portanto: o canal navegador não carimba URL sozinho.** Quem dirige app UI5 chama
-`curarRecursoVazio` uma vez sobre os recursos de que a página depende — ele não faz nada quando não
-há o que curar.
+**Portanto: o canal navegador não carimba URL sozinho.**
+
+## Quem chama a cura: o `verificarUi5` do `fiori.mjs`
+
+Decidido e medido em 06/09/2026 (fila `adt-client` #108,
+`sap-accelerate/work/POC_ui5_recurso_vazio/medicoes/item108-verificar-ui5.md`): a cura entra no
+**`inventario`** do [`fiori.mjs`](receita-fiori.md#verificarui5--por-que-a-página-está-sem-ui5), não
+no `abrirNavegador` — é o único ponto que tem o sintoma (`window.sap` faltando) e a evidência (o
+que a página pediu, e com quantos bytes, pelo Resource Timing) ao mesmo tempo. No `abrirNavegador`
+a aba ainda é `about:blank`: não há recurso pedido para medir, e aquela mesma sessão serve o canal
+WebGUI/dynpro, que não usa UI5.
+
+```js
+await selecionar(s, 'tipoInput', 'TR', { conexao });   // mede e cura sozinho quando precisa
+const v = await verificarUi5(s, { conexao });          // ou explicitamente
+```
+
+Três coisas medidas nesse desenho: página saudável custa **0 requisição**; a página denuncia o
+script vazio (`decodedBodySize = 0`) e só **ele** é medido por HTTP; e quando o servidor está
+íntegro o veredito é `nao-e-o-cache` — **nenhuma invalidação**. Invalidar às cegas seria estragar
+cache alheio por nada.
 
 ## O que continua aberto
 
