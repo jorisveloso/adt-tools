@@ -5,7 +5,7 @@
 // O resto (rede, sessão, gravação) só é exercitável contra um SAP de verdade — ver README.
 
 import { test, expect } from 'vitest';
-import { parseObjectReferences, parseUsageReferences, parseUsageSnippets } from './search.mjs';
+import { parseObjectReferences, parseUsageReferences, parseUsageSnippets, filtrarPorAcesso } from './search.mjs';
 import { montarMeta } from './layout.mjs';
 import { resolverTipo, codigoDaLibKey, normalizar } from './tipos/index.mjs';
 import {
@@ -143,6 +143,38 @@ test('snippets: um identifier rende N ocorrências — arquivo, linha e coluna d
 test('snippets: nó que não devolveu snippet nenhum não vira ocorrência', () => {
   const ids = parseUsageSnippets(XML_SNIPPETS).map((x) => x.id);
   expect(ids.filter((i) => i.includes('LJ1BCU03'))).toEqual([]);
+});
+
+// Resposta REAL do usageSnippets no s4h 250 (06/09/2026, item 96) — laboratório Z onde a escrita era
+// certa. É o caso que derruba o parser antigo: nas duas linhas o PRIMEIRO token é `accessUnknown` (a
+// classe) e o SEGUNDO é o que responde (o atributo, `gradeComponent`).
+const XML_SNIPPETS_ACESSO = `<?xml version="1.0" encoding="utf-8"?><usageReferences:usageSnippetResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:codeSnippetObjects><usageReferences:codeSnippetObject><objectIdentifier>ABAPFullName;ZPOC_WU_PROG;\CL:ZCL_POC_WU_LAB;2</objectIdentifier><usageReferences:codeSnippets><usageReferences:codeSnippet uri="/sap/bc/adt/programs/programs/zpoc_wu_prog/source/main#start=12,2;end=12,16" matches="2-16,accessUnknown,gradeDirect;18-26,accessWrite,gradeComponent"><content>  zcl_poc_wu_lab=&gt;gv_valor = 'ESCRITO'.  "ESCRITA no atributo estatico</content><description/></usageReferences:codeSnippet><usageReferences:codeSnippet uri="/sap/bc/adt/programs/programs/zpoc_wu_prog/source/main#start=20,11;end=20,25" matches="11-25,accessUnknown,gradeDirect;27-35,accessRead,gradeComponent"><content>  WRITE: / zcl_poc_wu_lab=&gt;gv_valor.   "LEITURA do atributo estatico</content><description/></usageReferences:codeSnippet></usageReferences:codeSnippets></usageReferences:codeSnippetObject></usageReferences:codeSnippetObjects></usageReferences:usageSnippetResult>`;
+
+test('matches é uma LISTA por token, com os offsets casando o texto da linha', () => {
+  const [escrita] = parseUsageSnippets(XML_SNIPPETS_ACESSO);
+  expect(escrita.acessos).toEqual([
+    { inicio: 2, fim: 16, acesso: 'accessUnknown', grade: 'gradeDirect', trecho: 'zcl_poc_wu_lab' },
+    { inicio: 18, fim: 26, acesso: 'accessWrite', grade: 'gradeComponent', trecho: 'gv_valor' },
+  ]);
+});
+
+// O bug que este item corrigiu: `matches.match(/access\w+/)` pegava o token de FORA (a classe) e
+// devolvia `accessUnknown` numa linha que é ESCRITA — escondendo a única resposta que interessa.
+test('snippets: `acesso` é o token DECISIVO, não o primeiro da lista', () => {
+  const [escrita, leitura] = parseUsageSnippets(XML_SNIPPETS_ACESSO);
+  expect(escrita.acesso).toBe('accessWrite');
+  expect(escrita.grade).toBe('gradeComponent');
+  expect(leitura.acesso).toBe('accessRead');
+});
+
+test('filtro de acesso: escrita e leitura separam as duas linhas medidas', () => {
+  const usos = parseUsageSnippets(XML_SNIPPETS_ACESSO);
+  expect(filtrarPorAcesso(usos, 'escrita').map((u) => u.linha)).toEqual([12]);
+  expect(filtrarPorAcesso(usos, 'leitura').map((u) => u.linha)).toEqual([20]);
+  // `accessUnknown` não é ausência de uso, é ausência de resposta — fica fora dos dois
+  expect(filtrarPorAcesso(parseUsageSnippets(XML_SNIPPETS), 'escrita')).toEqual([]);
+  expect(filtrarPorAcesso(parseUsageSnippets(XML_SNIPPETS), 'leitura').map((u) => u.linha)).toEqual([28]);
+  expect(() => filtrarPorAcesso(usos, 'gravacao')).toThrow(/escrita.*leitura/);
 });
 
 test('meta: pacote vem do packageRef, NÃO do nome da raiz', () => {

@@ -108,9 +108,13 @@ export async function buscar(session, padrao, adtTypes = [], max = 200) {
 //     expandidos e 12.232 colapsados; `MATNR`, 41.226 anunciados com 30.221 expandidos e 26.473
 //     colapsados. Para ELEMENTO DE DADOS o pouco que vem localizado são DECLARAÇÕES (`TABL/DSF` — o
 //     campo na estrutura). O ONDE vem do `expandir`: o snippet dá arquivo, linha, coluna e o trecho.
-//     ⚠️ Mas ele ainda NÃO promete "quem GRAVA o campo": o `matches` do snippet traz `accessRead` e
-//     `accessUnknown` nas medições feitas, e `accessWrite` NÃO apareceu. Enquanto isso não for
-//     medido, a pergunta "quem escreve neste campo" continua sendo do canal de fonte/debug.
+//     ✅/⚠️ RESOLVIDO PELA METADE em 06/09/2026 (s4h 250, item 96): `accessWrite` EXISTE — mas quem
+//     o traz é o where-used da TABELA (ou da CLASSE) dona do campo, e NUNCA o do ELEMENTO DE DADOS.
+//     Medido em laboratório Z onde a escrita era certa: o where-used do DE devolveu só as duas
+//     DECLARAÇÕES (`TYPE zpoc_wu_de`), ambas `accessUnknown` — as linhas que gravam sequer aparecem
+//     na lista, porque ali quem é referenciado é o TIPO, não o valor. Logo o aviso continua valendo
+//     PARA O DE, por outro motivo: não é o `matches` que falta, são as ocorrências.
+//     Ver o ponto 5 de `expandirUsos` para o que o `accessWrite` responde e o que ele não responde.
 //
 //  4. O nome/tipo/pacote NÃO estão no `referencedObject` — estão no filho `adtObject`
 //     (e o pacote no `adtcore:packageRef` dentro dele). Ler só os atributos da tag de fora devolve
@@ -191,17 +195,18 @@ export function parseUsageReferences(xml) {
  * @param session sessão viva (cookie + token)
  * @param {string} uri  URI ADT do objeto, ex.: '/sap/bc/adt/oo/classes/zcl_x',
  *                      '/sap/bc/adt/ddic/dataelements/j_1bnfe_utrib'
- * @param {{expandir?: boolean, maxExpandir?: number, lote?: number}} opts
+ * @param {{expandir?: boolean, maxExpandir?: number, lote?: number, acesso?: 'escrita'|'leitura'}} opts
  *        `expandir` chama o `usageSnippets` nos nós expansíveis e traz arquivo/linha/coluna de cada
  *        uso em código (ver `expandirUsos`); `maxExpandir` (default 500) é o teto que evita disparar
- *        milhares de chamadas sem querer — acima dele NÃO expande e diz isso.
+ *        milhares de chamadas sem querer — acima dele NÃO expande e diz isso; `acesso` filtra os
+ *        `usos` por modo de acesso — e o que ele responde tem fronteira medida, ver `filtrarPorAcesso`.
  * @returns `{ total, descricao, escopo, refs, ocorrencias, colapsados, expansiveis, containers,
- *          completo, usos?, expandido }` — `ocorrencias` são os usos que já vieram localizados,
- *          `expansiveis` os nós de uso em código que só o `usageSnippets` localiza, `containers` os
- *          nós colapsados que são só pai (esses não escondem nada: os filhos vêm na mesma árvore),
- *          e `usos` (só com `expandir`) as ocorrências linha a linha.
+ *          completo, usos?, usosAntesDoFiltro?, expandido }` — `ocorrencias` são os usos que já
+ *          vieram localizados, `expansiveis` os nós de uso em código que só o `usageSnippets`
+ *          localiza, `containers` os nós colapsados que são só pai (esses não escondem nada: os
+ *          filhos vêm na mesma árvore), e `usos` (só com `expandir`) as ocorrências linha a linha.
  */
-export async function whereUsed(session, uri, { expandir = false, maxExpandir = 500, lote = 200 } = {}) {
+export async function whereUsed(session, uri, { expandir = false, maxExpandir = 500, lote = 200, acesso } = {}) {
   passo(`where-used: ${uri}`);
   const r = await call(session, {
     method: 'POST',
@@ -265,7 +270,32 @@ export async function whereUsed(session, uri, { expandir = false, maxExpandir = 
     for (const x of expansiveis.slice(0, 10)) if (!expandido || !usos.some((u) => u.id === x.id)) detalhe(`   sem localização: ${x.uri}`);
   }
 
-  return { ...res, ocorrencias, colapsados, expansiveis, containers, completo, expandido, ...(usos ? { usos } : {}) };
+  let usosAntesDoFiltro;
+  if (acesso && usos) {
+    usosAntesDoFiltro = usos;
+    usos = filtrarPorAcesso(usos, acesso);
+    detalhe(`filtro de acesso "${acesso}": ${usos.length} de ${usosAntesDoFiltro.length} ocorrência(s)`);
+  }
+
+  return {
+    ...res, ocorrencias, colapsados, expansiveis, containers, completo, expandido,
+    ...(usos ? { usos } : {}), ...(usosAntesDoFiltro ? { usosAntesDoFiltro } : {}),
+  };
+}
+
+/**
+ * Filtra ocorrências do `expandirUsos` por modo de acesso. PURO.
+ * ⚠️ **Isto responde sobre a VARIÁVEL, não sobre o BANCO** — ver o ponto 5 de `expandirUsos`.
+ * `escrita` = alguma posição do `matches` é `accessWrite`; `leitura` = alguma é `accessRead` e
+ * nenhuma é `accessWrite` (linha que lê e escreve conta como escrita, que é a pergunta cara).
+ * O `accessUnknown` fica de fora dos dois: não é ausência de uso, é ausência de resposta.
+ */
+export function filtrarPorAcesso(usos, acesso) {
+  if (acesso !== 'escrita' && acesso !== 'leitura') {
+    throw new Error(`filtro de acesso inválido: ${JSON.stringify(acesso)} — use 'escrita' ou 'leitura'`);
+  }
+  const tem = (u, modo) => (u.acessos || []).some((a) => a.acesso === modo);
+  return (usos || []).filter((u) => (acesso === 'escrita' ? tem(u, 'accessWrite') : tem(u, 'accessRead') && !tem(u, 'accessWrite')));
 }
 
 // ---------- expandir o nó colapsado (usage snippets) ----------
@@ -292,9 +322,21 @@ export async function whereUsed(session, uri, { expandir = false, maxExpandir = 
 //     como `/sap/bc/adt/functions/groups/j1bb2/fmodules/j_1b_nf_object_edit_new/source/main#start=
 //     436,19;end=436,39`. É a URI que o `getSource` lê e o fragmento diz a linha.
 //
-//  5. `matches` traz `accessRead`/`accessUnknown` além do `grade`. `accessWrite` NÃO apareceu nas
-//     medições feitas — se ele existir, é ele que responderia "quem GRAVA neste campo". Enquanto
-//     não for medido, o `acesso` é repassado cru e nada é prometido sobre escrita.
+//  5. `matches` é uma LISTA, não um valor — `<ini>-<fim>,access<Modo>,grade<Tipo>` separados por
+//     `;`, um por TOKEN casado na linha, com os offsets dentro do `content` (0-based, fim exclusivo).
+//     Medido em 06/09/2026 no s4h 250 (item 96), em laboratório Z com escrita certa:
+//     • **`accessWrite` EXISTE**, e vem sempre com `gradeComponent` — é do COMPONENTE, não do
+//       objeto. `ls_reg-valor = 'X'` → `9-14,accessWrite,gradeComponent`;
+//       `zcl_x=>gv_valor = 'X'` → `2-16,accessUnknown,gradeDirect;18-26,accessWrite,gradeComponent`.
+//     • ⚠️ **Ler o primeiro `access\w+` da string devolve o token ERRADO** e esconde a escrita — era
+//       o que o parser fazia até aqui. Hoje há `acessos` (a lista com o `trecho` de cada offset) e
+//       `acesso` é o primeiro token que não é `accessUnknown`.
+//     • ⚠️ **E o acesso é sobre a VARIÁVEL EM MEMÓRIA, não sobre o BANCO.** Medido no mesmo fonte:
+//       `INSERT zpoc_wu_t FROM ls_reg` saiu **`accessRead`** no nome da tabela, e
+//       `UPDATE zpoc_wu_t SET valor = …` saiu **`accessUnknown`** nos três tokens. Escrita no banco
+//       NÃO é `accessWrite`. Quem quiser "quem grava a tabela" segue no canal de fonte/debug — o que
+//       o filtro `acesso: 'escrita'` entrega é a atribuição em work area/atributo/variável, que é um
+//       PROXY do padrão comum (`ls-campo = v.` … `INSERT`), nunca a resposta completa.
 //
 //  6. A CHAMADA É CARA, e o preço é por CHAMADA, não por id — daí o lote grande. Medido com os
 //     9.321 identifiers do CL_SALV_TABLE: 10 ids → 35 s, 25 → 36 s, 50 → 32 s, 100 → 71 s,
@@ -320,8 +362,29 @@ const corpoSnippets = (ids) =>
 const escapeXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /**
+ * Um `matches` é uma LISTA — `<ini>-<fim>,access<Modo>,grade<Tipo>` separados por `;`, um por TOKEN
+ * casado na linha, com os offsets dentro do `conteudo` (0-based, fim exclusivo). PURO.
+ * Medido em 06/09/2026 no s4h 250 (item 96): numa linha com vários tokens só o do COMPONENTE traz o
+ * acesso de verdade — `zcl_x=>gv_valor = 'A'` casa `zcl_x` (accessUnknown, gradeDirect) E `gv_valor`
+ * (accessWrite, gradeComponent). Ler o primeiro `access\w+` da string, como se fazia até aqui,
+ * devolve o token errado e ESCONDE a escrita.
+ */
+export function parseMatches(matches) {
+  const saida = [];
+  for (const parte of String(matches || '').split(';')) {
+    const m = parte.match(/^(\d+)-(\d+),(access\w*),(grade\w*)$/);
+    if (m) saida.push({ inicio: Number(m[1]), fim: Number(m[2]), acesso: m[3], grade: m[4] });
+  }
+  return saida;
+}
+
+/**
  * Extrai os snippets do XML do usageSnippets. PURO (sem rede).
- * Cada item: `{ id, uri, fonte, linha, coluna, acesso, grade, matches, conteudo, descricao }`.
+ * Cada item: `{ id, uri, fonte, linha, coluna, acesso, grade, acessos, matches, conteudo, descricao }`.
+ * `acessos` é o `matches` já quebrado por token (com `trecho`, o texto que cada offset cobre);
+ * `acesso`/`grade` são os do primeiro token DECISIVO — o primeiro que não é `accessUnknown` —, e
+ * caem no primeiro token quando todos são desconhecidos. Nas 14 linhas medidas nunca houve dois
+ * tokens não-`Unknown` na mesma linha; `acessos` fica para quem precisar do caso não medido.
  */
 export function parseUsageSnippets(xml) {
   const texto = String(xml);
@@ -337,16 +400,20 @@ export function parseUsageSnippets(xml) {
       const uri = na('uri');
       const matches = na('matches');
       const pos = uri.match(/start=(\d+),(\d+)/) || [];
+      const conteudo = destexto((miolo.match(/<content>([\s\S]*?)<\/content>/) || [])[1] || '');
+      const acessos = parseMatches(matches).map((a) => ({ ...a, trecho: conteudo.slice(a.inicio, a.fim) }));
+      const decisivo = acessos.find((a) => a.acesso !== 'accessUnknown') || acessos[0];
       itens.push({
         id,
         uri,
         fonte: uri.split('#')[0],
         linha: Number(pos[1] || 0),
         coluna: Number(pos[2] || 0),
-        acesso: (matches.match(/access\w+/) || [])[0] || '',
-        grade: (matches.match(/grade\w+/) || [])[0] || '',
+        acesso: decisivo?.acesso || '',
+        grade: decisivo?.grade || '',
+        acessos,
         matches,
-        conteudo: destexto((miolo.match(/<content>([\s\S]*?)<\/content>/) || [])[1] || ''),
+        conteudo,
         descricao: destexto((miolo.match(/<description>([\s\S]*?)<\/description>/) || [])[1] || ''),
       });
     }
