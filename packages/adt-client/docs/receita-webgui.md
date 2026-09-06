@@ -1427,6 +1427,86 @@ de `controlesDoDelta` num delta de 300 KB, e por isso `popupDaSessao` só o paga
 dizem que há modal. Até 06/09/2026 o booleano se chamava `popup` — e `r.popup?.sid` dava `undefined`
 em silêncio.
 
+## O menu do BOTÃO DIREITO — as FUNÇÕES da tela, que a barra publica só em parte
+
+**Medido no s4h 758/250 em 2026-09-06** (item 128, `POC_webgui_menu/medicoes/item128-menu-da-area.md`,
+fases A–I, 10 telas, 344 itens). Nos MESMOS `<xmp>` da árvore da barra (item 82) vem um segundo
+menu, que o `arvoreDeMenu` descarta: `wnd[0]/usr/mnu` — **o menu do botão direito da área de
+trabalho**. E cada item dele é uma **tecla de função ativa da dynpro, com o rótulo do GUI status**.
+
+```js
+await funcoesDaTela(s);
+// [{ rotulo: 'Exibir', atalho: 'F7', okcode: 'btn[7]', habilitado: true,
+//    sid: 'wnd[0]/usr/mnu/menu[5]', id: 'wnd[0]/usr/mnu/menu[5]' }, …]   // 35 na SE38, 25 ms
+
+await acionarFuncao(s, 'Exibir');      // → { via: 'menu',  okcode: 'btn[7]',  mudou: true }
+await acionarFuncao(s, 'Voltar');      // → { via: 'barra', okcode: 'btn[3]',  mudou: true }
+await acionarFuncao(s, 'Ctrl+F2');     // → { via: 'barra', okcode: 'btn[26]', mudou: true }
+```
+
+**Por que vale:** a barra publica uma fração. SE38 **35 funções × 16 botões**; SM30 16 × **3**;
+SM59 26 × 6. O que sobra são as funções sem botão — "Exibir" (`F7`), "Ativar" (`SHIFT_F9`),
+"Testes de módulo" (`CTRL_SHIFT_F10`), "Customizing (IMG)" (`F8` da SM30) — que antes só se
+alcançava sabendo o `btn[n]` de cor, ou descendo o menu da barra em cascata.
+
+**Ler é de graça:** é o MESMO despejo dos `<xmp>` do `arvoreDeMenu`, com outro filtro
+(`daAreaDeTrabalho` em vez de `daBarraDeMenu`). 35 funções em **25 ms**, zero clique, zero rede.
+
+### O atalho vira `btn[n]` — `btn[n + 12·SHIFT + 24·CTRL]`
+
+Não é a convenção citada de memória: é medição. Cruzando o rótulo de cada item do menu com o do
+botão da barra em 10 telas (SMEN, SE38, SE16, SE11, SM30, SU01, SE93, SM37, SE80, SM59),
+**56 pares casaram, 0 discordaram**, e nenhum atalho apontou para dois `btn[n]` diferentes.
+
+| atalho | OK-code | | atalho | OK-code |
+|---|---|---|---|---|
+| `ENTER` | `btn[0]` | | `CTRL_F1` | `btn[25]` |
+| `F7` | `btn[7]` | | `CTRL_F8` | `btn[32]` |
+| `SHIFT_F2` | `btn[14]` | | `CTRL_SHIFT_F4` | `btn[40]` |
+| `SHIFT_F3` | `btn[15]` | | `CTRL_F` / `CTRL_G` / `CTRL_P` | `btn[71]` / `btn[84]` / `btn[86]` |
+
+⚠ `ESCAPE`, `CTRL_4`, `CTRL_SHIFT_0` e `CTRL_ALT_N` ("Janela GUI nova", que é do GUI e não da
+dynpro) **não** apareceram na barra de nenhuma das 10 telas: o `btn[n]` deles segue sem medição e
+`okcodeDoAtalho` devolve `null`. `null` não atrapalha — quem não tem OK-code vai pelo gesto.
+
+### ⚠ Derivar o OK-code NÃO basta: `acionar` precisa do botão na tela
+
+| na SE38 com `RSPARAM` (a barra **não** publica `btn[7]`) | |
+|---|---|
+| `acionar(s, { okcode: 'btn[7]' })` | **31 065 ms**, tela IGUAL — o `clicar` esperou o teto por um elemento que não existe |
+| botão direito + clique em "Exibir" | **3 665 ms** → "Editor ABAP: Report RSPARAM exibir" |
+
+`acionar` não FALHA nesse caso: ele gasta o teto e volta como se nada tivesse acontecido — a falha
+mais silenciosa que este canal tem. É por isso que `acionarFuncao` escolhe a via: barra quando o
+botão está lá (1,7 s), menu do botão direito quando não está (2,4 s).
+
+### ⚠ O ponto do clique escolhe QUAL menu abre
+
+Na lista ALV do RSPARAM, o botão direito **sobre o grid** abre o menu DO GRID (item 122,
+`…/shell/mnu`, 7 itens), não este. Sobre o **título da página** e sobre a **`msgarea`** abre este
+(19 itens). O `JS_PONTO_NEUTRO` mira o título, com a `msgarea` de reserva; `{ ponto: { x, y } }`
+força outro lugar — desde que fora de qualquer grid.
+
+O popup passa da tela (35 × 32 px numa janela de 905, 8 itens fora do viewport) e **isso não
+importa**: o container `CtxMnu0-cnt` rola e o `clicar` rola até o alvo — o clique no último item
+pegou em 2,7 s.
+
+### ⚠ `action/4` postado na PÁGINA executa no servidor e desalinha a sessão
+
+`postarNaPagina([{ post: 'action/4/wnd[0]/usr/mnu/menu[1]' }, …])` bate no guard-rail do delta
+completo — mas o servidor **já trocou de dynpro**: a página seguiu mostrando "Editor ABAP: 1ª tela"
+com o servidor no SAP Easy Access. Aqui o acionamento é GESTO; o `action/4` direto é a via da via
+HTTP pura (`its.mjs`), que aplica delta completo.
+
+### O resto da anatomia
+
+- um `POMN` só (`CtxMnu0`), SID `wnd[0]/usr/mnu`, `Select: action/4`, **PLANO** (nenhum submenu);
+- o `id` do DOM É o SID (`wnd[0]/usr/mnu/menu[7]`), como na barra;
+- o `lsdata` do item traz sempre e só `1,15,18,19` — rótulo e atalho; em 344 itens, **zero
+  desabilitado** e 4 sem atalho (as páginas de rolagem da SMEN);
+- o gesto **não posta nada** (0 POST, ~1,2 s): o menu já está no `<xmp>`, o renderer só o infla —
+  ao contrário do menu do ALV, que vem por round-trip.
+
 ## A ÁRVORE do SAP Easy Access — o outro menu, o único que enxerga os FAVORITOS
 
 **Medido no s4h 758/250 em 2026-09-05** (item 50). Bruto, agregado e prova em

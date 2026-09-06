@@ -12,6 +12,7 @@ import {
   habilitadoDoBotao, alvoDeBotao, botaoDoBruto,
   interpretarSonda, jsComando, JS_PUBLICAR_FOCO, ehTelemetria, roundTrips,
   filhoDiretoDeMenu, daBarraDeMenu, interpretarItemDeMenu, partirCaminhoDeMenu, acharItemDeMenu,
+  daAreaDeTrabalho, okcodeDoAtalho, OKCODE_DO_ATALHO, acharFuncao,
   criarPilhaDeDesfazer, transacional,
   indiceDoNo, containerDaArvore, arvoreDosBrutos, acharNoDaArvore, assinaturaDaArvore, JS_ARVORE,
   SELETOR_ACIONAVEL, JS_ACIONAVEL, jsAlvoEfetivo, recusa,
@@ -696,6 +697,65 @@ test('menu: achar o item ignora acento e caixa, e o exato ganha do prefixo', () 
 test('menu: o exato ganha do prefixo mesmo quando um rótulo é prefixo do outro', () => {
   const irmaos = [{ id: 'a/menu[0]', rotulo: 'Teste unitário' }, { id: 'a/menu[1]', rotulo: 'Teste' }];
   expect(acharItemDeMenu(irmaos, 'Teste').rotulo).toBe('Teste');
+});
+
+// ---------- o menu da ÁREA DE TRABALHO (item 128) ----------
+
+test('menu da área: separar o `wnd[0]/usr/mnu` da barra e do menu do ITS', () => {
+  // Medido (item 128, s4h 758/250, 06/09/2026): os `<xmp>` da SE38 trazem 185 POMNI — 146 da barra,
+  // 35 da área de trabalho e 4 do menu do SAP GUI for HTML (`tbmnuentry…`).
+  expect(daAreaDeTrabalho('wnd[0]/usr/mnu/menu[7]')).toBe(true);
+  expect(daAreaDeTrabalho('wnd[1]/usr/mnu/menu[0]')).toBe(true);
+  expect(daAreaDeTrabalho('wnd[0]/mbar/menu[5]')).toBe(false);
+  // ⚠️ o menu de CONTEXTO do ALV (item 122) também mora sob `usr`, e NÃO é este
+  expect(daAreaDeTrabalho('wnd[0]/usr/cntlGRID1/shellcont/shell/mnu/menu&SORT_DSC')).toBe(false);
+  expect(daAreaDeTrabalho('tbmnuentryItsOptions')).toBe(false);
+  expect(daAreaDeTrabalho(null)).toBe(false);
+});
+
+test('menu da área: o atalho vira btn[n] — btn[n + 12·SHIFT + 24·CTRL]', () => {
+  // A fórmula é MEDIDA: 56 pares casaram e 0 discordaram em 10 telas (fase D/E do item 128).
+  expect(okcodeDoAtalho('F3')).toBe('btn[3]');        // "Voltar", 9 telas
+  expect(okcodeDoAtalho('F7')).toBe('btn[7]');        // "Exibir" — a SE38 NÃO publica esse botão
+  expect(okcodeDoAtalho('SHIFT_F2')).toBe('btn[14]'); // "Eliminar", 5 telas
+  expect(okcodeDoAtalho('SHIFT_F3')).toBe('btn[15]'); // "Encerrar"
+  expect(okcodeDoAtalho('CTRL_F1')).toBe('btn[25]');
+  expect(okcodeDoAtalho('CTRL_F8')).toBe('btn[32]');  // "Ajuda para aplicação", 4 telas
+  expect(okcodeDoAtalho('CTRL_SHIFT_F4')).toBe('btn[40]');
+  expect(okcodeDoAtalho('ENTER')).toBe('btn[0]');
+  // a grafia do usuário também entra (o `acharFuncao` aceita "Ctrl+F2")
+  expect(okcodeDoAtalho('ctrl_f2')).toBe('btn[26]');
+
+  // os três fora da fórmula, cada um MEDIDO contra o botão de mesmo rótulo
+  expect(OKCODE_DO_ATALHO.CTRL_F).toBe('btn[71]');
+  expect(okcodeDoAtalho('CTRL_P')).toBe('btn[86]');
+  expect(okcodeDoAtalho('CTRL_G')).toBe('btn[84]');
+
+  // ⚠️ o que NÃO foi medido sai `null` — e null não impede o acionamento, manda pelo menu
+  expect(okcodeDoAtalho('ESCAPE')).toBe(null);
+  expect(okcodeDoAtalho('CTRL_4')).toBe(null);
+  expect(okcodeDoAtalho('CTRL_SHIFT_0')).toBe(null);
+  expect(okcodeDoAtalho('CTRL_ALT_N')).toBe(null);
+  expect(okcodeDoAtalho('F13')).toBe(null);
+  expect(okcodeDoAtalho(null)).toBe(null);
+});
+
+test('menu da área: achar a função por atalho, por OK-code e por rótulo', () => {
+  // as quatro primeiras funções REAIS da SE38 (medidas)
+  const funcoes = [
+    { rotulo: 'Ajuda', atalho: 'F1', okcode: 'btn[1]', habilitado: true, id: 'wnd[0]/usr/mnu/menu[0]' },
+    { rotulo: 'Voltar', atalho: 'F3', okcode: 'btn[3]', habilitado: true, id: 'wnd[0]/usr/mnu/menu[1]' },
+    { rotulo: 'Exibir', atalho: 'F7', okcode: 'btn[7]', habilitado: true, id: 'wnd[0]/usr/mnu/menu[5]' },
+    { rotulo: 'Sintaxe', atalho: 'CTRL_F2', okcode: 'btn[26]', habilitado: true, id: 'wnd[0]/usr/mnu/menu[20]' },
+  ];
+  expect(acharFuncao(funcoes, 'F7').rotulo).toBe('Exibir');
+  expect(acharFuncao(funcoes, 'Ctrl+F2').rotulo).toBe('Sintaxe');   // a grafia humana do atalho
+  expect(acharFuncao(funcoes, 'ctrl_f2').rotulo).toBe('Sintaxe');
+  expect(acharFuncao(funcoes, 'btn[26]').rotulo).toBe('Sintaxe');
+  expect(acharFuncao(funcoes, 26).rotulo).toBe('Sintaxe');          // o número basta
+  expect(acharFuncao(funcoes, 'sintaxe').rotulo).toBe('Sintaxe');   // rótulo, sem caixa
+  expect(acharFuncao(funcoes, 'Nao existe')).toBe(null);
+  expect(() => acharFuncao(funcoes, '  ')).toThrow(/informe o rótulo/);
 });
 
 // ─── criar é mutação imediata: a pilha de desfazer e o `transacional` ─────────

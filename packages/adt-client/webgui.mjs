@@ -4760,8 +4760,11 @@ export async function itensDeMenu(sessao) {
  * nada (§ item 82 acima). Cada popup vem num `<xmp>` inerte; o `DOMParser` o transforma em
  * documento SOLTO (não entra no DOM da página) e daí saem os `POMNI` com `id` e `lsdata`.
  *
- * ⚠️ Os `<xmp>` trazem também os menus de CONTEXTO da área de trabalho (`wnd[0]/usr/mnu/…`, 39 na
- * SE38) — quem filtra a barra é o `arvoreDeMenu`, como já fazia o `itensDeMenu`.
+ * ⚠️ Os `<xmp>` trazem também o menu do botão DIREITO da área de trabalho (`wnd[0]/usr/mnu/…`,
+ * **35** na SE38) e o menu do próprio SAP GUI for HTML (`tbmnuentry…`, 4 em toda tela medida) —
+ * quem filtra a barra é o `arvoreDeMenu`, como já fazia o `itensDeMenu`. Os 35 são as FUNÇÕES da
+ * tela e têm seção própria (§ `funcoesDaTela`, item 128) — o item 82 os contou como "39" porque
+ * somou os 4 do ITS.
  */
 export const JS_ARVORE_DE_MENU = `[...document.querySelectorAll('xmp')]
   .filter((x) => (x.textContent || '').indexOf('POMNI') >= 0)
@@ -4877,6 +4880,217 @@ export async function navegarMenu(sessao, caminho, { acionar: aciona = true, tet
   await clicar(sessao, alvo.id, { tetoMs });
   const mudou = await esperarMudanca(sessao, antes, { tetoMs: tetoAcaoMs });
   return { caminho: partes, passos, folha: alvo, mudou };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// O MENU DA ÁREA DE TRABALHO (`wnd[0]/usr/mnu`) — as FUNÇÕES ATIVAS da tela, de graça
+//
+// O item 82 achou nos MESMOS `<xmp>` do menu da barra um segundo conjunto de `POMNI`, que o
+// `arvoreDeMenu` descarta pelo `daBarraDeMenu`. Medido no s4h 758/250 em 06/09/2026 (item 128,
+// `POC_webgui_menu/medicoes/item128-menu-da-area.md`, fases A–H, 10 telas, 344 itens):
+//
+//   • **é o menu do BOTÃO DIREITO da área de trabalho** — um `POMN` só, `id`/container `CtxMnu0`,
+//     SID `wnd[0]/usr/mnu`, `Select: action/4`, **PLANO** (nenhum item com submenu, um nível só).
+//     Como no menu da barra, o `id` do DOM É o SID (`wnd[0]/usr/mnu/menu[7]`).
+//   • **cada item é uma TECLA DE FUNÇÃO ativa da dynpro, com o rótulo do GUI status.** O `lsdata`
+//     traz sempre e só `1,15,18,19` — rótulo e atalho. Em 344 itens: **zero desabilitado** e
+//     4 sem atalho (as quatro páginas da SMEN). É a lista que o SAP GUI mostra no botão direito.
+//   • **a tela inteira, não só a barra:** SE38 35 itens contra 16 botões; SM30 16 contra 3;
+//     SM59 26 contra 6. O que sobra são as funções sem botão — "Sintaxe" (`CTRL_F2`),
+//     "Ativar" (`SHIFT_F9`), "Testes de módulo" (`CTRL_SHIFT_F10`)… — que a barra não publica e
+//     que, sem isto, só se alcançava sabendo o `btn[n]` de cor.
+//   • **ler é de graça:** sai do MESMO `JS_ARVORE_DE_MENU` (o texto dos `<xmp>`), zero clique,
+//     zero rede. O que muda é o filtro — `daBarraDeMenu` lá, `daAreaDeTrabalho` aqui.
+//   • **o gesto é o botão DIREITO, e ele NÃO posta nada** (0 POST, ~1,2 s): ao contrário do menu do
+//     ALV (item 122, que vem por round-trip), este já está no `<xmp>` e o renderer só o infla.
+//
+// ⚠️ **O ponto do clique escolhe QUAL menu abre.** Medido na lista do RSPARAM (fase H): botão
+// direito sobre o **grid** abre o menu do ALV (`…/shell/mnu`, 7 itens), não este. Sobre o título da
+// página e sobre a `msgarea` abre este (19 itens). Por isso `JS_PONTO_NEUTRO` mira o título.
+//
+// ⚠️ **`acionar(s, { okcode })` só serve se o botão ESTIVER na barra.** Medido (fase F): a SE38 com
+// `RSPARAM` não publica `btn[7]`, e `acionar(s, { okcode: 'btn[7]' })` gastou **31 s** procurando o
+// elemento e não fez nada, enquanto o gesto no item "Exibir" do menu abriu o editor em **3,7 s**.
+// Derivar o OK-code do atalho não basta: para a função SEM botão, o caminho é o menu. É o que
+// `acionarFuncao` decide sozinho.
+//
+// ⚠️ **`action/4` postado na página EXECUTA no servidor e DESALINHA a sessão** (fase C): o
+// `postarNaPagina` volta "delta COMPLETO" — mas o servidor já trocou de dynpro e o DOM não aplicou
+// nada. Foi assim que a SE38 virou SAP Easy Access no servidor com a página ainda mostrando a SE38.
+// Aqui o acionamento é GESTO. (Na via HTTP, que aplica delta completo, esse `action/4` é a via
+// natural — fila 200.)
+
+/** PURO: este `POMNI` é do menu da ÁREA DE TRABALHO (e não da barra nem do menu do sistema)? */
+export const daAreaDeTrabalho = (id) => /^wnd\[\d+\]\/usr\/mnu\/menu\[\d+\]/.test(String(id ?? ''));
+
+/**
+ * PURO: os atalhos que NÃO seguem a fórmula das teclas de função e cujo `btn[n]` foi MEDIDO
+ * (fase D, cruzando rótulo do menu com rótulo do botão da barra em 10 telas).
+ */
+export const OKCODE_DO_ATALHO = {
+  CTRL_F: 'btn[71]',   // "Procurar" — SE38, SE11, SE93
+  CTRL_G: 'btn[84]',   // "Continuar procurando" — SMEN
+  CTRL_P: 'btn[86]',   // "Imprimir..." — SE11
+};
+
+/**
+ * PURO: o OK-code da barra que corresponde ao ATALHO do item (`F7` → `btn[7]`,
+ * `SHIFT_F3` → `btn[15]`, `CTRL_F2` → `btn[26]`, `CTRL_SHIFT_F4` → `btn[40]`), ou `null`.
+ *
+ * A fórmula é `btn[n + 12·SHIFT + 24·CTRL]`, e foi MEDIDA — não deduzida da convenção: cruzando o
+ * rótulo de cada item do menu com o rótulo do botão da barra em 10 telas (SMEN, SE38, SE16, SE11,
+ * SM30, SU01, SE93, SM37, SE80, SM59), **56 pares casaram e 0 discordaram**, e nenhum atalho
+ * apontou para dois `btn[n]` diferentes (`item128-e-formula.json`; 7 pares saíram do placar por
+ * rótulo repetido na mesma tela — a SE16 tem "Conteúdo da tabela" em `ENTER` e em `F7`).
+ *
+ * ⚠️ Fora da fórmula ficam `ESCAPE`, `CTRL_4`, `CTRL_SHIFT_0` e `CTRL_ALT_N` ("Janela GUI nova",
+ * que é função do GUI e não da dynpro): nenhum apareceu na barra de nenhuma tela medida, então o
+ * `btn[n]` deles continua ABERTO (fila 199) e aqui saem `null`. `null` não impede o acionamento — quem não tem
+ * OK-code vai pelo gesto do menu.
+ */
+export function okcodeDoAtalho(atalho) {
+  const t = String(atalho ?? '').toUpperCase().trim();
+  if (!t) return null;
+  if (t === 'ENTER') return 'btn[0]';
+  if (OKCODE_DO_ATALHO[t]) return OKCODE_DO_ATALHO[t];
+  const m = /^(?:(CTRL)_)?(?:(SHIFT)_)?F(\d{1,2})$/.exec(t);
+  if (!m) return null;
+  const n = Number(m[3]);
+  if (n < 1 || n > 12) return null;
+  return `btn[${n + (m[2] ? 12 : 0) + (m[1] ? 24 : 0)}]`;
+}
+
+/**
+ * As FUNÇÕES ativas da tela — **zero clique, zero rede** (o mesmo despejo dos `<xmp>` do
+ * `arvoreDeMenu`). Cada uma vem `{ rotulo, atalho, okcode, habilitado, sid, id }`.
+ *
+ * ```js
+ * await funcoesDaTela(s);
+ * // [{ rotulo: 'Exibir', atalho: 'F7', okcode: 'btn[7]', habilitado: true, … }, …]
+ * ```
+ *
+ * É a resposta a "o que dá para fazer NESTA tela" sem abrir menu nenhum — e o que `botoes` não
+ * responde, porque a barra publica só uma parte (SE38: 35 funções, 16 botões).
+ */
+export async function funcoesDaTela(sessao) {
+  const brutos = await avaliar(sessao, JS_ARVORE_DE_MENU);
+  return (brutos ?? []).filter((b) => daAreaDeTrabalho(b.id)).map((b) => {
+    const { rotulo, atalho, habilitado, sid, id } = interpretarItemDeMenu(b);
+    return { rotulo, atalho, okcode: okcodeDoAtalho(atalho), habilitado, sid, id };
+  });
+}
+
+/**
+ * PURO: qual função é o `pedido` — o ATALHO primeiro, o OK-code depois (os dois são endereço), e
+ * só então o rótulo (pelo `acharItemDeMenu`, que ignora acento e caixa e aceita prefixo).
+ * `'F7'`, `'Ctrl+F2'`, `'btn[26]'`, `26` e `'Sintaxe'` chegam todos no mesmo lugar.
+ */
+export function acharFuncao(funcoes, pedido) {
+  const bruto = String(pedido ?? '').trim();
+  if (!bruto) throw new Error('acharFuncao: informe o rótulo, o atalho (ex. "F7", "Ctrl+F2") ou o OK-code (ex. "btn[7]")');
+  const chave = (x) => String(x ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const alvo = chave(bruto);
+  const okcode = /^(btn\[\d+\]|\d+)$/i.test(bruto) ? okcodeDe(bruto) : null;
+  return (funcoes ?? []).find((f) => f.atalho && chave(f.atalho) === alvo)
+    ?? (okcode ? (funcoes ?? []).find((f) => f.okcode === okcode) ?? null : null)
+    ?? acharItemDeMenu(funcoes, bruto);
+}
+
+/**
+ * PURO: onde clicar com o botão direito para abrir ESTE menu e não o do ALV — o título da página,
+ * e a `msgarea` como reserva (fase H). Devolve `{ x, y, de }` ou `null`.
+ */
+export const JS_PONTO_NEUTRO = `(() => {
+  for (const el of [document.querySelector('[class*="lsPageHeaderTitle"]'), document.getElementById('msgarea')]) {
+    if (!el) continue;
+    const b = el.getBoundingClientRect();
+    if (b.width > 4 && b.height > 4 && b.top >= 0 && b.top < innerHeight)
+      return { x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2), de: el.id || String(el.className).slice(0, 30) };
+  }
+  return null;
+})()`;
+
+/** O despejo dos `POMNI` ABERTOS — sem o filtro de viewport do `JS_ITENS_DE_MENU`, porque o popup
+ * deste menu passa da tela (35 itens × 32 px numa janela de 905) e o item de baixo é clicável do
+ * mesmo jeito (fase G). Fechado é `top = -100000` (item 94), daí o corte em -1000. */
+export const JS_MENU_ABERTO = `[...document.querySelectorAll('[ct="POMNI"]')]
+  .filter((el) => el.getBoundingClientRect().top > -1000)
+  .map((el) => { let d = null; try { d = JSON.parse(el.getAttribute('lsdata')); } catch { d = null; }
+    return { id: el.id || null, lsdata: d, desabilitado: el.getAttribute('aria-disabled') }; })`;
+
+/**
+ * ABRE o menu da área de trabalho pelo botão DIREITO e devolve os itens que ficaram vivos.
+ * Sem `ponto`, mira o `JS_PONTO_NEUTRO` — clicar sobre um ALV abriria o menu DELE (fase H).
+ */
+export async function abrirMenuDaAreaDeTrabalho(sessao, { ponto = null, tetoMs = 8000 } = {}) {
+  const p = ponto ?? await avaliar(sessao, JS_PONTO_NEUTRO);
+  if (!p) {
+    throw new Error('webgui: abrirMenuDaAreaDeTrabalho — não achei ponto neutro nesta página '
+      + '(nem título nem msgarea); passe `{ ponto: { x, y } }` fora de qualquer grid');
+  }
+  await cliqueDireito(sessao, p);
+  const ate = Date.now() + tetoMs;
+  let abertos = [];
+  do {
+    await espera(200);
+    abertos = ((await avaliar(sessao, JS_MENU_ABERTO)) ?? []).filter((b) => daAreaDeTrabalho(b.id));
+  } while (!abertos.length && Date.now() < ate);
+  if (!abertos.length) {
+    throw new Error(`webgui: abrirMenuDaAreaDeTrabalho — o botão direito em (${p.x},${p.y}) não abriu o `
+      + `menu de wnd[n]/usr/mnu em ${tetoMs} ms`);
+  }
+  return { ponto: p, itens: abertos.map(interpretarItemDeMenu) };
+}
+
+/**
+ * ACIONA uma função da tela por RÓTULO, atalho ou OK-code — pela barra quando o botão existe, pelo
+ * menu do botão direito quando não existe.
+ *
+ * ```js
+ * await acionarFuncao(s, 'Exibir');        // F7 na SE38 — a barra não tem btn[7], vai pelo menu
+ * await acionarFuncao(s, 'Ctrl+F2');       // "Sintaxe"
+ * await acionarFuncao(s, 'btn[3]');        // "Voltar" — está na barra, vai por lá
+ * ```
+ *
+ * Devolve `{ rotulo, atalho, okcode, via: 'barra' | 'menu', mudou, ms }`. `mudou: false` é
+ * INFORMAÇÃO, como em `acionar`: a função foi acionada e a tela ficou igual.
+ *
+ * ⚠️ A escolha da via não é preferência, é a medição da fase F: `acionar` num `btn[n]` que a barra
+ * não publica não falha — ele espera o teto inteiro e volta como se nada tivesse acontecido.
+ */
+export async function acionarFuncao(sessao, pedido, { tetoMs = 40000, ponto = null } = {}) {
+  const t0 = Date.now();
+  const funcoes = await funcoesDaTela(sessao);
+  if (!funcoes.length) {
+    throw new Error('webgui: acionarFuncao — esta tela não publicou o menu da área de trabalho nos `<xmp>` '
+      + '(nenhum POMNI de wnd[n]/usr/mnu)');
+  }
+  const alvo = acharFuncao(funcoes, pedido);
+  if (!alvo) {
+    throw new Error(`webgui: acionarFuncao — "${pedido}" não é função desta tela; ela tem: `
+      + funcoes.map((f) => `${f.atalho ?? '—'} ("${f.rotulo}")`).join(', '));
+  }
+  if (!alvo.habilitado) {
+    throw new Error(`webgui: acionarFuncao — "${alvo.rotulo}" (${alvo.atalho}) está DESABILITADO nesta tela`);
+  }
+  const naBarra = !!alvo.okcode
+    && (await botoes(sessao)).some((b) => b.okcode === alvo.okcode && b.habilitado !== false);
+  if (naBarra) {
+    const r = await acionar(sessao, { okcode: alvo.okcode }, { tetoMs });
+    detalhe(`webgui: acionarFuncao "${alvo.rotulo}" (${alvo.atalho}) pela BARRA ${alvo.okcode}, mudou=${r.mudou}`);
+    return { ...alvo, via: 'barra', mudou: r.mudou, respondeu: r.respondeu ?? null, ms: Date.now() - t0 };
+  }
+  const { itens, ponto: p } = await abrirMenuDaAreaDeTrabalho(sessao, { ponto });
+  const item = itens.find((i) => i.id === alvo.id);
+  if (!item) {
+    throw new Error(`webgui: acionarFuncao — "${alvo.rotulo}" (${alvo.id}) não apareceu no menu aberto em `
+      + `(${p.x},${p.y}); ele trouxe ${itens.length} itens`);
+  }
+  const antes = await carimbo(sessao);
+  await clicar(sessao, { id: item.id }, { tetoMs: 10000 });
+  const mudou = await esperarMudanca(sessao, antes, { tetoMs }).catch(() => false);
+  detalhe(`webgui: acionarFuncao "${alvo.rotulo}" (${alvo.atalho}) pelo MENU do botão direito, mudou=${mudou}`);
+  return { ...alvo, via: 'menu', mudou, ms: Date.now() - t0 };
 }
 
 // ---------- a ÁRVORE do SAP Easy Access pelo NAVEGADOR (item 86) ----------
