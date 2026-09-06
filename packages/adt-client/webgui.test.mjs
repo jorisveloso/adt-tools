@@ -17,6 +17,7 @@ import {
   jsFragmentoDoGrid, faltaNaFaixaDoBloco,
   estadoDoScrollbar, miraDoScrollbar, naJanela, jsJanelaDoGrid,
   jsSelecaoDoGrid, interpretarSelectedRows, idDaCaixa, MOD,
+  estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
 } from './webgui.mjs';
 
 test('webgui: a expressão ~transaction abre a tela JÁ PREENCHIDA (o pulo da tela de entrada)', () => {
@@ -1220,4 +1221,69 @@ test('webgui: a caixa de seleção NÃO tem o sufixo #if da célula de dado', ()
 
 test('webgui: os modificadores do clique são o mapa de bits do CDP', () => {
   expect(MOD).toEqual({ alt: 1, ctrl: 2, meta: 4, shift: 8 });
+});
+
+// ---------- ordenar e filtrar o ALV (item 77) ----------
+// Os ícones e os SIDs abaixo são os MEDIDOS no laboratório ZJBV_ALV47_EDIT (s4h 758/250,
+// 05-06/09/2026) — `POC_webgui_grid_ord/medicoes/raw/j-icones.json` e `a-anatomia.json`.
+
+const th = (coluna, icone, { cid = 'C102', tag = 'TH' } = {}) => ({
+  id: `grid#${cid}#0,${coluna}`,
+  tagName: tag,
+  querySelectorAll: () => (icone ? [{ getAttribute: (a) => (a === 'src' ? `/sap/public/icmandir/its/~cache-7930300/lsgui/themes/sap_fiori_3/images/gridview/${icone}` : null) }] : []),
+});
+const rodarCabecalho = (js, nos) => new Function('document', `return ${js}`)({
+  querySelectorAll: (sel) => (sel === '[id^="grid#C102#0,"]' ? nos : []),
+});
+const rodarBotao = (js, botoes) => new Function('document', `return ${js}`)({
+  querySelectorAll: (sel) => (sel === '[ct="B"]' ? botoes : []),
+});
+const botao = (id, sid, { largura = 20 } = {}) => ({
+  id, title: 'x', offsetWidth: largura, offsetHeight: largura ? 20 : 0,
+  getAttribute: (a) => (a === 'lsdata' ? `{"x":0,"27":{"SID":"${sid}","Type":"GuiButton","SubType":"toolbar"}}` : null),
+});
+
+test('webgui: o ícone do cabeçalho codifica ORDEM e FILTRO na mesma palavra', () => {
+  // os cinco casos medidos na fase J, na ordem em que apareceram
+  expect(estadoDoCabecalho(null)).toEqual({ ordem: null, filtrada: false });
+  expect(estadoDoCabecalho('headaoo.png')).toEqual({ ordem: 'asc', filtrada: false });
+  expect(estadoDoCabecalho('headdoo.png')).toEqual({ ordem: 'desc', filtrada: false });
+  expect(estadoDoCabecalho('headoof.png')).toEqual({ ordem: null, filtrada: true });
+  expect(estadoDoCabecalho('headaof.png')).toEqual({ ordem: 'asc', filtrada: true });
+  expect(estadoDoCabecalho('headdof.png')).toEqual({ ordem: 'desc', filtrada: true });
+});
+
+test('webgui: o cabeçalho do grid sai coluna a coluna, com o ícone que ele mostra', () => {
+  const r = rodarCabecalho(jsCabecalhoDoGrid('C102'), [
+    th(0, null), th(1, null), th(2, 'headdof.png'), th(3, 'headaoo.png'),
+    { ...th(9, 'headaoo.png'), tagName: 'TD' },              // não é <th>: é célula de dado
+  ]);
+  expect(r).toEqual([
+    { coluna: 0, icone: null }, { coluna: 1, icone: null },
+    { coluna: 2, icone: 'headdof.png' }, { coluna: 3, icone: 'headaoo.png' },
+  ]);
+});
+
+test('webgui: o cabeçalho é a linha 0 do grid, sem o #if da célula de dado', () => {
+  expect(idDoCabecalho('C102', 2)).toBe('grid#C102#0,2');
+  expect(idDoCabecalho('C102', 2)).not.toContain('#if');
+});
+
+test('webgui: o botão da barra do ALV casa pelo SID do GRID, não pelo id posicional', () => {
+  const barra = [
+    botao('C102_toolbar_btn15', 'wnd[0]/shellcont/shell/tbar/btn&SORT_ASC'),
+    botao('_MB_FILTER102', 'wnd[0]/shellcont/shell/tbar/dbtn&MB_FILTER'),
+    botao('C900_toolbar_btn15', 'wnd[0]/shellcont/shell2/tbar/btn&SORT_ASC'),   // OUTRO ALV da tela
+  ];
+  const sid = 'wnd[0]/shellcont/shell';
+  expect(rodarBotao(jsBotaoDaBarra(sid, 'SORT_ASC'), barra).id).toBe('C102_toolbar_btn15');
+  expect(rodarBotao(jsBotaoDaBarra(sid, 'MB_FILTER'), barra).id).toBe('_MB_FILTER102');  // acha o dbtn&
+  expect(rodarBotao(jsBotaoDaBarra('wnd[0]/shellcont/shell2', 'SORT_ASC'), barra).id).toBe('C900_toolbar_btn15');
+  expect(rodarBotao(jsBotaoDaBarra(sid, 'SORT_DSC'), barra)).toBe(null);         // esta barra não tem
+});
+
+test('webgui: o botão escondido é achado, mas marcado como invisível (quem decide é quem chama)', () => {
+  const r = rodarBotao(jsBotaoDaBarra('wnd[0]/shellcont/shell', 'SORT_ASC'),
+    [botao('C102_toolbar_btn15', 'wnd[0]/shellcont/shell/tbar/btn&SORT_ASC', { largura: 0 })]);
+  expect(r.visivel).toBe(false);
 });

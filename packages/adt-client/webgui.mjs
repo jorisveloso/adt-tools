@@ -1926,6 +1926,228 @@ export async function selecionarLinhas(sessao, alvo = null, linhas = [], { acres
 }
 
 
+// ---------- ORDENAR e FILTRAR o ALV (item 77) ----------
+//
+// Os dois gestos que faltavam do ALV, e eles são o MESMO gesto em duas metades: **marcar a coluna
+// no cabeçalho** (cliente puro, como a caixa da linha do item 76) e **acionar o botão da barra do
+// ALV** (round-trip). Medido no s4h 758/250 em 05-06/09/2026 (`POC_webgui_grid_ord`, fases A-J,
+// laboratório `ZJBV_ALV47_EDIT` com o FC03 que despeja o conteúdo da linha selecionada):
+//
+//   • **a barra do ALV é endereçável pelo SID**: cada botão dela traz
+//     `"SID":"<sid do grid>/tbar/btn&SORT_ASC"` (ou `dbtn&MB_FILTER`) no `lsdata`. O id do DOM
+//     (`C102_toolbar_btn15`) é POSICIONAL e não sobrevive a tela com outra barra — o SID sim.
+//   • **sem coluna marcada o botão de sort abre o DIÁLOGO "Ordenação"** (`SAPLSALV_CUL_…`), em vez
+//     de ordenar. ⚠️ E ele NÃO é `wnd[1]`: o `lerTela` continua dizendo `janela.principal: true`,
+//     então um clique seguinte cai ATRÁS do modal e sai calado (foi o que cegou a fase B inteira).
+//   • **a marca da coluna se perde a cada round-trip** — marcar e ordenar têm de ser o mesmo gesto.
+//   • **ordenar REORDENA A TABELA INTERNA DO ABAP**: com o ALV em NOME desc, `gt_tab[1]-nome` virou
+//     `tres`, e `get_selected_rows` da "linha 1" respondeu `0000000001=tres`. DOM e ABAP juntos.
+//   • **filtrar NÃO**: com `NOME = E2E-776551` a tela mostra 1 linha e a chama de `_linha: 1`, mas
+//     o ABAP respondeu `0000000002=E2E-776551` (`n=3`, `gt_tab[1]` intacto). O framework TRADUZ o
+//     índice visual para o da outtab — a LINHA é a mesma nos dois lados, o NÚMERO não.
+//
+// ⚠️ **É por isso que `_linha` é sempre "a n-ésima linha VISÍVEL agora"** — nunca uma identidade.
+// Um `_linha` guardado antes de ordenar/filtrar aponta para outro dado depois, e sob filtro ele nem
+// é o número que o ABAP usa. Quem precisa da identidade guarda a CHAVE da linha e a reencontra.
+
+/** PURO: o `<th>` do cabeçalho de uma coluna — a linha 0 do grid (`grid#<cid>#0,<c>`). */
+export const idDoCabecalho = (cid, coluna) => `grid#${cid}#0,${Number(coluna)}`;
+
+/**
+ * PURO: o estado de uma coluna, lido do NOME do PNG que o `<th>` mostra. Medido (fase J) que o nome
+ * é composicional — `head<ordem>o<filtro>.png`:
+ *
+ * | ícone | ordem | filtrada |
+ * |---|---|---|
+ * | (nenhum) | `null` | `false` |
+ * | `headaoo.png` / `headdoo.png` | `asc` / `desc` | `false` |
+ * | `headoof.png` | `null` | `true` |
+ * | `headaof.png` / `headdof.png` | `asc` / `desc` | `true` |
+ */
+export function estadoDoCabecalho(icone) {
+  const m = /head([ado])([ado])([fo])/.exec(String(icone ?? ''));
+  if (!m) return { ordem: null, filtrada: false };
+  return { ordem: m[1] === 'a' ? 'asc' : m[1] === 'd' ? 'desc' : null, filtrada: m[3] === 'f' };
+}
+
+/** PURO: a expressão JS que despeja o cabeçalho do grid — um `{ coluna, icone }` por `<th>`. */
+export const jsCabecalhoDoGrid = (cid) => `[...document.querySelectorAll('[id^="grid#${cid}#0,"]')]
+  .filter((e) => e.tagName === 'TH')
+  .map((e) => ({ coluna: Number(e.id.split(',').pop()),
+    icone: ([...e.querySelectorAll('img')].map((i) => (i.getAttribute('src') || '').split('/').pop())[0]) || null }))`;
+
+/** PURO: a expressão JS que acha um botão da barra DAQUELE grid pelo fcode do ALV (`SORT_ASC`,
+ * `MB_FILTER`) — casando o SID (`<sid>/tbar/btn&<fcode>` ou `dbtn&`), não o id posicional. */
+export const jsBotaoDaBarra = (sid, fcode) => `(() => {
+  const alvos = [${JSON.stringify(`"SID":"${sid}/tbar/btn&${fcode}"`)},
+                 ${JSON.stringify(`"SID":"${sid}/tbar/dbtn&${fcode}"`)}];
+  for (const el of document.querySelectorAll('[ct="B"]')) {
+    const d = el.getAttribute('lsdata') || '';
+    if (alvos.some((a) => d.indexOf(a) >= 0))
+      return { id: el.id, title: el.title || null, visivel: !!(el.offsetWidth || el.offsetHeight) };
+  }
+  return null;
+})()`;
+
+/** PURO: os fcodes que a barra dos ALVs desta tela oferece — o que dizer quando o pedido não está lá. */
+export const JS_FCODES_DA_BARRA = `[...document.querySelectorAll('[ct="B"]')]
+  .map((e) => (/"SID":"[^"]*\\/tbar\\/d?btn&([^"]+)"/.exec(e.getAttribute('lsdata') || '') || [])[1])
+  .filter(Boolean)`;
+
+/** PURO: o diálogo que o ALV abre quando o gesto não tinha coluna — ele não é `wnd[1]` e o
+ * `lerTela` não o vê (§ acima), então quem o detecta é este seletor. */
+export const JS_MODAL_DO_ALV = `[...document.querySelectorAll('[ct^="PW"]')]
+  .filter((e) => e.offsetWidth || e.offsetHeight)
+  .map((e) => ({ id: e.id, titulo: (e.innerText || '').trim().split(String.fromCharCode(10))[0].slice(0, 60) }))`;
+
+/** PURO: um campo/botão pelo SID (`%%DYN001-LOW`, `wnd[1]/tbar[0]/btn[0]`) — no diálogo de filtro
+ * o id do DOM (`M1:46:1::1:34`) é posicional e não se pode escrever à mão. */
+export const jsPorSid = (parte) => `(() => {
+  for (const el of document.querySelectorAll('[lsdata]')) {
+    if ((el.getAttribute('lsdata') || '').indexOf(${JSON.stringify(String(parte))}) >= 0
+        && (el.offsetWidth || el.offsetHeight)) return { id: el.id, tag: el.tagName };
+  }
+  return null;
+})()`;
+
+/** O botão da barra do ALV, ou um erro que diz o que aquela barra TEM. */
+async function botaoDaBarra(sessao, g, fcode) {
+  const b = await avaliar(sessao, jsBotaoDaBarra(g.sid, fcode));
+  if (b?.visivel) return b;
+  const tem = await avaliar(sessao, JS_FCODES_DA_BARRA);
+  throw new Error(`webgui: o ALV ${g.id} não tem o botão "${fcode}" na barra`
+    + (tem?.length ? ` — a barra desta tela tem: ${tem.join(', ')}` : ' — esta tela não tem barra de ALV nenhuma'));
+}
+
+/**
+ * MARCA uma coluna do ALV pelo cabeçalho — o par do `selecionarLinhas`, e igualmente 100% CLIENTE.
+ *
+ * `coluna` é o número 1-based ou o nome do `ColumnIDs` (`'NOME'`). Devolve
+ * `{ id, sid, coluna, nome, pendente: true, ms }`.
+ *
+ * ⚠️ **Não manda nada ao servidor, e a marca MORRE no próximo round-trip.** Ela viaja como
+ * `action/46 columns=;2;` junto do gesto seguinte — por isso `ordenarGrid` e `filtrarGrid` marcam a
+ * coluna eles mesmos, em vez de pedir que você marque antes.
+ */
+export async function marcarColuna(sessao, alvo = null, coluna) {
+  const t0 = Date.now();
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'marcarColuna');
+  const b = await avaliar(sessao, jsBlocoDoGrid(g.id));
+  const i = indiceDaColuna(b?.colunas ?? [], coluna);
+  const id = idDoCabecalho(g.id, i);
+  const p = await apontar(sessao, { id }, { descer: false });
+  if (!p) throw new Error(`webgui: marcarColuna — o cabeçalho ${id} não está apontável na tela`);
+  await clique(sessao, p);
+  await espera(250);
+  const nome = (b?.colunas ?? [])[i - 1] ?? null;
+  detalhe(`webgui: marcarColuna ${g.id} — coluna ${i} (${nome ?? '?'}) marcada, PENDENTE de round-trip`);
+  return { id: g.id, sid: b?.sid ?? g.sid, coluna: i, nome, pendente: true, ms: Date.now() - t0 };
+}
+
+/**
+ * ORDENA o ALV por uma coluna — marca o cabeçalho e aciona `SORT_ASC`/`SORT_DSC` da barra.
+ *
+ * ```js
+ * await ordenarGrid(s, null, 'NOME');                    // crescente
+ * await ordenarGrid(s, null, 'NOME', { ordem: 'desc' }); // decrescente
+ * ```
+ *
+ * Devolve `{ id, coluna, nome, ordem, total, linhas, ms }` — `linhas` já é a tabela NA ORDEM NOVA
+ * (o bloco que a tela tem).
+ *
+ * ⚠️ **Ordenar por outra coluna SUBSTITUI o critério** (medido: com a coluna 2 em `desc`, ordenar a
+ * 3 zerou o ícone da 2). Vários critérios de uma vez só pelo diálogo "Ordenação", que é outro gesto.
+ * ⚠️ **O `_linha` passa a apontar para outro dado** — e aqui o ABAP acompanha: a ordenação reordena
+ * a tabela interna do programa (§ acima).
+ * ⚠️ Estoura quando o ALV abre o diálogo em vez de ordenar (a marca da coluna não pegou).
+ */
+export async function ordenarGrid(sessao, alvo = null, coluna, { ordem = 'asc', tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const dir = String(ordem).toLowerCase();
+  if (dir !== 'asc' && dir !== 'desc') throw new Error(`webgui: ordenarGrid — ordem "${ordem}" não existe (é 'asc' ou 'desc')`);
+  const m = await marcarColuna(sessao, alvo, coluna);
+  const b = await botaoDaBarra(sessao, m, dir === 'desc' ? 'SORT_DSC' : 'SORT_ASC');
+  const antes = await carimbo(sessao);
+  await clicar(sessao, { id: b.id });
+  await esperarMudanca(sessao, antes, { tetoMs });
+  const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
+  if (modal?.length) throw new Error(`webgui: ordenarGrid — o ALV abriu o diálogo "${modal[0].titulo}" (${modal[0].id}) em vez de ordenar: `
+    + 'a coluna não chegou marcada ao servidor. Esse diálogo NÃO é wnd[1] e o lerTela não o vê — feche-o antes de qualquer outro gesto.');
+  const est = estadoDoCabecalho((await avaliar(sessao, jsCabecalhoDoGrid(m.id)) ?? []).find((h) => h.coluna === m.coluna)?.icone);
+  if (est.ordem !== dir) throw new Error(`webgui: ordenarGrid — pedi ${dir} na coluna ${m.coluna} (${m.nome}) e o cabeçalho ficou ${JSON.stringify(est)}`);
+  const t = await lerGrid(sessao, { id: m.id });
+  detalhe(`webgui: ordenarGrid ${m.id} — coluna ${m.coluna} (${m.nome}) em ${dir}, ${t.total} linha(s)`);
+  return { id: m.id, sid: m.sid, coluna: m.coluna, nome: m.nome, ordem: dir, total: t.total, linhas: t.linhas, ms: Date.now() - t0 };
+}
+
+/**
+ * FILTRA o ALV por uma coluna — marca o cabeçalho, aciona `MB_FILTER` e preenche o diálogo
+ * "Determinar valores para critérios filtro" (esse SIM é uma dynpro `wnd[1]` de verdade).
+ *
+ * ```js
+ * await filtrarGrid(s, null, 'NOME', { de: 'E2E-776551' });     // igual a
+ * await filtrarGrid(s, null, 'QTD',  { de: '1', ate: '100' });  // intervalo
+ * await filtrarGrid(s, null, 'NOME', { de: '' });               // LIMPA o filtro da coluna
+ * ```
+ *
+ * Devolve `{ id, coluna, nome, de, ate, filtrada, total, linhas, ms }`.
+ *
+ * ⚠️ **O campo do diálogo é um `ctxt` e CONVERTE PARA MAIÚSCULAS** — medido: filtrar `tres` (que
+ * existe, em minúsculas) devolveu **0 linhas** sem erro nenhum. Valor minúsculo em coluna
+ * case-sensitive não casa, e o ALV não avisa.
+ * ⚠️ **`total: 0` é resposta, não erro** — o ALV fica com o corpo vazio e `totalRows: 0`.
+ * ⚠️ **O `_linha` sob filtro NÃO é o índice que o ABAP usa** (§ acima): a linha é a mesma, o número
+ * não. Quem for casar com `get_selected_rows` conta com essa diferença.
+ */
+export async function filtrarGrid(sessao, alvo = null, coluna, { de = '', ate = '', tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const m = await marcarColuna(sessao, alvo, coluna);
+  const b = await botaoDaBarra(sessao, m, 'MB_FILTER');
+  let antes = await carimbo(sessao);
+  await clicar(sessao, { id: b.id });
+  await esperarMudanca(sessao, antes, { tetoMs });
+  const low = await avaliar(sessao, jsPorSid('DYN001-LOW'));
+  if (!low) {
+    const modal = await avaliar(sessao, JS_MODAL_DO_ALV);
+    throw new Error('webgui: filtrarGrid — o diálogo de filtro não abriu'
+      + (modal?.length ? ` (o que abriu foi "${modal[0].titulo}", ${modal[0].id})` : ' (nenhum modal na tela)'));
+  }
+  await preencher(sessao, { id: low.id }, String(de ?? ''));
+  // ⚠️ o "até" é ESCRITO SEMPRE que existe, inclusive vazio: o diálogo reabre com o filtro
+  // ANTERIOR preenchido, e deixar o HIGH intacto ao limpar mantinha o filtro de pé (medido na fase
+  // K, caso 8: QTD 1..100 "limpo" com de: '' continuou em 2 linhas, porque o 100 ficou lá).
+  const high = await avaliar(sessao, jsPorSid('DYN001-HIGH'));
+  if (!high && ate !== '' && ate !== null && ate !== undefined)
+    throw new Error('webgui: filtrarGrid — o diálogo não tem o campo "até" (DYN001-HIGH) para o intervalo pedido');
+  if (high) await preencher(sessao, { id: high.id }, String(ate ?? ''));
+  const ok = await avaliar(sessao, jsPorSid('wnd[1]/tbar[0]/btn[0]'));
+  if (!ok) throw new Error('webgui: filtrarGrid — o diálogo de filtro não tem o botão Executar (wnd[1]/tbar[0]/btn[0])');
+  antes = await carimbo(sessao);
+  await clicar(sessao, { id: ok.id });
+  await esperarMudanca(sessao, antes, { tetoMs });
+  const est = estadoDoCabecalho((await avaliar(sessao, jsCabecalhoDoGrid(m.id)) ?? []).find((h) => h.coluna === m.coluna)?.icone);
+  const t = await lerGrid(sessao, { id: m.id });
+  detalhe(`webgui: filtrarGrid ${m.id} — coluna ${m.coluna} (${m.nome}) ${de === '' ? 'LIMPA' : `= ${de}${ate === '' ? '' : `..${ate}`}`}, ${t.total} linha(s)`);
+  return { id: m.id, sid: m.sid, coluna: m.coluna, nome: m.nome, de, ate, filtrada: est.filtrada,
+    total: t.total, linhas: t.linhas, ms: Date.now() - t0 };
+}
+
+/**
+ * O que cada coluna do ALV mostra AGORA — nome, ordenação e filtro —, lido do cabeçalho e sem tocar
+ * a rede: `[{ coluna, nome, ordem, filtrada }]`, com a coluna 0 (a caixa de seleção) de fora.
+ *
+ * ```js
+ * (await lerColunas(s)).filter((c) => c.filtrada)   // que colunas estão filtrando a tela
+ * ```
+ */
+export async function lerColunas(sessao, alvo = null) {
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'lerColunas');
+  const b = await avaliar(sessao, jsBlocoDoGrid(g.id));
+  const hdr = (await avaliar(sessao, jsCabecalhoDoGrid(g.id))) ?? [];
+  return hdr.filter((h) => h.coluna >= 1).sort((a, x) => a.coluna - x.coluna)
+    .map((h) => ({ coluna: h.coluna, nome: (b?.colunas ?? [])[h.coluna - 1] ?? null, ...estadoDoCabecalho(h.icone) }));
+}
+
 export async function print(sessao, arquivo) {
   const r = await sessao.cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   fs.writeFileSync(arquivo, Buffer.from(r.data, 'base64'));

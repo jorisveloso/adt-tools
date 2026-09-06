@@ -1965,7 +1965,7 @@ transação e cai no mesmo fundo; de uma tela interna, só volta uma tela.
   (§ "`lerGridInteiro`"). ~~Célula editável~~ **feita** (item 47): `escreverCelula` pelo navegador, com o ciclo
   escrever → gravar → conferir em outra LUW medido (§ "Escrever numa célula"). O que fica em aberto
   na leitura: **checkbox** por esta via não foi cruzado (nenhum bruto HTTP tem um — o `chkALSOUSUB`
-  só existe no despejo DOM), e no grid falta **ordenar/filtrar**. ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
+  só existe no despejo DOM). ~~Ordenar/filtrar~~ **medido** (item 77): `ordenarGrid`/`filtrarGrid` marcam a coluna no cabeçalho e acionam a barra do ALV, e a medição fixou o que o `_linha` significa (§ "Ordenar e filtrar o ALV"). ~~Selecionar linha~~ **medido** (item 76): `selecionarLinhas` clica a caixa da coluna 0 e `lerSelecao` a lê, com a prova do `get_selected_rows` (§ "Selecionar linha no ALV"). ~~Chegar a uma linha fora do bloco~~ **medido** (item 75): `posicionarGrid` arrasta o thumb do `_vscroll` e põe a linha na tela num gesto, com o drill-down provado (§ "`posicionarGrid`").
 * ~~A saída (item 13)~~ **resolvida** por esta via: `/nex` encerra a sessão e `/n` volta ao menu
   (§ "A caixa de comando"). O obstáculo era do navegador — campo invisível —, não do canal.
 * ~~O mapa do `vkey/<n>`~~ **medido** (item 22): `tecla(s, 'F8')` e o mapa `VKEYS` (§ "O teclado").
@@ -2303,12 +2303,121 @@ apontando o `posicionarGrid`.
 - **Desmarcar.** O cabeçalho `grid#<cid>#0,0` **marca tudo** com a seleção limpa (3 de 3, 0
   requisição), mas com tudo marcado o mesmo clique **não desmarcou** — apesar do nome
   `SELECTION_TOGGLE`. Não há gesto medido para limpar a seleção.
-- **Selecionar COLUNA e BLOCO de células.** `action/48` (`cells=`) e `action/50`
-  (`top_left`/`bottom_right`) existem, e o `lsevents` publica `ClientColumnSelect`/`BlockSelect`;
-  `get_selected_columns` respondeu `0` em todos os casos porque ninguém selecionou coluna.
+- **Selecionar COLUNA e BLOCO de células.** Marcar a coluna pelo cabeçalho **saiu no item 77**
+  (`marcarColuna`, e o `action/46 columns=;2;` que ela emenda no gesto seguinte), mas o que o
+  `get_selected_columns` responde depois disso não foi cruzado. O BLOCO segue aberto: `action/48`
+  (`cells=`) e `action/50` (`top_left`/`bottom_right`) existem e o `lsevents` publica `BlockSelect`,
+  sem gesto medido.
 - **ALV de seleção ÚNICA.** O laboratório e o RSPARAM são os dois `selectionMode.type: "rowscols"`.
   `selecionarLinhas` estoura com o modo no texto quando a tela não fica como o pedido, mas o caso
   não foi exercitado num ALV que recuse a segunda linha.
+
+## Ordenar e filtrar o ALV — marcar a coluna e acionar a barra (item 77)
+
+**Medido no s4h 758/250 em 2026-09-05/06** (fila `adt-client`, item 77; evidência em
+`sap-accelerate/work/POC_webgui_grid_ord/medicoes/item77-ordenar-filtrar.md`, fases A–L). Fecha o
+que o item 25 tinha deixado aberto no grid. Laboratório `ZJBV_ALV47_EDIT`, que ganhou o fcode
+**`FC03`**: ele despeja `ITEM77 n=<lines(gt_tab)> sel=<n> <índice>=<NOME> tab1=<gt_tab[1]-nome>` —
+sem isso não dá para saber o que o **ABAP** vê quando a **tela** mostra outra coisa.
+
+```js
+import { ordenarGrid, filtrarGrid, lerColunas, marcarColuna } from './webgui.mjs';
+
+await ordenarGrid(s, null, 'NOME');                        // crescente
+await ordenarGrid(s, null, 'NOME', { ordem: 'desc' });     // decrescente
+// { id: 'C102', coluna: 2, nome: 'NOME', ordem: 'desc', total: 3, linhas: [ … ], ms: 2279 }
+
+await filtrarGrid(s, null, 'NOME', { de: 'E2E-776551' });  // igual a
+await filtrarGrid(s, null, 'QTD',  { de: '1', ate: '100' }); // intervalo
+await filtrarGrid(s, null, 'NOME', { de: '' });            // LIMPA o filtro da coluna
+
+await lerColunas(s);   // sem tocar a rede
+// [{ coluna: 1, nome: 'ID', ordem: null, filtrada: false },
+//  { coluna: 2, nome: 'NOME', ordem: 'desc', filtrada: true }, … ]
+```
+
+### Um gesto em duas metades — e a de cliente MORRE no round-trip
+
+| metade | onde | rede |
+|---|---|---|
+| marcar a coluna | clique no `<th>` `grid#<cid>#0,<c>` | **zero POST** — puro cliente |
+| acionar | botão da barra (`SORT_ASC`/`SORT_DSC`/`MB_FILTER`) | 1 POST, com a coluna a reboque |
+
+O POST do acionamento leva `action/46 columns=;2;` — irmão exato do `action/47 rows=;1;` da seleção
+de linha (item 76), e a mesma disciplina: **o gesto de cliente só vale se viajar junto do próximo
+round-trip.** A marca do cabeçalho não sobrevive a um (medido: depois do `SORT_ASC` o `<th>` já
+voltou a `urST3HUnsel`). Por isso `ordenarGrid` e `filtrarGrid` marcam a coluna eles mesmos, e
+`marcarColuna` devolve `pendente: true` — quem a chama sozinha tem de emendar o gesto seguinte.
+
+### O botão da barra é o SID, nunca o id do DOM
+
+Cada botão traz `"SID":"<sid do grid>/tbar/btn&SORT_ASC"` (ou `dbtn&MB_FILTER`) no `lsdata`. O id
+(`C102_toolbar_btn15`) é **posicional** e aponta para outro lugar numa tela com outra barra ou com
+dois ALVs. `jsBotaoDaBarra(sid, fcode)` casa pelo SID; quando o fcode não está lá, o erro **lista os
+fcodes que aquela barra tem** (`JS_FCODES_DA_BARRA`).
+
+### ⚠ Sem coluna marcada, o botão abre um diálogo que o `lerTela` NÃO vê
+
+`SORT_ASC` sem coluna marcada não ordena: abre "Ordenação" (`SAPLSALV_CUL_…`). E ele **não é
+`wnd[1]`** — o `lerTela` segue dizendo `janela.principal: true`, `mensagem: null`. O clique seguinte
+cai **atrás do modal e sai calado**; foi o que cegou a fase B inteira. Quem o enxerga é
+`[ct^="PW"]` visível (`JS_MODAL_DO_ALV`), e é por isso que `ordenarGrid` confere e estoura com o
+título do diálogo em vez de devolver uma tabela que não mudou.
+
+Mesma família do gotcha do `selectedRows` (item 76) e do scrollbar (item 75): **o `lerTela` responde
+pelo modelo `lsdata`, e há estado de tela que não está lá.**
+
+### Ordenar mexe no ABAP; filtrar não — e é aí que o `_linha` se define
+
+| gesto | tela | ABAP (`FC03`) |
+|---|---|---|
+| `NOME desc`, linha 1 | `1:tres` | `0000000001=tres`, **`tab1=tres`** |
+| `NOME = E2E-776551`, linha 1 | `1:E2E-776551` | `0000000002=E2E-776551`, `n=3`, `tab1=CP-POSITIVA` |
+
+Ordenar **reordena a tabela interna do programa** (`gt_tab[1]-nome` virou `tres`) — DOM e ABAP
+andam juntos. Filtrar não toca a outtab: o framework **traduz** o índice visual (1) para o da
+outtab (2). A linha é a mesma dos dois lados; o número não.
+
+> ⚠ **É a definição do `_linha` do `lerGrid`: "a n-ésima linha VISÍVEL agora", nunca uma
+> identidade.** Guardado antes de ordenar/filtrar, aponta para outro dado depois; e sob filtro nem é
+> o número que o `get_selected_rows` usa. Quem precisa de identidade guarda a **chave** da linha e a
+> reencontra (`lerGrid` + busca pela coluna-chave).
+
+### O diálogo do filtro, e os dois modos de falha dele
+
+`MB_FILTER` **com** coluna marcada abre "Determinar valores para critérios filtro" — esse **é**
+`wnd[1]` de verdade. Campos `ctxt%%DYN001-LOW` / `%%DYN001-HIGH`, OK em `wnd[1]/tbar[0]/btn[0]`;
+ids do DOM posicionais (`M1:46:1::1:34`), achados por `jsPorSid`.
+
+- ⚠ **O campo é `ctxt` e converte para MAIÚSCULAS.** Filtrar `tres` (que existe, minúsculo) devolveu
+  **0 linhas, sem erro nenhum**. `total: 0` é resposta, não exceção — o ALV fica com corpo vazio e
+  `totalRows: 0`.
+- ⚠ **O diálogo reabre com o filtro ANTERIOR preenchido.** Limpar um intervalo escrevendo só o
+  `LOW` deixava o `HIGH` de pé (`QTD 1..100` "limpo" continuava em 2 linhas — fase K, caso 8). Por
+  isso `filtrarGrid` escreve o `HIGH` **sempre** que ele existe, inclusive vazio; revalidado contra
+  o sistema na fase L.
+
+### O estado está no NOME do PNG do cabeçalho
+
+O `<th>` mostra `head<ordem>o<filtro>.png` — composicional:
+
+| ícone | ordem | filtrada |
+|---|---|---|
+| (nenhum) | `null` | `false` |
+| `headaoo` / `headdoo` | `asc` / `desc` | `false` |
+| `headoof` | `null` | `true` |
+| `headaof` / `headdof` | `asc` / `desc` | `true` |
+
+Daí saem duas regras medidas: **ordenar por outra coluna substitui o critério** (mas preserva o
+filtro da coluna anterior) e **limpar o filtro não derruba a ordenação**. Vários critérios de
+ordenação de uma vez só pelo diálogo "Ordenação" — outro gesto, não coberto.
+
+### O que ainda NÃO está medido
+
+- **O diálogo "Ordenação"** dirigido de propósito (ordenação por várias colunas). Aqui ele só
+  aparece como modo de falha detectado.
+- **O menu de contexto da célula** (`CellContextMenu`) — outra porta para os mesmos fcodes.
+- **`ColumnResize`** e o arrasto de coluna.
 
 ## Escrever numa célula do ALV — e provar que gravou (item 47)
 
