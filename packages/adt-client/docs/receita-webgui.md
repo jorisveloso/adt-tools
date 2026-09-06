@@ -3751,7 +3751,7 @@ posicional:
 | `LOCAL&APPEND` | "Anexar linha" | linha nova no **FIM, sempre** — seleção e célula corrente não o desviam |
 | `LOCAL&INSERT_ROW` | "Inserir linha" | **ANTES** da linha selecionada (ou, sem seleção, da CORRENTE) |
 | `LOCAL&DELETE_ROW` | "Eliminar linha" | apaga **todas as selecionadas** de uma vez; **sem seleção, a CORRENTE** |
-| `LOCAL&COPY_ROW` | "Duplicar a linha" | medido na barra, gesto ainda não exercitado |
+| `LOCAL&COPY_ROW` | "Duplicar a linha" | **cópia de cada selecionada** (sem seleção, da CORRENTE), logo **DEPOIS** da origem — § abaixo, item 123 |
 
 O `lsdata` do grid ainda anuncia `hasRowInsertAllowed: true`. Num ALV somente leitura
 (`BCALV_GRID_DEMO`) **nenhum dos quatro existe**, e o erro sai dizendo o que a barra tem:
@@ -3788,6 +3788,66 @@ apaga a linha errada na segunda: passe as duas juntas, ou releia o bloco entre u
 `valores` sai por `escreverCelula` e por isso fica **pendente no navegador** (`pendente: true`): ele
 viaja no próximo round-trip, junto do gesto de gravar. Os dois conferem o total depois do gesto e
 estouram quando o programa recusou a inserção ou a exclusão.
+
+## DUPLICAR uma linha do ALV — a linha nova que já vem preenchida (item 123)
+
+**Medido no s4h 758/250 em 2026-09-06** (fila `adt-client`, item 123; evidência em
+`sap-accelerate/work/POC_webgui_grid_dup/medicoes/item123-duplicar-linha.md`). O item 78 deixou o
+quarto botão de linha só anotado na barra; aqui o gesto foi exercitado, e virou `duplicarLinha`.
+
+```js
+import { duplicarLinha, comandar } from './webgui.mjs';
+
+const r = await duplicarLinha(s, null, { linha: 2 });              // a cópia da 2 vira a 3
+r.identica;                                     // true → a cópia saiu igual à origem, CHAVE INCLUÍDA
+await duplicarLinha(s, null, { linha: 2, valores: { ID: '9' } });  // a cópia com chave própria
+await comandar(s, 'FC01');                       // ← é ISTO que grava; o resto só mexe na tela
+```
+
+De onde copia, onde entra — as quatro passagens da fase A (`raw/a-copia.json`), cada uma reabrindo
+a transação para partir do banco:
+
+| | estado antes | o que foi duplicado | onde a cópia entrou |
+|---|---|---|---|
+| **A1** | corrente na **1**, selecionada a **2** | a **2** | linha **3** |
+| **A2** | sem seleção, corrente na **2** | a **2** | linha **3** |
+| **A3** | **1 e 3** selecionadas | as **duas** | linhas **2** e **5** |
+| **A4** | virgem (nada tocado) | a **1** (corrente onde nasce) | linha **2** |
+
+Ou seja: **a seleção manda sobre a corrente** (A1 é a prova pareada — a corrente estava na 1 e ele
+copiou a 2), **sem seleção vale a corrente** (A2/A4), e a cópia entra **imediatamente depois de cada
+origem**, nunca no fim. Com N selecionadas ele duplica as N de uma vez (A3), e por isso os `_linha`
+de baixo escorregam — daí `duplicarLinha` tratar **uma** linha por chamada, com o endereço
+obrigatório, como o `apagarLinhas`.
+
+### ⚠ A cópia vem com a CHAVE — e gravá-la assim é silencioso
+
+O `COPY_ROW` copia a linha inteira: no `ZJBV_ALV47` o `ID` é a chave, então a cópia nasce colidindo
+com a origem. Contra-prova pareada da fase B (`raw/b-ciclo.json`), mesma sequência, só o tratamento
+da chave mudando:
+
+| | ALV depois do `FC01` | mensagem | a tabela em OUTRA LUW |
+|---|---|---|---|
+| **B1** cópia crua (chave duplicada) | 5 linhas | *"ITEM47 GRAVOU subrc=0 n=5"* | **4 linhas** — a cópia **colapsou** na origem |
+| **B2** cópia com `ID` novo | 5 linhas | a mesma | **5 linhas**, a nova entre elas |
+
+O `MODIFY FROM TABLE` aceita as duas linhas de mesma chave e grava **uma**; ninguém reclama, e a
+tela continua mostrando 5. Por isso o retorno traz **`identica`** e **`difere`** (as colunas em que a
+cópia já se distingue da origem): `identica: true` depois de duplicar é o aviso de que falta dar
+chave nova à cópia — a lib não sabe qual coluna é a chave, mas sabe dizer que **nenhuma** mudou.
+
+### O que duplicar economiza (e o que não)
+
+Medido na fase C, na mesma tela e na mesma sessão: `duplicarLinha({ linha: 2, valores: { ID } })`
+custou **4186 ms** e `inserirLinha({ valores: { ID, NOME, QTD } })` custou **4562 ms** — 3 colunas
+contra 1, **376 ms** de diferença (8 %). O ganho de tempo é por coluna que você **não** escreve, e
+com 3 colunas ele é pequeno; o que duplicar entrega de verdade é **não precisar conhecer o conteúdo
+da origem** para repeti-lo. Numa linha larga (as duas dúzias de campos de uma posição de documento),
+é a diferença entre um gesto e ler o bloco inteiro para reescrevê-lo.
+
+Como o `inserirLinha`, o gesto **faz round-trip e mesmo assim não grava** — a fase C provou os dois
+lados: duplicar sem `FC01` deixou o banco **inalterado** (4 linhas), e com `FC01` as duas linhas
+novas chegaram (`001,002,003,004,008,009`).
 
 ## Colar um BLOCO no ALV — N células num round-trip só (item 79)
 

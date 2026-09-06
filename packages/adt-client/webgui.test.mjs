@@ -23,7 +23,7 @@ import {
   idDoToggleDeSelecao, interpretarTituloDoToggle, normalizarToggle,
   idDaCelula, normalizarCelula,
   estadoDoCabecalho, idDoCabecalho, jsCabecalhoDoGrid, jsBotaoDaBarra,
-  FCODES_DE_LINHA,
+  FCODES_DE_LINHA, diferencaDeLinhas,
   DIALOGO_DE_ORDENACAO, jsGridDoDialogoDeOrdenacao, jsDirecoesDosCriterios, jsOpcoesDoCombo,
   fcodeDoItemDeMenu, jsMenuDoGrid, itensDoMenuDoGrid, acharNoMenuDoGrid, cliqueDireito,
   tsvDoBloco, jsColarNoGrid,
@@ -1757,6 +1757,41 @@ test('webgui: os fcodes de linha do ALV são os medidos, e o SID casa com eles',
   expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.apagar), barra).id).toBe('C102_toolbar_btn12');
   // o ALV somente leitura não publica nenhum deles — e é assim que o erro sai com a lista certa
   expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.duplicar), barra)).toBe(null);
+});
+
+// ---------- duplicar linha: `LOCAL&COPY_ROW` (item 123) ----------
+//
+// A barra REAL do `ZJBV_ALV47_EDIT` publica os QUATRO — o `btn13`, title "Duplicar a linha"
+// (s4h 758/250, 06/09/2026, `POC_webgui_grid_dup/medicoes/raw/a-copia.json`). O id do DOM é
+// posicional; quem endereça é o SID, e o `&` do meio do nome não pode virar outro seletor.
+test('webgui: o COPY_ROW é o quarto botão de linha, e casa pelo SID como os outros três', () => {
+  const sid = 'wnd[0]/shellcont/shell';
+  const barra = [
+    botao('C102_toolbar_btn10', `${sid}/tbar/btn&LOCAL&APPEND`),
+    botao('C102_toolbar_btn11', `${sid}/tbar/btn&LOCAL&INSERT_ROW`),
+    botao('C102_toolbar_btn12', `${sid}/tbar/btn&LOCAL&DELETE_ROW`),
+    botao('C102_toolbar_btn13', `${sid}/tbar/btn&LOCAL&COPY_ROW`),
+  ];
+  expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.duplicar), barra).id).toBe('C102_toolbar_btn13');
+  // o COPY_ROW não rouba o clique do DELETE_ROW nem do INSERT_ROW (todos começam por `LOCAL&`)
+  expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.apagar), barra).id).toBe('C102_toolbar_btn12');
+  expect(rodarBotao(jsBotaoDaBarra(sid, FCODES_DE_LINHA.inserir), barra).id).toBe('C102_toolbar_btn11');
+});
+
+// A cópia do `COPY_ROW` nasce IDÊNTICA à origem, chave incluída — gravada assim, o `MODIFY FROM
+// TABLE` a colapsa na origem e a mensagem ainda diz "GRAVOU subrc=0" (medido, `raw/b-ciclo.json`:
+// ALV com 5, banco com 4). `diferencaDeLinhas` é o que transforma isso em `identica` no retorno.
+test('webgui: diferencaDeLinhas diz em que colunas a cópia já se distingue da origem', () => {
+  const origem = { _linha: 2, ID: '2', NOME: 'AA', QTD: '20' };
+  expect(diferencaDeLinhas(origem, { _linha: 3, ID: '2', NOME: 'AA', QTD: '20' })).toEqual([]);
+  expect(diferencaDeLinhas(origem, { _linha: 3, ID: '9', NOME: 'AA', QTD: '20' })).toEqual(['ID']);
+  expect(diferencaDeLinhas(origem, { _linha: 3, ID: '9', NOME: 'BB', QTD: '20' })).toEqual(['ID', 'NOME']);
+  // o `_linha` é POSIÇÃO, não conteúdo: sozinho ele nunca conta como diferença
+  expect(diferencaDeLinhas({ _linha: 1, ID: '2' }, { _linha: 99, ID: '2' })).toEqual([]);
+  // coluna que só um dos lados tem conta como diferença; ausente e vazio são o mesmo
+  expect(diferencaDeLinhas({ ID: '2' }, { ID: '2', NOVA: 'x' })).toEqual(['NOVA']);
+  expect(diferencaDeLinhas({ ID: '2' }, { ID: '2', NOVA: '' })).toEqual([]);
+  expect(diferencaDeLinhas()).toEqual([]);
 });
 
 // ---------- o diálogo "Ordenação": ordenar por VÁRIAS colunas (item 121) ----------

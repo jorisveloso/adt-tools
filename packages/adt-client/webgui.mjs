@@ -3909,6 +3909,64 @@ export async function apagarLinhas(sessao, alvo = null, linhas = [], { tetoMs = 
   return { id: g.id, sid: s.sid ?? g.sid, pedidas, antes: n, total: d.total, linhas: d.linhas, ms: Date.now() - t0 };
 }
 
+/** PURO: as colunas em que duas linhas do bloco diferem (ignora o `_linha`, que é posição). */
+export function diferencaDeLinhas(a = {}, b = {}) {
+  return [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])]
+    .filter((k) => k !== '_linha' && String(a?.[k] ?? '') !== String(b?.[k] ?? ''));
+}
+
+/**
+ * DUPLICA uma linha do ALV editável (`LOCAL&COPY_ROW`) — a cópia nasce JÁ PREENCHIDA com o
+ * conteúdo da origem, e entra IMEDIATAMENTE DEPOIS dela.
+ *
+ * ```js
+ * await duplicarLinha(s, null, { linha: 2 });                       // a cópia da 2 vira a 3
+ * await duplicarLinha(s, null, { linha: 2, valores: { ID: '9' } }); // a cópia com chave própria
+ * ```
+ *
+ * Devolve `{ id, sid, origem, linha, total, linhas, valores, difere, identica, pendente, ms }` —
+ * `linha` é onde a cópia ficou (`origem + 1`) e `difere` são as colunas em que ela já se distingue
+ * da origem (vazio = cópia idêntica, `identica: true`).
+ *
+ * ⚠️ **Isto NÃO grava** (§ do `inserirLinha`): a cópia existe na tabela interna do ABAP e em lugar
+ * nenhum do banco até o programa gravar — `comandar(s, '<fcode de gravar>')`.
+ * ⚠️ **A CHAVE vem junto.** Medido: a cópia sai idêntica à origem, chave incluída, e gravada assim
+ * o `MODIFY FROM TABLE` a COLAPSA na origem — a mensagem diz "GRAVOU subrc=0 n=5" e o banco fica
+ * com 4. Quem duplica dá chave nova à cópia (`valores`), e `identica: true` é o aviso disso.
+ * ⚠️ `valores` sai por `escreverCelula`, então fica **pendente no navegador** (`pendente: true`):
+ * viaja no próximo round-trip, junto do gesto de gravar.
+ * ⚠️ **A linha é obrigatória de propósito** — sem seleção o ALV duplica a CORRENTE, que qualquer
+ * clique anterior move; "a que estiver marcada" não é endereço (mesma regra do `apagarLinhas`).
+ */
+export async function duplicarLinha(sessao, alvo = null, { linha, valores = null, tetoMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const origem = Number(linha);
+  if (!Number.isInteger(origem) || origem < 1) throw new Error(`webgui: duplicarLinha — linha "${linha}" não é uma linha (inteiro >= 1). `
+    + 'Sem ela o ALV duplicaria a linha CORRENTE, e ela não é endereço.');
+  const g = escolherGrid((await lerTela(sessao))?.grids ?? [], alvo, 'duplicarLinha');
+  const b = await lerGrid(sessao, { id: g.id });
+  const n = b.total;
+  if (origem > n) throw new Error(`webgui: duplicarLinha — a linha ${origem} não existe no ALV ${g.id}, que tem ${n}`);
+  const s = await selecionarLinhas(sessao, { id: g.id }, [origem]);
+  const d = await gestoDeLinha(sessao, { id: g.id, sid: s.sid ?? b.sid ?? g.sid }, FCODES_DE_LINHA.duplicar, tetoMs);
+  if (d.total !== n + 1) throw new Error(`webgui: duplicarLinha — o ALV ${g.id} tinha ${n} linha(s) e ficou com ${d.total}, não ${n + 1}. `
+    + 'O programa recusou a duplicação (ou o botão fez outra coisa).');
+  const copia = origem + 1;
+  const escritos = {};
+  for (const [coluna, valor] of Object.entries(valores ?? {})) {
+    await escreverCelula(sessao, { id: g.id }, { linha: copia, coluna, valor });
+    escritos[coluna] = valor;
+  }
+  const fim = valores ? await lerGrid(sessao, { id: g.id }) : d;
+  const acha = (k) => (fim.linhas ?? []).find((l) => Number(l._linha) === k) ?? {};
+  const difere = diferencaDeLinhas(acha(origem), acha(copia));
+  detalhe(`webgui: duplicarLinha ${g.id} — a ${origem} virou também a ${copia}, ${n} → ${d.total} linha(s)`
+    + `; a cópia ${difere.length ? `difere em ${difere.join(', ')}` : 'é IDÊNTICA à origem (chave incluída)'}`
+    + '; NADA GRAVADO ainda');
+  return { id: g.id, sid: s.sid ?? b.sid ?? g.sid, origem, linha: copia, total: d.total, linhas: fim.linhas,
+    valores: escritos, difere, identica: !difere.length, pendente: !!valores, ms: Date.now() - t0 };
+}
+
 export async function print(sessao, arquivo) {
   const r = await sessao.cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   fs.writeFileSync(arquivo, Buffer.from(r.data, 'base64'));
